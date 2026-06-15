@@ -1,10 +1,12 @@
-//! dcs-domain — PURE core.
+//! dcs-domain — PURE core: types + pure functions, no I/O, no async, no egui.
 //!
-//! Types + pure functions: `Photo`, `Pool`, `Tag`, grouping, `derive_bursts`,
-//! timezone adjustment, filter resolution, fuzzy match, tag merge, the pure
-//! export planner (`plan_export` -> `ExportPlan`), and the `Command` enum.
-//! No I/O, no async, no egui. Owns its own error enums. (§9, §11)
+//! Current slice: photo identity + pairing, time sort, the shared thumbnail
+//! pixel type. Grouping, bursts, filters, tags, and the export planner land in
+//! later slices (§9, §11).
 //!
 //! Bottom of the dependency tree — depends on no internal crate.
 
-pub fn placeholder() {}
+pub mod pairing;
+pub mod photo;
+pub mod sort;
+pub mod thumb;

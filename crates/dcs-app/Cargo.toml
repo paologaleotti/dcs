@@ -5,8 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# Conductor: session, command registry, dispatch, keymap, durable undo,
-# thin export trigger. Depends DOWN on dcs-io + dcs-domain. (§9)
+# Conductor between the UI and dcs-io. Depends DOWN on dcs-io + dcs-domain. (§9)
 [dependencies]
 dcs-domain.workspace = true
 dcs-io.workspace = true
@@ -14,3 +13,7 @@ dcs-io.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# Real JPEGs for end-to-end decode/cache tests.
+image.workspace = true

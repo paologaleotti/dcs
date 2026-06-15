@@ -17,16 +17,18 @@ dcs-app = { path = "crates/dcs-app" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-time = { version = "0.3", features = ["serde", "macros"] }
+time = { version = "0.3", features = ["serde", "macros", "parsing"] }
 time-tz = "2"
 thiserror = "2"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+turbojpeg = "1"
 kamadak-exif = "0.6"
 rayon = "1"
 walkdir = "2"
 twox-hash = "2"
 rusqlite = { version = "0.37", features = ["bundled"] }
 crossbeam-channel = "0.5"
+rfd = "0.15"
 egui = "0.34.3"
 eframe = { version = "0.34.3", default-features = false, features = [
     "default_fonts",

@@ -1,11 +1,10 @@
-//! dcs-io — infrastructure behind traits.
+//! dcs-io — infrastructure behind traits. The thread model lives here.
 //!
-//! `imaging` (decode, embedded preview, orientation, thumb cache, prefetch),
-//! `source` (scan, EXIF, content fingerprint, progressive import, missing-file
-//! detection), `persistence` (versioned DTOs, undo.log), and the *dumb* export
-//! executor (walks an `ExportPlan`, copies .part->fsync->rename, makes no
-//! decisions). Whole thread model lives here behind handle-returning traits. (§9)
+//! Current slice: `imaging` (off-thread JPEG decode, orientation, thumbnails)
+//! and `source` (folder scan + EXIF). Persistence and the export executor land
+//! in later slices (§9).
 //!
 //! Depends DOWN on dcs-domain only.
 
-pub fn placeholder() {}
+pub mod imaging;
+pub mod source;

@@ -17,6 +17,7 @@ thiserror.workspace = true
 
 # imaging
 image.workspace = true
+turbojpeg.workspace = true
 kamadak-exif.workspace = true
 rayon.workspace = true
 
