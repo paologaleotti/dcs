@@ -12,3 +12,7 @@ serde.workspace = true
 time.workspace = true
 time-tz.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# Round-trip Command through JSON to lock the undo.log serialization seam (§5).
+serde_json.workspace = true

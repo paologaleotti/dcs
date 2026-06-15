@@ -11,9 +11,13 @@
 
 use std::collections::HashMap;
 
-use dcs_app::Session;
+use dcs_app::{CellInfo, Session};
+use dcs_domain::cull::AcceptState;
 use dcs_domain::photo::PhotoId;
-use egui::{Color32, FontId, Pos2, Rect, Sense, TextureHandle, TextureId, TextureOptions, Ui, Vec2};
+use egui::{
+    Color32, FontId, Id, Pos2, Rect, Sense, Stroke, StrokeKind, TextureHandle, TextureId,
+    TextureOptions, Ui, Vec2,
+};
 
 use crate::theme;
 
@@ -151,25 +155,49 @@ impl TexRef {
     }
 }
 
-/// Paint the grid and return how many cells were drawn this frame (for the
-/// diagnostics overlay). `cell` is the square cell edge in points; `view_width`
-/// is the width available for column math (measured before the scroll area so
-/// the count stays stable).
+/// Row pitch in points: the cell edge plus the inter-cell gap (§2.6). The one
+/// source of this formula — both the painter and the app's auto-scroll math use
+/// it, so the grid geometry can never drift between them.
+pub fn row_stride(cell: f32) -> f32 {
+    cell + (cell * 0.1).max(4.0)
+}
+
+/// What the grid reports back so the app can drive keyboard nav and auto-scroll
+/// next frame: cells drawn (diagnostics), the column count (row math for `↑↓`),
+/// and the scroll geometry (to keep the focus cursor on screen).
+pub struct GridResponse {
+    pub visible: usize,
+    pub cols: usize,
+    pub scroll_y: f32,
+    pub viewport_h: f32,
+}
+
+/// Paint the grid. `cell` is the square cell edge in points; `view_width` is the
+/// width available for column math (measured before the scroll area so the
+/// count stays stable). `pending_scroll`, when set, forces the vertical offset
+/// for this frame to keep the focus cursor visible after a nav move.
 pub fn show(
     ui: &mut Ui,
     session: &mut Session,
     textures: &mut TextureCache,
     cell: f32,
     view_width: f32,
-) -> usize {
+    pending_scroll: Option<f32>,
+) -> GridResponse {
+    let viewport_h = ui.available_height();
     let count = session.photo_count();
     if count == 0 {
-        return 0;
+        return GridResponse {
+            visible: 0,
+            cols: 1,
+            scroll_y: 0.0,
+            viewport_h,
+        };
     }
     textures.begin_frame();
 
-    let gap = (cell * 0.1).max(4.0);
-    let stride = cell + gap;
+    let stride = row_stride(cell);
+    let gap = stride - cell;
     let cols = (((view_width + gap) / stride).floor() as usize).max(1);
     let rows = count.div_ceil(cols);
 
@@ -180,41 +208,72 @@ pub fn show(
     if !zoomed {
         session.clear_hires();
     }
+    let focus = session.focus();
     let mut visible = 0usize;
+    // Applied after the scroll area so the selection isn't mutated mid-paint.
+    let mut clicked: Option<usize> = None;
 
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show_rows(ui, stride, rows, |ui, row_range| {
-            request_base_band(session, cols, count, &row_range, rows);
+    // `stride` bakes in the gap; zero inter-row spacing so the real row pitch
+    // stays `stride` (else it drifts from the nav/scroll math).
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
+    if let Some(offset) = pending_scroll {
+        area = area.vertical_scroll_offset(offset);
+    }
+    let out = area.show_rows(ui, stride, rows, |ui, row_range| {
+        request_base_band(session, cols, count, &row_range, rows);
 
-            for row in row_range {
-                let (strip, _) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), stride), Sense::hover());
-                for col in 0..cols {
-                    let idx = row * cols + col;
-                    if idx >= count {
-                        break;
-                    }
-                    let Some(info) = session.cell_info(idx) else {
-                        break;
-                    };
-                    if zoomed {
-                        session.request_hires(idx, hires_edge);
-                    }
-                    let origin = Pos2::new(strip.left() + col as f32 * stride, strip.top());
-                    let cell_rect = Rect::from_min_size(origin, Vec2::splat(cell));
-                    paint_cell(ui, session, textures, info.id, info.raw_only, cell_rect);
-                    visible += 1;
+        for row in row_range {
+            let (strip, _) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), stride), Sense::hover());
+            for col in 0..cols {
+                let idx = row * cols + col;
+                if idx >= count {
+                    break;
                 }
+                let Some(info) = session.cell_info(idx) else {
+                    break;
+                };
+                if zoomed {
+                    session.request_hires(idx, hires_edge);
+                }
+                let origin = Pos2::new(strip.left() + col as f32 * stride, strip.top());
+                let cell_rect = Rect::from_min_size(origin, Vec2::splat(cell));
+                let resp = ui.interact(cell_rect, Id::new(("dcs_cell", info.id.0)), Sense::click());
+                if resp.clicked() {
+                    clicked = Some(idx);
+                }
+                paint_cell(ui, session, textures, info, focus == Some(idx), cell_rect);
+                visible += 1;
             }
-        });
+        }
+    });
+
+    // Click = select; Shift+click = extend range; Ctrl/Cmd+click = toggle one.
+    if let Some(idx) = clicked {
+        let (shift, cmd) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
+        if shift {
+            session.shift_click_select(idx);
+        } else if cmd {
+            session.toggle_click_select(idx);
+        } else {
+            session.click_select(idx);
+        }
+    }
 
     // Keep filling base thumbnails for the rest of the folder in the
     // background — viewport requests above already took priority this frame.
     session.fill_base_background();
 
     textures.evict_over_budget();
-    visible
+    GridResponse {
+        visible,
+        cols,
+        scroll_y: out.state.offset.y,
+        // The true scrollable viewport from the same source as the offset, so
+        // the focus-visibility math is self-consistent (no off-by-one row).
+        viewport_h: out.inner_rect.height(),
+    }
 }
 
 /// Request base thumbnails for the visible rows first, then the prefetch
@@ -258,19 +317,83 @@ fn paint_cell(
     ui: &mut Ui,
     session: &mut Session,
     textures: &mut TextureCache,
-    id: PhotoId,
-    raw_only: bool,
+    info: CellInfo,
+    focused: bool,
     cell_rect: Rect,
 ) {
     ui.painter().rect_filled(cell_rect, 0.0, theme::CELL_EMPTY);
 
-    if let Some(tex) = textures.texture(ui, session, id) {
+    if let Some(tex) = textures.texture(ui, session, info.id) {
         let fit = contain_fit(cell_rect, tex.size);
         ui.painter().image(tex.id, fit, full_uv(), Color32::WHITE);
     }
 
-    if raw_only && cell_rect.width() >= BADGE_MIN_CELL {
+    // Rejected cells dim, then carry the glyph on top so it stays legible.
+    if info.state == AcceptState::Rejected {
+        ui.painter().rect_filled(cell_rect, 0.0, theme::REJECT_DIM);
+    }
+
+    if info.raw_only && cell_rect.width() >= BADGE_MIN_CELL {
         paint_raw_badge(ui, cell_rect);
+    }
+
+    paint_verdict_glyph(ui, cell_rect, info.state);
+
+    // Selection first, focus on top and brighter — a focused cell that is also
+    // selected reads as the focus (§2.13, #31).
+    if info.selected {
+        ui.painter().rect_stroke(
+            cell_rect,
+            0.0,
+            Stroke::new(1.0, theme::SELECT_OUTLINE),
+            StrokeKind::Inside,
+        );
+    }
+    if focused {
+        ui.painter().rect_stroke(
+            cell_rect,
+            0.0,
+            Stroke::new(2.0, theme::FOCUS_OUTLINE),
+            StrokeKind::Inside,
+        );
+    }
+}
+
+/// Bottom-right verdict glyph (§2.11): a green check (accepted) or red cross
+/// (rejected); nothing for unreviewed. Drawn as line segments rather than font
+/// glyphs so it renders identically regardless of the loaded font.
+fn paint_verdict_glyph(ui: &Ui, cell_rect: Rect, state: AcceptState) {
+    let color = match state {
+        AcceptState::Accepted => theme::VERDICT_ACCEPT,
+        AcceptState::Rejected => theme::VERDICT_REJECT,
+        AcceptState::Unreviewed => return,
+    };
+    let s = (cell_rect.width() * 0.2).clamp(14.0, 26.0);
+    let box_rect = Rect::from_min_max(
+        Pos2::new(cell_rect.right() - s, cell_rect.bottom() - s),
+        cell_rect.max,
+    );
+    ui.painter().rect_filled(box_rect, 0.0, theme::BADGE_BG);
+    let stroke = Stroke::new((s * 0.12).max(1.5), color);
+    let c = box_rect.center();
+    let r = s * 0.28;
+    match state {
+        AcceptState::Accepted => {
+            // One polyline so the elbow joins cleanly (two segments blob).
+            let pts = vec![
+                Pos2::new(c.x - r, c.y),
+                Pos2::new(c.x - r * 0.25, c.y + r * 0.7),
+                Pos2::new(c.x + r, c.y - r * 0.6),
+            ];
+            ui.painter().add(egui::Shape::line(pts, stroke));
+        }
+        AcceptState::Rejected => {
+            ui.painter()
+                .line_segment([Pos2::new(c.x - r, c.y - r), Pos2::new(c.x + r, c.y + r)], stroke);
+            ui.painter()
+                .line_segment([Pos2::new(c.x + r, c.y - r), Pos2::new(c.x - r, c.y + r)], stroke);
+        }
+        AcceptState::Unreviewed => {}
     }
 }
 

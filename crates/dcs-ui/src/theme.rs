@@ -5,17 +5,29 @@
 use egui::{Color32, Context, CornerRadius, Stroke, Vec2, Visuals};
 
 /// Empty cell area — the "sheet" surface, slightly lighter than chrome.
-pub const SHEET_BG: Color32 = Color32::from_gray(30);
+pub const SHEET_BG: Color32 = Color32::from_gray(20);
 /// Panels, bars, menus.
-pub const CHROME_BG: Color32 = Color32::from_gray(18);
+pub const CHROME_BG: Color32 = Color32::from_gray(11);
 /// A cell with no thumbnail yet.
-pub const CELL_EMPTY: Color32 = Color32::from_gray(38);
+pub const CELL_EMPTY: Color32 = Color32::from_gray(28);
 /// 1 px separators.
-pub const HAIRLINE: Color32 = Color32::from_gray(64);
+pub const HAIRLINE: Color32 = Color32::from_gray(54);
 /// Secondary text and key hints.
 pub const TEXT_DIM: Color32 = Color32::from_gray(150);
-/// RAW badge background.
-pub const BADGE_BG: Color32 = Color32::from_gray(12);
+/// RAW badge background, and the chip behind a verdict glyph.
+pub const BADGE_BG: Color32 = Color32::from_gray(8);
+
+/// Selection — a light grease-pencil outline (§3, #29).
+pub const SELECT_OUTLINE: Color32 = Color32::from_gray(180);
+/// Focus cursor — a brighter outline than the selection (§2.13, #31).
+pub const FOCUS_OUTLINE: Color32 = Color32::from_gray(240);
+/// Rejected cells are dimmed by this translucent black overlay (§2.9).
+pub const REJECT_DIM: Color32 = Color32::from_black_alpha(130);
+/// Accepted verdict mark. Green/red verdict marks are the only non-gray colors
+/// so far (§3, color = meaning only).
+pub const VERDICT_ACCEPT: Color32 = Color32::from_rgb(90, 190, 110);
+/// Rejected verdict mark.
+pub const VERDICT_REJECT: Color32 = Color32::from_rgb(210, 90, 90);
 
 pub fn apply(ctx: &Context) {
     let mut v = Visuals::dark();
@@ -23,8 +35,8 @@ pub fn apply(ctx: &Context) {
 
     v.panel_fill = CHROME_BG;
     v.window_fill = CHROME_BG;
-    v.extreme_bg_color = Color32::from_gray(10);
-    v.faint_bg_color = Color32::from_gray(24);
+    v.extreme_bg_color = Color32::from_gray(6);
+    v.faint_bg_color = Color32::from_gray(16);
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, HAIRLINE);
     v.window_stroke = Stroke::new(1.0, HAIRLINE);
     // Selection reads as a grease-pencil outline, not a brand tint.

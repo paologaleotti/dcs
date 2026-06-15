@@ -80,6 +80,10 @@ impl<K: Eq + Hash + Copy, V> LruMap<K, V> {
         self.used += weight;
 
         let mut evicted = Vec::new();
+        // FIXME(perf): O(n) scan to find the LRU victim, per eviction. Only runs
+        // when a cache exceeds its budget (never for folders within it), so it's
+        // free at current sizes. For 10k+ folders, replace with an intrusive
+        // LRU list or a min-heap on `tick` for O(1)/O(log n) eviction.
         while self.used > self.budget && self.map.len() > 1 {
             let Some(victim) = self
                 .map

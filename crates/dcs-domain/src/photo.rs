@@ -5,8 +5,11 @@ use std::path::{Path, PathBuf};
 
 use time::PrimitiveDateTime;
 
-/// Stable per-photo identifier. Assigned on import, never reused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// Stable per-photo identifier. Assigned on import, never reused. Serializable
+/// because commands carrying `PhotoId`s are persisted to `undo.log` (§5).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct PhotoId(pub u32);
 
 /// Which files back a photo (§2.1). Display prefers the JPEG.

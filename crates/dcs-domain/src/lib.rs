@@ -6,6 +6,8 @@
 //!
 //! Bottom of the dependency tree — depends on no internal crate.
 
+pub mod command;
+pub mod cull;
 pub mod pairing;
 pub mod photo;
 pub mod sort;

@@ -6,7 +6,9 @@
 //!
 //! Depends DOWN on dcs-io + dcs-domain. Never the reverse.
 
+pub mod cull;
+pub mod selection;
 pub mod session;
 mod util;
 
-pub use session::Session;
+pub use session::{CellInfo, Session, VerdictFilter};

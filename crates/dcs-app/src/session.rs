@@ -16,6 +16,8 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use dcs_domain::command::Command;
+use dcs_domain::cull::AcceptState;
 use dcs_domain::pairing::PoolBuilder;
 use dcs_domain::photo::{Photo, PhotoId};
 use dcs_domain::sort;
@@ -23,6 +25,8 @@ use dcs_domain::thumb::ThumbImage;
 use dcs_io::imaging::{RayonThumbDecoder, ThumbDecoder};
 use dcs_io::source::{ScanHandle, scan};
 
+use crate::cull::Cull;
+use crate::selection::Selection;
 use crate::util::{LruMap, decode_key, encode_key};
 
 /// Pixel edge the base (default-zoom) tier decodes to.
@@ -61,12 +65,36 @@ pub struct ThumbView<'a> {
 pub struct CellInfo {
     pub id: PhotoId,
     pub raw_only: bool,
+    /// Owned verdict for the verdict glyph + rejected dimming (§2.11).
+    pub state: AcceptState,
+    /// Whether this cell is in the current selection (grease-pencil outline).
+    pub selected: bool,
+}
+
+/// Verdict view toggle (§2.9, #11) — a session display setting, not the full
+/// chip filter system. `Unreviewed` is the working filter while culling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VerdictFilter {
+    #[default]
+    All,
+    Unreviewed,
+    Accepted,
+    Rejected,
 }
 
 pub struct Session {
     builder: PoolBuilder,
+    /// Full display order (pool indices), the sort result before filtering.
     order: Vec<usize>,
+    /// The order after the verdict filter — what the grid actually paints and
+    /// what every display index addresses. Equals `order` when filter = `All`.
+    visible: Vec<usize>,
     ordered_count: usize,
+    /// Owned verdicts + undo/redo (§2.2, §2.9). Reset per folder (ids restart).
+    cull: Cull,
+    /// Ephemeral focus cursor + selection (§2.12, §2.13).
+    sel: Selection,
+    filter: VerdictFilter,
     scan: Option<ScanHandle>,
     decoder: RayonThumbDecoder,
     base: LruMap<PhotoId, CachedThumb>,
@@ -89,7 +117,11 @@ impl Session {
         Session {
             builder: PoolBuilder::default(),
             order: Vec::new(),
+            visible: Vec::new(),
             ordered_count: 0,
+            cull: Cull::new(),
+            sel: Selection::new(),
+            filter: VerdictFilter::All,
             scan: None,
             decoder: RayonThumbDecoder::new(),
             base: LruMap::new(BASE_CACHE_BYTES),
@@ -106,7 +138,13 @@ impl Session {
     pub fn open_folder(&mut self, root: PathBuf) {
         self.builder = PoolBuilder::default();
         self.order = Vec::new();
+        self.visible = Vec::new();
         self.ordered_count = 0;
+        // Ids restart at 0 per folder, so prior verdicts/selection must not
+        // carry over onto same-id photos in the new pool.
+        self.cull = Cull::new();
+        self.sel = Selection::new();
+        self.filter = VerdictFilter::All;
         self.base = LruMap::new(BASE_CACHE_BYTES);
         self.hires = LruMap::new(HIRES_CACHE_BYTES);
         self.base_inflight.clear();
@@ -134,6 +172,7 @@ impl Session {
         if self.builder.len() != self.ordered_count {
             self.order = sort::by_time_asc(self.builder.photos());
             self.ordered_count = self.builder.len();
+            self.rebuild_visible();
         }
         for (key, image) in self.decoder.poll() {
             let (epoch, id, hires) = decode_key(key);
@@ -144,24 +183,34 @@ impl Session {
         }
     }
 
+    /// Number of cells the grid paints — visible photos after the verdict
+    /// filter (§2.9). Equals the pool size when filter = `All`.
     pub fn photo_count(&self) -> usize {
-        self.order.len()
+        self.visible.len()
     }
 
-    /// Photo at a display position in the current sort order (§2.3).
+    /// Total photos imported, ignoring the filter. Lets the UI tell "no folder
+    /// open" apart from "the filter hid everything".
+    pub fn pool_len(&self) -> usize {
+        self.builder.len()
+    }
+
+    /// Photo at a display position in the current visible order (§2.3).
     pub fn photo_at(&self, display_index: usize) -> Option<&Photo> {
-        let &pool_index = self.order.get(display_index)?;
+        let &pool_index = self.visible.get(display_index)?;
         self.builder.photos().get(pool_index)
     }
 
     /// Cheap `Copy` descriptor for painting a cell — no allocation, so the grid
     /// can call it for every visible cell each frame.
     pub fn cell_info(&self, display_index: usize) -> Option<CellInfo> {
-        let &pool_index = self.order.get(display_index)?;
+        let &pool_index = self.visible.get(display_index)?;
         let photo = self.builder.photos().get(pool_index)?;
         Some(CellInfo {
             id: photo.id,
             raw_only: photo.is_raw_only(),
+            state: self.cull.state(photo.id),
+            selected: self.sel.is_selected(photo.id),
         })
     }
 
@@ -199,7 +248,7 @@ impl Session {
     /// decoding or cached. Called for the whole visible + prefetch band every
     /// frame. No-op if cached, already decoding, or RAW-only (§2.1).
     pub fn request_base(&mut self, display_index: usize) {
-        let Some(&pool_index) = self.order.get(display_index) else {
+        let Some(&pool_index) = self.visible.get(display_index) else {
             return;
         };
         let id = self.builder.photos()[pool_index].id;
@@ -221,7 +270,7 @@ impl Session {
     /// decoding or cached. Called only for viewport cells while zoomed in.
     /// Re-decodes at a larger tier when the cell grew past the cached one.
     pub fn request_hires(&mut self, display_index: usize, target_edge: u32) {
-        let Some(&pool_index) = self.order.get(display_index) else {
+        let Some(&pool_index) = self.visible.get(display_index) else {
             return;
         };
         let id = self.builder.photos()[pool_index].id;
@@ -263,7 +312,7 @@ impl Session {
         if self.base.weight() >= BASE_CACHE_BYTES {
             return;
         }
-        while self.base_inflight.len() < BG_FILL_INFLIGHT && self.bg_cursor < self.order.len() {
+        while self.base_inflight.len() < BG_FILL_INFLIGHT && self.bg_cursor < self.visible.len() {
             let index = self.bg_cursor;
             self.bg_cursor += 1;
             self.request_base(index);
@@ -284,6 +333,176 @@ impl Session {
             image: &cached.image,
             version: cached.version,
         })
+    }
+
+    /// Display index of the focus cursor, if any (§2.13, #31).
+    pub fn focus(&self) -> Option<usize> {
+        self.sel.focus()
+    }
+
+    pub fn is_selected(&self, id: PhotoId) -> bool {
+        self.sel.is_selected(id)
+    }
+
+    pub fn selection_count(&self) -> usize {
+        self.sel.count()
+    }
+
+    /// Owned verdict for a photo (absent = `Unreviewed`).
+    pub fn verdict(&self, id: PhotoId) -> AcceptState {
+        self.cull.state(id)
+    }
+
+    /// `(accepted, rejected, unreviewed)` over the whole pool for the status bar
+    /// (§2.9). Unreviewed = pool size minus the two reviewed tallies.
+    pub fn verdict_counts(&self) -> (usize, usize, usize) {
+        let c = self.cull.counts();
+        let total = self.builder.len();
+        let unreviewed = total.saturating_sub(c.accepted + c.rejected);
+        (c.accepted, c.rejected, unreviewed)
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.cull.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.cull.can_redo()
+    }
+
+    pub fn filter(&self) -> VerdictFilter {
+        self.filter
+    }
+
+    /// Switch the verdict view (§2.9). Recomputes the visible order and rewinds
+    /// the background fill so any newly-visible photos decode.
+    pub fn set_filter(&mut self, filter: VerdictFilter) {
+        if self.filter == filter {
+            return;
+        }
+        self.filter = filter;
+        self.bg_cursor = 0;
+        self.rebuild_visible();
+    }
+
+    /// Move the focus cursor (`←→` = ±1 column, `↑↓` = ±1 row). `extend` (Shift)
+    /// grows the selection from the anchor (§2.13, #31).
+    pub fn nav(&mut self, dx: isize, dy: isize, cols: usize, extend: bool) {
+        let order = self.visible_ids();
+        self.sel.move_focus(dx, dy, cols, &order, extend);
+    }
+
+    /// `Ctrl+A`: select every visible photo (#14).
+    pub fn select_all_visible(&mut self) {
+        let order = self.visible_ids();
+        self.sel.select_all_visible(&order);
+    }
+
+    /// Click: select exactly one cell, making it focus + anchor.
+    pub fn click_select(&mut self, display_index: usize) {
+        let order = self.visible_ids();
+        self.sel.select_only(display_index, &order);
+    }
+
+    /// Shift+click: extend the selection from the anchor to this cell.
+    pub fn shift_click_select(&mut self, display_index: usize) {
+        let order = self.visible_ids();
+        self.sel.extend_to(display_index, &order);
+    }
+
+    /// Ctrl/Cmd+click: toggle this cell in or out of the selection.
+    pub fn toggle_click_select(&mut self, display_index: usize) {
+        let order = self.visible_ids();
+        self.sel.toggle_at(display_index, &order);
+    }
+
+    /// `Esc`: clear the selection (the only Esc-chain member this phase, §2.12).
+    pub fn clear_selection(&mut self) {
+        self.sel.clear();
+    }
+
+    /// `A`: accept the selection (or focused photo), toggling back to
+    /// `Unreviewed` when the focused cell is already accepted (§2.9).
+    pub fn accept(&mut self) {
+        self.toggle_verdict(AcceptState::Accepted);
+    }
+
+    /// `X`: reject, with the same toggle-back semantics (§2.9).
+    pub fn reject(&mut self) {
+        self.toggle_verdict(AcceptState::Rejected);
+    }
+
+    /// `Ctrl+Z`: undo the last verdict change.
+    pub fn undo(&mut self) -> bool {
+        if self.cull.undo() {
+            self.rebuild_visible();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// `Ctrl+Shift+Z`: redo.
+    pub fn redo(&mut self) -> bool {
+        if self.cull.redo() {
+            self.rebuild_visible();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Toggle target is decided by the *focused* photo's verdict, then applied
+    /// to the whole selection — so a mixed selection resolves predictably (§2.9).
+    fn toggle_verdict(&mut self, on: AcceptState) {
+        let order = self.visible_ids();
+        let targets = self.sel.selected_or_focused(&order);
+        if targets.is_empty() {
+            return;
+        }
+        let focus_state = self
+            .sel
+            .focus()
+            .and_then(|i| order.get(i).copied())
+            .map(|id| self.cull.state(id))
+            .unwrap_or_default();
+        let target = if focus_state == on {
+            AcceptState::Unreviewed
+        } else {
+            on
+        };
+        self.cull.dispatch(Command::SetState(targets, target));
+        self.rebuild_visible();
+    }
+
+    /// Recompute the visible order from the sort order, the active filter, and
+    /// current verdicts; then clamp the focus into the new range.
+    fn rebuild_visible(&mut self) {
+        let filter = self.filter;
+        let photos = self.builder.photos();
+        let cull = &self.cull;
+        self.visible = self
+            .order
+            .iter()
+            .copied()
+            .filter(|&i| {
+                let state = cull.state(photos[i].id);
+                match filter {
+                    VerdictFilter::All => true,
+                    VerdictFilter::Unreviewed => state == AcceptState::Unreviewed,
+                    VerdictFilter::Accepted => state == AcceptState::Accepted,
+                    VerdictFilter::Rejected => state == AcceptState::Rejected,
+                }
+            })
+            .collect();
+        self.sel.clamp_focus(self.visible.len());
+    }
+
+    /// The visible order as stable ids, for selection/nav. Allocates — only
+    /// called on input events, never on the per-frame paint path.
+    fn visible_ids(&self) -> Vec<PhotoId> {
+        let photos = self.builder.photos();
+        self.visible.iter().map(|&i| photos[i].id).collect()
     }
 
     /// Fold a decode result into the right cache, retiring the in-flight entry
