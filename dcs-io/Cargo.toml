@@ -1,0 +1,31 @@
+[package]
+name = "dcs-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Infrastructure behind traits: imaging / source / persistence + dumb
+# export executor. Depends DOWN on dcs-domain only. (§9, §10)
+[dependencies]
+dcs-domain.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+thiserror.workspace = true
+
+# imaging
+image.workspace = true
+kamadak-exif.workspace = true
+rayon.workspace = true
+
+# source: scan + content fingerprint
+walkdir.workspace = true
+twox-hash.workspace = true
+
+# disposable cache store
+rusqlite.workspace = true
+
+# threading: one-directional channels
+crossbeam-channel.workspace = true

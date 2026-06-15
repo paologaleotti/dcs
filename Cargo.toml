@@ -1,0 +1,36 @@
+[workspace]
+resolver = "3"
+members = ["dcs-domain", "dcs-io", "dcs-app", "dcs-ui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/paologaleotti/dcs"
+
+# All external deps live here. Each crate pulls only what it needs via
+# `<dep>.workspace = true`. Single source of truth for versions.
+[workspace.dependencies]
+dcs-domain = { path = "dcs-domain" }
+dcs-io = { path = "dcs-io" }
+dcs-app = { path = "dcs-app" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+time = { version = "0.3", features = ["serde", "macros"] }
+time-tz = "2"
+thiserror = "2"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+kamadak-exif = "0.6"
+rayon = "1"
+walkdir = "2"
+twox-hash = "2"
+rusqlite = { version = "0.37", features = ["bundled"] }
+crossbeam-channel = "0.5"
+egui = "0.34.3"
+eframe = { version = "0.34.3", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }
