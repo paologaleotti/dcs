@@ -30,6 +30,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # turbojpeg bundles libjpeg-turbo and builds its SIMD with CMake + NASM.
+      # CMake ships on the runners; NASM does not, on any platform.
+      - name: Install NASM
+        uses: ilammy/setup-nasm@v1
+
       # eframe/winit/rfd need X11 + Wayland + GTK headers to build on Linux.
       # The wgpu Vulkan/GLES backends load their drivers at runtime, so they
       # need no dev libraries here.

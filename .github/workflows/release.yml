@@ -37,6 +37,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # turbojpeg bundles libjpeg-turbo and builds its SIMD with CMake + NASM.
+      # CMake ships on the runners; NASM does not, on any platform.
+      - name: Install NASM
+        uses: ilammy/setup-nasm@v1
+
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
