@@ -1,3 +1,10 @@
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
 [workspace]
 resolver = "3"
 members = ["crates/*"]
@@ -32,9 +39,12 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 crossbeam-channel = "0.5"
 rfd = "0.15"
 egui = "0.34.3"
+# wgpu backend → Metal on macOS, Vulkan/DX12 elsewhere. Unlike the glow
+# (OpenGL) backend, Metal drives ProMotion (120 Hz); Apple caps GL surfaces
+# at 60. The grid's scroll smoothness rides on this.
 eframe = { version = "0.34.3", default-features = false, features = [
     "default_fonts",
-    "glow",
+    "wgpu",
     "wayland",
     "x11",
 ] }

@@ -139,7 +139,7 @@ impl eframe::App for DcsApp {
     }
 
     /// Final save on quit — the durable backstop behind the debounced autosave.
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self) {
         self.save_now();
     }
 }

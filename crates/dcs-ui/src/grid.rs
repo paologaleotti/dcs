@@ -235,6 +235,13 @@ pub fn show(
                 ui.scroll_to_rect(r, Some(egui::Align::Center));
             }
 
+            let resp = ui.interact(rect, Id::new("dcs_grid"), Sense::click());
+            let hover_pos = ui.input(|i| i.pointer.hover_pos());
+            let click_pos = resp
+                .clicked()
+                .then(|| resp.interact_pointer_pos())
+                .flatten();
+
             let (first, last) = layout.visible_rows(viewport.min.y, viewport.max.y);
             for r in first..last {
                 let y = origin.y + layout.offsets[r];
@@ -245,12 +252,11 @@ pub fn show(
                             Pos2::new(origin.x, y),
                             Vec2::new(view_width, HEADER_H),
                         );
-                        let resp =
-                            ui.interact(hrect, Id::new(("dcs_hdr", &info.title)), Sense::click());
-                        if resp.clicked() {
+                        if click_pos.is_some_and(|p| hrect.contains(p)) {
                             toggle = Some(info.title.clone());
                         }
-                        paint_header(ui, info, hrect, resp.hovered());
+                        let hovered = hover_pos.is_some_and(|p| hrect.contains(p));
+                        paint_header(ui, info, hrect, hovered);
                     }
                     Row::Cells { start, len } => {
                         for c in 0..*len {
@@ -265,12 +271,7 @@ pub fn show(
                                 Pos2::new(origin.x + c as f32 * stride, y),
                                 Vec2::splat(cell),
                             );
-                            let resp = ui.interact(
-                                cell_rect,
-                                Id::new(("dcs_cell", info.id.0)),
-                                Sense::click(),
-                            );
-                            if resp.clicked() {
+                            if click_pos.is_some_and(|p| cell_rect.contains(p)) {
                                 clicked = Some(idx);
                             }
                             paint_cell(ui, session, textures, info, focus == Some(idx), cell_rect);
