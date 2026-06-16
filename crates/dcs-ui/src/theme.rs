@@ -47,6 +47,8 @@ pub fn apply(ctx: &Context) {
     ctx.global_style_mut(|s| {
         s.spacing.item_spacing = Vec2::new(6.0, 6.0);
         s.spacing.button_padding = Vec2::new(8.0, 4.0);
+        // Chrome text is a label, not content — no drag-to-select.
+        s.interaction.selectable_labels = false;
     });
 }
 
