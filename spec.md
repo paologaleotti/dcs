@@ -1,4 +1,4 @@
-# dcs — Digital Contact Sheet · Specification v8.1
+# dcs — Digital Contact Sheet · Specification v8.2
 
 Changes from v7: review fixes folded into the decisions log and open
 questions (§8, §12); export dialog expanded into a flexible engine (§6);
@@ -7,6 +7,9 @@ Changes from v8: export logic split into a **pure planner in
 `dcs-domain`** (`plan_export` → `ExportPlan`) executed by a dumb
 `dcs-io` runner (§6.9, §9, §11); `dcs-domain` error-type ownership made
 explicit (§9); decision #36.
+Changes from v8.1: **cross-platform is a non-negotiable** — Windows,
+macOS, and Linux are first-class targets, all three must run smoothly
+(non-negotiable #5, decision #37).
 
 ---
 
@@ -30,6 +33,16 @@ Fuji JPEGs; wants to scan, cull, and organize without Lightroom.
 4. **Promptless + undoable.** No confirmation dialogs (export excepted);
    every mutation undoable. *Prompts confirm nothing; rules govern
    everything; undo reverses anything.*
+5. **Cross-platform, first-class.** Windows, macOS, and Linux are all
+   primary targets — not "compiles elsewhere," but *works well* on each:
+   the 60 fps scroll budget (#1), file paths, fingerprinting, atomic
+   saves, the lock file, fonts, and key/modifier handling must all behave
+   correctly and feel native on every platform. No OS-specific assumption
+   (path separators, line endings, case-sensitivity, home/config dirs, the
+   primary modifier ⌘ vs Ctrl, the system timezone source) may leak into
+   behavior. CI builds and runs the test suite on all three. A regression
+   on any one platform is a release blocker, the same as a perf
+   regression (decision #37).
 
 **Anti-features (v1):** dcs never deletes files (rejecting is metadata;
 disk cleanup happens outside the app, on purpose — but the app gives
@@ -506,6 +519,7 @@ tag-manager panel · empty-grid menu · verdict sort · recents.
 | 34 | **Lock file carries a refreshed timestamp; stale after N minutes so a crash doesn't strand the project in read-only forever** |
 | 35 | **`MoveOnBoard` drags coalesce into one undo entry on drop; an aborted/interrupted drag commits nothing — positions roll back to pre-drag, no torn entry** |
 | 36 | **Export = pure planner in `dcs-domain` (`plan_export` → `ExportPlan`) + dumb executor in `dcs-io`; `dcs-app` is the thin trigger. The dialog preview *is* the plan, so "reads true aloud" is structural. `dcs-domain` owns its own error enums; domain failures never leak from io (§6.9, §9)** |
+| 37 | **Cross-platform is first-class (non-negotiable #5): Windows, macOS, Linux all run *well*, not just compile. Paths via `Path`/`PathBuf` only (never string-split on `/`); config/cache under each OS's standard dirs; atomic save + lock-file semantics validated on all three filesystems; primary modifier ⌘ on macOS, Ctrl elsewhere; system timezone + GPU backend (Metal/Vulkan/DX12 via wgpu) work per platform. CI = build + test matrix on all three; a single-platform regression blocks release.** |
 
 ---
 

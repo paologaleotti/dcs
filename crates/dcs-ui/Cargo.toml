@@ -4,6 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "dcs — a fast, keyboard-first digital contact sheet for scanning, culling, and tagging photos."
+
+# Linux .deb packaging (cargo-deb). The binary lands in /usr/bin; runtime
+# library deps are resolved automatically from the linked shared objects.
+[package.metadata.deb]
+maintainer = "Paolo Galeotti <paologaleotti2002@gmail.com>"
+section = "graphics"
+priority = "optional"
+depends = "$auto"
+extended-description = "A digital contact sheet: scan a folder of photos, cull and tag them keyboard-first, and export — non-destructively."
 
 # egui binary: view modes (grid, gallery; board later) + ephemeral UI
 # state. Top of the tree. Depends DOWN on dcs-app + dcs-domain. (§9)
