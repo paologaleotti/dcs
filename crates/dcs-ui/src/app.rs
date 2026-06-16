@@ -11,6 +11,7 @@ use egui::{Align, Align2, FontId, Key, Layout, RichText, Ui};
 
 use crate::grid;
 use crate::grid::TextureCache;
+use crate::keymap;
 use crate::picker::{Picker, PickerEvent, PickerItem};
 use crate::theme;
 
@@ -29,6 +30,12 @@ const VERDICT_FILTERS: [(&str, VerdictFilter); 4] = [
 const CELL_MIN: f32 = 80.0;
 const CELL_MAX: f32 = 400.0;
 const ZOOM_STEP: f32 = 1.15;
+
+/// Primary-modifier glyph for key hints — ⌘ on macOS, `Ctrl+` elsewhere.
+#[cfg(target_os = "macos")]
+const PALETTE_MOD: &str = "⌘";
+#[cfg(not(target_os = "macos"))]
+const PALETTE_MOD: &str = "Ctrl+";
 
 /// Idle gap after the last verdict change before the project auto-saves (§10b).
 /// Long enough that rapid A/X culling coalesces into one write, short enough
@@ -62,6 +69,8 @@ pub struct DcsApp {
     /// Shoot-timezone picker — a keyboard-first fuzzy quick-pick (the same
     /// component the command palette and tag palette will use).
     zone_picker: Picker,
+    /// The `Cmd/Ctrl+P` command palette over the whole registry (§2.10).
+    palette: Picker,
     /// Last time we refreshed the project lock; throttles the heartbeat (#34).
     last_heartbeat: Option<Instant>,
 }
@@ -86,6 +95,7 @@ impl DcsApp {
             dirty_since: None,
             show_about: false,
             zone_picker: Picker::new("Shoot timezone"),
+            palette: Picker::new("Command Palette"),
             last_heartbeat: None,
         }
     }
@@ -102,7 +112,7 @@ impl eframe::App for DcsApp {
         self.menu_bar(ui, &ctx);
         // Toolbar and status bar only exist once a project is open (§4).
         if self.session.has_folder() {
-            self.top_bar(ui);
+            self.top_bar(ui, &ctx);
             self.read_only_banner(ui);
             self.status_bar(ui);
         }
@@ -111,6 +121,7 @@ impl eframe::App for DcsApp {
         self.heartbeat(&ctx);
         self.about_window(&ctx);
         self.zone_picker(&ctx);
+        self.command_palette(&ctx);
         if self.debug {
             self.diagnostics(&ctx);
         }
@@ -133,7 +144,10 @@ impl eframe::App for DcsApp {
 }
 
 impl DcsApp {
-    fn top_bar(&mut self, ui: &mut Ui) {
+    fn top_bar(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        // Collect the clicked action and dispatch once, after the panel closure,
+        // so the registry stays the single mutation path (no session pokes here).
+        let mut clicked: Option<dcs_app::AppAction> = None;
         egui::Panel::top("top")
             .frame(
                 egui::Frame::default()
@@ -153,8 +167,14 @@ impl DcsApp {
 
                     ui.separator();
                     micro_label(ui, "VIEW");
+                    let active = self.session.filter();
                     for (label, filter) in VERDICT_FILTERS {
-                        self.filter_chip(ui, label, filter);
+                        if ui
+                            .selectable_label(active == filter, RichText::new(label).monospace())
+                            .clicked()
+                        {
+                            clicked = Some(dcs_app::AppAction::SetFilter(filter));
+                        }
                     }
 
                     ui.separator();
@@ -165,7 +185,7 @@ impl DcsApp {
                         .on_hover_text("Timezone used to group photos by time")
                         .clicked()
                     {
-                        self.zone_picker.open();
+                        clicked = Some(dcs_app::AppAction::SetShootZone);
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -173,27 +193,34 @@ impl DcsApp {
                             .selectable_label(self.debug, RichText::new("dbg").monospace())
                             .clicked()
                         {
-                            self.debug = !self.debug;
+                            clicked = Some(dcs_app::AppAction::ToggleDiagnostics);
                         }
                         ui.separator();
                         if ui.button("+").clicked() {
-                            self.zoom(ZOOM_STEP);
+                            clicked = Some(dcs_app::AppAction::ZoomIn);
                         }
                         if ui.button("−").clicked() {
-                            self.zoom(1.0 / ZOOM_STEP);
+                            clicked = Some(dcs_app::AppAction::ZoomOut);
                         }
                         micro_label(ui, "ZOOM");
                     });
                 });
             });
+        if let Some(action) = clicked {
+            self.dispatch(action, ctx);
+        }
     }
 
     fn menu_bar(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        use dcs_app::AppAction;
+        // Menu items mirror the registry (§2.10): each just names an `AppAction`;
+        // the selected one dispatches through the same path as keys and palette.
+        let mut clicked: Option<AppAction> = None;
         egui::Panel::top("menu").show_inside(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Open Project…").clicked() {
-                        self.open_folder_dialog();
+                        clicked = Some(AppAction::OpenFolder);
                         ui.close();
                     }
                     ui.menu_button("Open Recent", |ui| {
@@ -202,7 +229,7 @@ impl DcsApp {
                             ui.add_enabled(false, egui::Button::new("(none)"));
                             return;
                         }
-                        for path in &recents {
+                        for (i, path) in recents.iter().enumerate() {
                             let label = path
                                 .file_name()
                                 .map(|n| n.to_string_lossy().into_owned())
@@ -212,23 +239,25 @@ impl DcsApp {
                                 .on_hover_text(path.to_string_lossy())
                                 .clicked()
                             {
-                                self.open_path(path.clone());
+                                clicked = Some(AppAction::OpenRecent(i));
                                 ui.close();
                             }
                         }
                         ui.separator();
                         if ui.button("Clear Recents").clicked() {
-                            self.session.clear_recents();
+                            clicked = Some(AppAction::ClearRecents);
                             ui.close();
                         }
                     });
                     ui.separator();
-                    let can_rescan = self.session.has_folder();
                     if ui
-                        .add_enabled(can_rescan, egui::Button::new("Rescan Folder"))
+                        .add_enabled(
+                            self.session.has_folder(),
+                            egui::Button::new("Rescan Folder"),
+                        )
                         .clicked()
                     {
-                        self.rescan();
+                        clicked = Some(AppAction::Rescan);
                         ui.close();
                     }
                     let missing = self.session.missing_count();
@@ -240,23 +269,25 @@ impl DcsApp {
                         .on_hover_text("Forget photos whose files are gone for good")
                         .clicked()
                     {
-                        self.session.forget_missing();
-                        self.textures.clear();
+                        clicked = Some(AppAction::ForgetMissing);
                         ui.close();
                     }
                     ui.separator();
                     if ui.button("Quit").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        clicked = Some(AppAction::Quit);
                     }
                 });
                 ui.menu_button("Help", |ui| {
                     if ui.button("About dcs").clicked() {
-                        self.show_about = true;
+                        clicked = Some(AppAction::About);
                         ui.close();
                     }
                 });
             });
         });
+        if let Some(action) = clicked {
+            self.dispatch(action, ctx);
+        }
     }
 
     /// Open a folder dropped onto the window (§4). A dropped file opens its
@@ -290,12 +321,6 @@ impl DcsApp {
         if let Some(zoom) = self.session.grid_zoom() {
             self.cell = zoom.clamp(CELL_MIN, CELL_MAX);
         }
-    }
-
-    /// Re-scan the open folder (new/returned/removed files reconcile, §4).
-    fn rescan(&mut self) {
-        self.textures.clear();
-        self.session.rescan();
     }
 
     /// A banner offering "Take over" when another instance holds the lock (#34).
@@ -396,16 +421,6 @@ impl DcsApp {
         ctx.request_repaint_after(LOCK_HEARTBEAT);
     }
 
-    fn filter_chip(&mut self, ui: &mut Ui, label: &str, filter: VerdictFilter) {
-        let on = self.session.filter() == filter;
-        if ui
-            .selectable_label(on, RichText::new(label).monospace())
-            .clicked()
-        {
-            self.session.set_filter(filter);
-        }
-    }
-
     fn status_bar(&mut self, ui: &mut Ui) {
         let scanning = if self.session.is_scanning() {
             " · scanning…"
@@ -432,6 +447,14 @@ impl DcsApp {
         egui::Panel::bottom("status").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(text).font(FontId::monospace(12.0)));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let hint = format!("{PALETTE_MOD}P commands");
+                    ui.label(
+                        RichText::new(hint)
+                            .font(FontId::monospace(12.0))
+                            .color(theme::TEXT_DIM),
+                    );
+                });
             });
         });
     }
@@ -553,9 +576,9 @@ impl DcsApp {
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
-        // The picker owns the keyboard while open (it consumes its own nav keys
-        // in `Picker::show`), so the grid stays inert behind it — just bail.
-        if self.zone_picker.is_open() {
+        // Any picker owns the keyboard while open (it consumes its own keys in
+        // `Picker::show`), so the grid stays inert behind it — just bail.
+        if self.palette.is_open() || self.zone_picker.is_open() {
             return;
         }
         // The About window is a plain modal: Esc closes it, grid keys inert.
@@ -565,37 +588,97 @@ impl DcsApp {
             }
             return;
         }
-        // A focused text field (e.g. the zone search) owns the keyboard, so
-        // editing shortcuts like Cmd+A select text instead of leaking through
-        // to the grid.
+        // A focused text field owns the keyboard so its edits don't leak to the
+        // grid.
         if ctx.egui_wants_keyboard_input() {
             return;
         }
-        for action in resolve_bindings(ctx) {
-            self.apply(action, ctx);
+        // Cmd/Ctrl+P opens the command palette.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::P)) {
+            self.palette.open();
+            return;
+        }
+        // Command keys route through the same registry the palette uses.
+        for action in keymap::actions_for_input(ctx) {
+            self.dispatch(action, ctx);
+        }
+        // Grid geometry keys are a pure UI concern (they need the column count),
+        // so they stay out of the registry.
+        self.handle_grid_keys(ctx);
+    }
+
+    /// Run a registry action: the app does what it can, then we perform whatever
+    /// shell work it hands back. The one path every surface (keys, palette,
+    /// menus, chips) funnels through.
+    fn dispatch(&mut self, action: dcs_app::AppAction, ctx: &egui::Context) {
+        let effect = self.session.run_action(action);
+        self.apply_effect(effect, ctx);
+    }
+
+    fn apply_effect(&mut self, effect: dcs_app::ActionEffect, ctx: &egui::Context) {
+        use dcs_app::ActionEffect as E;
+        match effect {
+            E::None => {}
+            E::PickFolder => self.open_folder_dialog(),
+            E::OpenPath(path) => self.open_path(path),
+            E::ClearTextures => self.textures.clear(),
+            E::ZoomIn => self.zoom(ZOOM_STEP),
+            E::ZoomOut => self.zoom(1.0 / ZOOM_STEP),
+            E::ToggleDiagnostics => self.debug = !self.debug,
+            E::OpenZonePicker => self.zone_picker.open(),
+            E::ShowAbout => self.show_about = true,
+            E::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         }
     }
 
-    fn apply(&mut self, action: Action, ctx: &egui::Context) {
-        match action {
-            Action::OpenProject => self.open_folder_dialog(),
-            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            Action::Nav { dx, dy, extend } => {
-                self.session.nav(dx, dy, self.cols, extend);
-                self.ensure_focus_visible();
-            }
-            Action::Accept => self.session.accept(),
-            Action::Reject => self.session.reject(),
-            Action::ClearSelection => self.session.clear_selection(),
-            Action::Undo => {
-                self.session.undo();
-            }
-            Action::Redo => {
-                self.session.redo();
-            }
-            Action::ZoomIn => self.zoom(ZOOM_STEP),
-            Action::ZoomOut => self.zoom(1.0 / ZOOM_STEP),
-            Action::ToggleDebug => self.debug = !self.debug,
+    /// Arrow navigation and selection — UI-only because they depend on the grid
+    /// geometry (column count, scroll). `Esc` clears the selection (§2.12).
+    fn handle_grid_keys(&mut self, ctx: &egui::Context) {
+        let shift = ctx.input(|i| i.modifiers.shift);
+        let nav = |app: &mut Self, dx, dy| {
+            app.session.nav(dx, dy, app.cols, shift);
+            app.ensure_focus_visible();
+        };
+        if ctx.input(|i| i.key_pressed(Key::ArrowLeft)) {
+            nav(self, -1, 0);
+        }
+        if ctx.input(|i| i.key_pressed(Key::ArrowRight)) {
+            nav(self, 1, 0);
+        }
+        if ctx.input(|i| i.key_pressed(Key::ArrowUp)) {
+            nav(self, 0, -1);
+        }
+        if ctx.input(|i| i.key_pressed(Key::ArrowDown)) {
+            nav(self, 0, 1);
+        }
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.session.clear_selection();
+        }
+    }
+
+    /// The `Cmd/Ctrl+P` command palette (§2.10) on the reusable [`Picker`].
+    /// Fuzzy over every available action, most-recently-used first; the chosen
+    /// action dispatches through the same path as keys and menus.
+    fn command_palette(&mut self, ctx: &egui::Context) {
+        if !self.palette.is_open() {
+            return;
+        }
+        let entries = dcs_app::catalog(&self.session);
+        let hints: Vec<Option<String>> = entries.iter().map(|e| keymap::hint(e.action)).collect();
+        let items: Vec<PickerItem> = entries
+            .iter()
+            .zip(&hints)
+            .map(|(e, hint)| PickerItem {
+                label: &e.title,
+                detail: hint.as_deref(),
+            })
+            .collect();
+        let picked = match self.palette.show(ctx, None, "type a command…", &items) {
+            PickerEvent::Picked(i) => Some(entries[i].action),
+            PickerEvent::Dismissed | PickerEvent::Pending => None,
+        };
+        if let Some(action) = picked {
+            self.dispatch(action, ctx);
         }
     }
 
@@ -687,87 +770,4 @@ fn filter_word(filter: VerdictFilter) -> &'static str {
         VerdictFilter::Accepted => "accepted",
         VerdictFilter::Rejected => "rejected",
     }
-}
-
-/// A resolved keyboard intent. Decoupled from raw keys so the binding layer can
-/// become user-configurable later (spec: remappable keys) without touching the
-/// handlers.
-enum Action {
-    Nav { dx: isize, dy: isize, extend: bool },
-    Accept,
-    Reject,
-    ClearSelection,
-    Undo,
-    Redo,
-    ZoomIn,
-    ZoomOut,
-    ToggleDebug,
-    OpenProject,
-    Quit,
-}
-
-/// The keyboard bindings. The single place raw keys map to `Action`s — a future
-/// config-driven keymap replaces just this function.
-fn resolve_bindings(ctx: &egui::Context) -> Vec<Action> {
-    ctx.input(|i| {
-        let cmd = i.modifiers.command;
-        let shift = i.modifiers.shift;
-        let mut actions = Vec::new();
-        if i.key_pressed(Key::ArrowLeft) {
-            actions.push(Action::Nav {
-                dx: -1,
-                dy: 0,
-                extend: shift,
-            });
-        }
-        if i.key_pressed(Key::ArrowRight) {
-            actions.push(Action::Nav {
-                dx: 1,
-                dy: 0,
-                extend: shift,
-            });
-        }
-        if i.key_pressed(Key::ArrowUp) {
-            actions.push(Action::Nav {
-                dx: 0,
-                dy: -1,
-                extend: shift,
-            });
-        }
-        if i.key_pressed(Key::ArrowDown) {
-            actions.push(Action::Nav {
-                dx: 0,
-                dy: 1,
-                extend: shift,
-            });
-        }
-        if i.key_pressed(Key::A) && !cmd {
-            actions.push(Action::Accept);
-        }
-        if i.key_pressed(Key::X) && !cmd {
-            actions.push(Action::Reject);
-        }
-        if i.key_pressed(Key::Z) && cmd {
-            actions.push(if shift { Action::Redo } else { Action::Undo });
-        }
-        if i.key_pressed(Key::O) && cmd {
-            actions.push(Action::OpenProject);
-        }
-        if i.key_pressed(Key::Q) && cmd {
-            actions.push(Action::Quit);
-        }
-        if i.key_pressed(Key::Escape) {
-            actions.push(Action::ClearSelection);
-        }
-        if i.key_pressed(Key::Plus) || i.key_pressed(Key::Equals) {
-            actions.push(Action::ZoomIn);
-        }
-        if i.key_pressed(Key::Minus) {
-            actions.push(Action::ZoomOut);
-        }
-        if i.key_pressed(Key::F12) {
-            actions.push(Action::ToggleDebug);
-        }
-        actions
-    })
 }

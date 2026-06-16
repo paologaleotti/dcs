@@ -6,6 +6,7 @@
 
 mod app;
 mod grid;
+mod keymap;
 mod picker;
 mod theme;
 
@@ -15,7 +16,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 800.0])
-            .with_title("dcs — digital contact sheet"),
+            .with_title("dcs - digital contact sheet"),
         ..Default::default()
     };
     eframe::run_native("dcs", options, Box::new(|cc| Ok(Box::new(DcsApp::new(cc)))))

@@ -164,6 +164,9 @@ pub struct Session {
     recents_path: Option<PathBuf>,
     /// Owned state has changed since the last save.
     dirty: bool,
+    /// Command-palette most-recently-used action ids, newest first. Drives the
+    /// palette's default order (§2.10); ephemeral, not persisted in v1.
+    mru: Vec<&'static str>,
 }
 
 impl Session {
@@ -201,6 +204,7 @@ impl Session {
             recents_path: None,
             recents: Recents::default(),
             dirty: false,
+            mru: Vec::new(),
         }
     }
 
@@ -725,6 +729,17 @@ impl Session {
         }
     }
 
+    /// Palette action ids in most-recently-used order, newest first (§2.10).
+    pub fn action_mru(&self) -> &[&'static str] {
+        &self.mru
+    }
+
+    /// Record that a palette action ran, moving its id to the front of the MRU.
+    pub(crate) fn note_action(&mut self, id: &'static str) {
+        self.mru.retain(|&existing| existing != id);
+        self.mru.insert(0, id);
+    }
+
     pub fn can_undo(&self) -> bool {
         self.cull.can_undo()
     }
@@ -759,6 +774,20 @@ impl Session {
     pub fn select_all_visible(&mut self) {
         let order = self.visible_ids();
         self.sel.select_all_visible(&order);
+    }
+
+    /// A pointer click on a cell, with the held modifiers. Owns the selection
+    /// *policy* (plain = pick one, shift = extend, ctrl/cmd = toggle) so the UI
+    /// only reports the raw event (§2.12). Selection is ephemeral, not a
+    /// registry command.
+    pub fn pointer_select(&mut self, display_index: usize, shift: bool, cmd: bool) {
+        if shift {
+            self.shift_click_select(display_index);
+        } else if cmd {
+            self.toggle_click_select(display_index);
+        } else {
+            self.click_select(display_index);
+        }
     }
 
     /// Click: select exactly one cell, making it focus + anchor.

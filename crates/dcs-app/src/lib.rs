@@ -7,8 +7,10 @@
 //! Depends DOWN on dcs-io + dcs-domain. Never the reverse.
 
 pub mod cull;
+pub mod registry;
 pub mod selection;
 pub mod session;
 mod util;
 
+pub use registry::{ActionEffect, ActionEntry, AppAction, Category, catalog};
 pub use session::{CellInfo, SaveError, Session, VerdictFilter};

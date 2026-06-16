@@ -249,16 +249,10 @@ pub fn show(
         }
     });
 
-    // Click = select; Shift+click = extend range; Ctrl/Cmd+click = toggle one.
+    // The UI only reports the raw click + modifiers; the app owns the policy.
     if let Some(idx) = clicked {
         let (shift, cmd) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
-        if shift {
-            session.shift_click_select(idx);
-        } else if cmd {
-            session.toggle_click_select(idx);
-        } else {
-            session.click_select(idx);
-        }
+        session.pointer_select(idx, shift, cmd);
     }
 
     // Keep filling base thumbnails for the rest of the folder in the
