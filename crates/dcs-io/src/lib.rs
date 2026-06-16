@@ -6,5 +6,10 @@
 //!
 //! Depends DOWN on dcs-domain only.
 
+pub mod cache;
 pub mod imaging;
+pub mod lock;
+pub mod persistence;
+pub mod recents;
 pub mod source;
+pub mod undo_log;

@@ -1,14 +1,20 @@
 use std::path::PathBuf;
 
+use dcs_domain::fingerprint::ContentFingerprint;
 use dcs_domain::pairing::{FileKind, ScannedFile, pair};
 use dcs_domain::sort::by_time_asc;
 use time::macros::datetime;
 
 fn at(path: &str, when: Option<time::PrimitiveDateTime>) -> ScannedFile {
+    let mut bytes = [0u8; 32];
+    for (i, b) in path.bytes().enumerate() {
+        bytes[i % 32] ^= b;
+    }
     ScannedFile {
         path: PathBuf::from(path),
         kind: FileKind::Jpeg,
         orientation: Default::default(),
+        fingerprint: ContentFingerprint::from_bytes(bytes),
         captured_at: when,
     }
 }

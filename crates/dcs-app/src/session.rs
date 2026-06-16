@@ -14,7 +14,8 @@
 //! back the best resident thumbnail per cell.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use dcs_domain::command::Command;
 use dcs_domain::cull::AcceptState;
@@ -22,12 +23,37 @@ use dcs_domain::pairing::PoolBuilder;
 use dcs_domain::photo::{Photo, PhotoId};
 use dcs_domain::sort;
 use dcs_domain::thumb::ThumbImage;
-use dcs_io::imaging::{RayonThumbDecoder, ThumbDecoder};
+use dcs_io::cache::{SharedCache, SqliteCache, ThumbTier};
+use dcs_io::imaging::{DecodeRequest, RayonThumbDecoder, ThumbDecoder};
+use dcs_io::lock::{self, LockOutcome, ProjectLock};
+use dcs_io::persistence::{
+    JsonProjectStore, PersistError, PhotoRecord, ProjectConfig, ProjectSnapshot, ProjectStore,
+};
+use dcs_io::recents::{self, Recents};
 use dcs_io::source::{ScanHandle, scan};
+use dcs_io::undo_log::{self, UndoLog};
+use serde_json::Value;
+use thiserror::Error;
 
-use crate::cull::Cull;
+use crate::cull::{Cull, UndoEntry};
 use crate::selection::Selection;
 use crate::util::{LruMap, decode_key, encode_key};
+
+/// The `.dcs/` sidecar directory name (§5).
+const SIDECAR_DIR: &str = ".dcs";
+const CACHE_FILE: &str = "cache.sqlite3";
+const UNDO_LOG_FILE: &str = "undo.log";
+
+/// Failure saving the project. The cache and undo log are rebuildable, so their
+/// errors are logged and swallowed elsewhere; only the precious `project.json`
+/// surfaces here.
+#[derive(Debug, Error)]
+pub enum SaveError {
+    #[error("no folder is open")]
+    NoFolder,
+    #[error(transparent)]
+    Project(#[from] PersistError),
+}
 
 /// Pixel edge the base (default-zoom) tier decodes to.
 const BASE_EDGE: u32 = 256;
@@ -69,6 +95,8 @@ pub struct CellInfo {
     pub state: AcceptState,
     /// Whether this cell is in the current selection (grease-pencil outline).
     pub selected: bool,
+    /// The file is absent on disk — render a placeholder + `missing` badge (§4).
+    pub missing: bool,
 }
 
 /// Verdict view toggle (§2.9, #11) — a session display setting, not the full
@@ -110,6 +138,32 @@ pub struct Session {
     /// photo in the new one. The epoch tags each decode request and stale
     /// results are dropped on arrival.
     epoch: u64,
+    /// `.dcs/` sidecar for the open folder; `None` when no folder is open.
+    sidecar: Option<PathBuf>,
+    store: JsonProjectStore,
+    /// Append handle to the durable undo log; `None` if it couldn't open
+    /// (history is disposable, so the failure never blocks culling).
+    log: Option<UndoLog>,
+    /// Disposable thumb + fingerprint cache, shared with the scan/decode pools.
+    cache: Option<SharedCache>,
+    /// Views as raw JSON, round-tripped on save so unknown kinds survive (§9b).
+    views: Vec<Value>,
+    /// Owned project settings (§4): shoot zone, grid zoom.
+    config: ProjectConfig,
+    /// The open folder root; needed to re-scan and to relativize stored paths.
+    root: Option<PathBuf>,
+    /// Persisted photos from the loaded project, retained until the scan
+    /// finishes so absent files can be reconciled into missing placeholders (§4).
+    loaded_records: Vec<PhotoRecord>,
+    /// Single-writer lock (#34). `None` when no folder is open.
+    project_lock: Option<ProjectLock>,
+    /// Another live instance holds the lock: viewing is allowed, writing is not.
+    read_only: bool,
+    /// App-global recent-projects list, persisted outside any project.
+    recents: Recents,
+    recents_path: Option<PathBuf>,
+    /// Owned state has changed since the last save.
+    dirty: bool,
 }
 
 impl Session {
@@ -131,18 +185,34 @@ impl Session {
             bg_cursor: 0,
             next_version: 0,
             epoch: 0,
+            sidecar: None,
+            store: JsonProjectStore,
+            log: None,
+            cache: None,
+            views: Vec::new(),
+            config: ProjectConfig::default(),
+            root: None,
+            loaded_records: Vec::new(),
+            project_lock: None,
+            read_only: false,
+            // Recents persistence is opt-in: the UI enables it at startup via
+            // `enable_default_recents`, so tests never touch the user's real
+            // `~/.dcs/recents.json`.
+            recents_path: None,
+            recents: Recents::default(),
+            dirty: false,
         }
     }
 
-    /// Begin scanning a folder, discarding any previous import.
+    /// Begin scanning a folder, discarding any previous import. Loads the
+    /// `.dcs/` sidecar first: verdicts from `project.json` (authoritative),
+    /// undo/redo stacks folded from `undo.log` (never replayed onto state), and
+    /// the disposable cache that seeds fingerprint reuse and thumb blobs. The
+    /// pool builder is seeded so a rename-in-place reclaims its id and verdict.
     pub fn open_folder(&mut self, root: PathBuf) {
-        self.builder = PoolBuilder::default();
         self.order = Vec::new();
         self.visible = Vec::new();
         self.ordered_count = 0;
-        // Ids restart at 0 per folder, so prior verdicts/selection must not
-        // carry over onto same-id photos in the new pool.
-        self.cull = Cull::new();
         self.sel = Selection::new();
         self.filter = VerdictFilter::All;
         self.base = LruMap::new(BASE_CACHE_BYTES);
@@ -151,12 +221,48 @@ impl Session {
         self.hires_inflight.clear();
         self.bg_cursor = 0;
         self.epoch += 1;
-        self.scan = Some(scan(root));
+        self.dirty = false;
+
+        let sidecar = root.join(SIDECAR_DIR);
+        let _ = std::fs::create_dir_all(&sidecar);
+        self.cache = open_cache(&sidecar);
+
+        // Release the previous folder's lock *before* acquiring — including
+        // when reopening or re-scanning the same folder, where our own fresh
+        // lock would otherwise be misread as a live second instance (#34).
+        self.project_lock = None;
+        // A live second instance opens read-only; a stale/absent lock is
+        // reclaimed.
+        let (project_lock, outcome) = ProjectLock::acquire(&sidecar, lock::DEFAULT_STALE);
+        self.read_only = outcome == LockOutcome::HeldByOther;
+        self.project_lock = Some(project_lock);
+
+        // project.json is the authoritative verdict state; undo.log only
+        // reconstructs the stacks (open Q#9). A missing/fresh folder yields an
+        // empty pool builder and an empty Cull.
+        let snapshot = self.store.load(&sidecar).ok().flatten();
+        self.builder = seed_builder(&snapshot);
+        self.cull = seed_cull(&snapshot, &sidecar);
+        let (views, config, records) = match snapshot {
+            Some(s) => (s.views, s.config, s.photos),
+            None => (default_views(), ProjectConfig::default(), Vec::new()),
+        };
+        self.views = views;
+        self.config = config;
+        self.loaded_records = records;
+        self.log = UndoLog::open(&sidecar.join(UNDO_LOG_FILE)).ok();
+        self.sidecar = Some(sidecar);
+        self.root = Some(root.clone());
+        self.remember_recent(&root);
+
+        self.rebuild_visible();
+        self.scan = Some(scan(root, self.cache.clone()));
     }
 
     /// Drain pending scan results and decoded thumbnails. Cheap; call once a
     /// frame before painting.
     pub fn tick(&mut self) {
+        let mut scan_finished = false;
         if let Some(handle) = &self.scan {
             for file in handle.drain() {
                 self.builder.add(file);
@@ -167,7 +273,13 @@ impl Session {
                     self.builder.add(file);
                 }
                 self.scan = None;
+                scan_finished = true;
             }
+        }
+        if scan_finished {
+            // Persisted photos whose files weren't found become placeholders so
+            // their state is preserved and they reanimate if the file returns (§4).
+            self.reconcile_missing();
         }
         if self.builder.len() != self.ordered_count {
             self.order = sort::by_time_asc(self.builder.photos());
@@ -211,6 +323,7 @@ impl Session {
             raw_only: photo.is_raw_only(),
             state: self.cull.state(photo.id),
             selected: self.sel.is_selected(photo.id),
+            missing: photo.missing,
         })
     }
 
@@ -251,6 +364,11 @@ impl Session {
         let Some(&pool_index) = self.visible.get(display_index) else {
             return;
         };
+        // A missing file has no pixels; its decode always fails and so never
+        // caches, which would re-request it every frame (§4). Skip it.
+        if self.builder.photos()[pool_index].missing {
+            return;
+        }
         let id = self.builder.photos()[pool_index].id;
         if self.base_inflight.contains(&id) || self.base.get(&id).is_some() {
             return;
@@ -261,9 +379,19 @@ impl Session {
         };
         let path = path.to_path_buf();
         let orientation = photo.orientation;
+        // The grid (base) tier is disk-cached by content fingerprint, so a
+        // reopened folder paints from cached blobs instead of re-decoding.
+        let cache_key = Some(photo.fingerprint);
         self.base_inflight.insert(id);
-        self.decoder
-            .request(encode_key(self.epoch, id, false), path, orientation, BASE_EDGE);
+        self.decoder.request(DecodeRequest {
+            key: encode_key(self.epoch, id, false),
+            path,
+            orientation,
+            edge: BASE_EDGE,
+            cache_key,
+            tier: ThumbTier::Grid,
+            cache: self.cache.clone(),
+        });
     }
 
     /// Ensure a hi-res thumbnail covering `target_edge` on-screen pixels is
@@ -273,6 +401,9 @@ impl Session {
         let Some(&pool_index) = self.visible.get(display_index) else {
             return;
         };
+        if self.builder.photos()[pool_index].missing {
+            return; // §4: nothing to decode for a missing file (see `request_base`)
+        }
         let id = self.builder.photos()[pool_index].id;
         if self.hires_inflight.contains(&id) {
             return;
@@ -289,8 +420,18 @@ impl Session {
         let path = path.to_path_buf();
         let orientation = photo.orientation;
         self.hires_inflight.insert(id);
-        self.decoder
-            .request(encode_key(self.epoch, id, true), path, orientation, target_edge);
+        // Hi-res is viewport-ephemeral and its size tracks the zoom, so it is
+        // not disk-cached (no stable tier to key it on); it lives only in RAM
+        // and is dropped on zoom-out.
+        self.decoder.request(DecodeRequest {
+            key: encode_key(self.epoch, id, true),
+            path,
+            orientation,
+            edge: target_edge,
+            cache_key: None,
+            tier: ThumbTier::Gallery,
+            cache: None,
+        });
     }
 
     /// Drop all hi-res thumbnails — called on zoom-out so the sharp pixels
@@ -360,6 +501,228 @@ impl Session {
         let total = self.builder.len();
         let unreviewed = total.saturating_sub(c.accepted + c.rejected);
         (c.accepted, c.rejected, unreviewed)
+    }
+
+    /// Owned state has changed since the last successful save (§10b debounce).
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Persist owned state if it changed since the last save; no-op when clean.
+    /// The UI calls this on a debounce, on quit, and on an interval (§10b).
+    pub fn save_if_dirty(&mut self) -> Result<(), SaveError> {
+        if !self.dirty {
+            return Ok(());
+        }
+        self.save()
+    }
+
+    /// Persist owned state now: `project.json` written atomically (verdicts +
+    /// every known photo's id/fingerprint/paths + views + config), then the
+    /// durable `undo.log` compacted. The log is rebuildable, so a compaction
+    /// failure is swallowed and never fails the precious save. A read-only
+    /// instance can't write, so this is a no-op there (#34).
+    pub fn save(&mut self) -> Result<(), SaveError> {
+        if self.read_only {
+            return Ok(());
+        }
+        let sidecar = self.sidecar.clone().ok_or(SaveError::NoFolder)?;
+        let snapshot = self.build_snapshot();
+        self.store.save(&sidecar, &snapshot)?;
+        let stacks = undo_log::Stacks {
+            undo: self.cull.undo_entries(),
+            redo: self.cull.redo_entries(),
+        };
+        let log_path = sidecar.join(UNDO_LOG_FILE);
+        // Close the append handle before compaction rewrites the log via
+        // tmp→rename. Otherwise our handle is left on the old, now-unlinked
+        // inode (Unix) — silently dropping every record appended after this
+        // save — or blocks the rename entirely (Windows). Reopen onto the fresh
+        // compacted file so live appends keep landing in it.
+        self.log = None;
+        let _ = undo_log::compact(&log_path, &stacks, undo_log::DEFAULT_ENTRY_CAP);
+        self.log = UndoLog::open(&log_path).ok();
+        self.refresh_lock(); // keep our lock fresh on every save (#34)
+        self.dirty = false;
+        Ok(())
+    }
+
+    /// Snapshot every known photo (not just culled ones, and including missing
+    /// placeholders) so a rename-in-place reclaims its id and a vanished file
+    /// keeps its state (§4, §10b). Paths are stored relative to the root.
+    fn build_snapshot(&self) -> ProjectSnapshot {
+        let root = self.root.as_deref();
+        let photos = self
+            .builder
+            .photos()
+            .iter()
+            .map(|p| PhotoRecord {
+                id: p.id,
+                fingerprint: p.fingerprint,
+                verdict: self.cull.state(p.id),
+                jpeg: relativize(p.files.jpeg.as_deref(), root),
+                raw: relativize(p.files.raw.as_deref(), root),
+            })
+            .collect();
+        ProjectSnapshot {
+            photos,
+            next_id: self.builder.next_id(),
+            views: self.views.clone(),
+            config: self.config.clone(),
+        }
+    }
+
+    /// Fold persisted photos whose files weren't scanned into missing
+    /// placeholders (§4). Runs once after the scan completes; consumed records
+    /// leave `loaded_records` empty so it's idempotent.
+    fn reconcile_missing(&mut self) {
+        let root = self.root.clone();
+        for rec in std::mem::take(&mut self.loaded_records) {
+            let abs = |rel: Option<PathBuf>| match (&root, rel) {
+                (Some(r), Some(p)) => Some(r.join(p)),
+                (None, p) => p,
+                (_, None) => None,
+            };
+            self.builder
+                .add_missing(rec.fingerprint, abs(rec.jpeg), abs(rec.raw));
+        }
+    }
+
+    /// Photos whose files are currently absent on disk (§4).
+    pub fn missing_count(&self) -> usize {
+        self.builder.photos().iter().filter(|p| p.missing).count()
+    }
+
+    /// Forget every missing photo, removing it and its owned state from the
+    /// project (§4) — the explicit prune for files the user knows are gone for
+    /// good. Returns how many were removed. A no-op when read-only (#34).
+    pub fn forget_missing(&mut self) -> usize {
+        if self.read_only {
+            return 0;
+        }
+        let ids: HashSet<PhotoId> = self
+            .builder
+            .photos()
+            .iter()
+            .filter(|p| p.missing)
+            .map(|p| p.id)
+            .collect();
+        if ids.is_empty() {
+            return 0;
+        }
+        let removed = ids.len();
+        self.builder.forget(&ids);
+        self.cull.forget(&ids);
+        self.sel.clear();
+        self.order = sort::by_time_asc(self.builder.photos());
+        self.ordered_count = self.builder.len();
+        self.rebuild_visible();
+        self.dirty = true;
+        removed
+    }
+
+    /// True while another live instance holds the write lock (#34).
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Forcibly claim the write lock (UI "Take over"); we become read-write.
+    pub fn take_over(&mut self) {
+        if let Some(lock) = &mut self.project_lock {
+            lock.take_over();
+            self.read_only = !lock.is_owned();
+        }
+    }
+
+    /// Refresh our lock timestamp so other instances keep seeing us as live.
+    /// The UI calls this on a heartbeat while a folder is open (#34).
+    pub fn refresh_lock(&self) {
+        if let Some(lock) = &self.project_lock {
+            lock.refresh();
+        }
+    }
+
+    /// True when a folder is open (so the UI can enable "Rescan").
+    pub fn has_folder(&self) -> bool {
+        self.root.is_some()
+    }
+
+    /// Re-scan the open folder: save first so the reload restores owned state,
+    /// then reopen. New files appear, returned files reanimate, and removed
+    /// files become missing placeholders (§4).
+    pub fn rescan(&mut self) {
+        if let Some(root) = self.root.clone() {
+            let _ = self.save_if_dirty();
+            self.open_folder(root);
+        }
+    }
+
+    /// Enable the app-global recents store at its default location
+    /// (`~/.dcs/recents.json`), loading the existing list and pruning folders
+    /// that no longer exist. The UI calls this once at startup; tests leave it
+    /// off so they never touch the real file.
+    pub fn enable_default_recents(&mut self) {
+        self.set_recents_path(recents::recents_path());
+        self.recents.retain_existing();
+        self.persist_recents();
+    }
+
+    /// Redirect or disable the app-global recents store. `None` disables
+    /// persistence entirely (and clears the in-memory list). Tests that exercise
+    /// recents point this at a temp file.
+    pub fn set_recents_path(&mut self, path: Option<PathBuf>) {
+        self.recents = path.as_deref().map(recents::load).unwrap_or_default();
+        self.recents_path = path;
+    }
+
+    /// Recent project folders, most-recent first (app-global, §4).
+    pub fn recent_projects(&self) -> &[PathBuf] {
+        &self.recents.projects
+    }
+
+    /// Clear the recent-projects list and persist the change.
+    pub fn clear_recents(&mut self) {
+        self.recents.clear();
+        self.persist_recents();
+    }
+
+    /// The persisted grid cell size, if any (§4, §9b).
+    pub fn grid_zoom(&self) -> Option<f32> {
+        self.config.grid_zoom
+    }
+
+    /// Persist the grid zoom; marks the project dirty so it saves on debounce.
+    pub fn set_grid_zoom(&mut self, zoom: f32) {
+        if self.read_only || self.config.grid_zoom == Some(zoom) {
+            return;
+        }
+        self.config.grid_zoom = Some(zoom);
+        self.dirty = true;
+    }
+
+    /// The persisted IANA shoot timezone (freeze-critical, open Q#5).
+    pub fn shoot_zone(&self) -> Option<&str> {
+        self.config.shoot_zone.as_deref()
+    }
+
+    /// Set the shoot timezone; marks the project dirty.
+    pub fn set_shoot_zone(&mut self, zone: Option<String>) {
+        if self.read_only || self.config.shoot_zone == zone {
+            return;
+        }
+        self.config.shoot_zone = zone;
+        self.dirty = true;
+    }
+
+    fn remember_recent(&mut self, root: &Path) {
+        self.recents.record(root.to_path_buf());
+        self.persist_recents();
+    }
+
+    fn persist_recents(&self) {
+        if let Some(path) = &self.recents_path {
+            let _ = recents::save(path, &self.recents);
+        }
     }
 
     pub fn can_undo(&self) -> bool {
@@ -434,7 +797,14 @@ impl Session {
 
     /// `Ctrl+Z`: undo the last verdict change.
     pub fn undo(&mut self) -> bool {
+        if self.read_only {
+            return false;
+        }
         if self.cull.undo() {
+            if let Some(log) = &mut self.log {
+                let _ = log.record_undo();
+            }
+            self.dirty = true;
             self.rebuild_visible();
             true
         } else {
@@ -444,7 +814,14 @@ impl Session {
 
     /// `Ctrl+Shift+Z`: redo.
     pub fn redo(&mut self) -> bool {
+        if self.read_only {
+            return false;
+        }
         if self.cull.redo() {
+            if let Some(log) = &mut self.log {
+                let _ = log.record_redo();
+            }
+            self.dirty = true;
             self.rebuild_visible();
             true
         } else {
@@ -455,6 +832,9 @@ impl Session {
     /// Toggle target is decided by the *focused* photo's verdict, then applied
     /// to the whole selection — so a mixed selection resolves predictably (§2.9).
     fn toggle_verdict(&mut self, on: AcceptState) {
+        if self.read_only {
+            return; // another instance owns the write lock (#34)
+        }
         let order = self.visible_ids();
         let targets = self.sel.selected_or_focused(&order);
         if targets.is_empty() {
@@ -471,7 +851,12 @@ impl Session {
         } else {
             on
         };
-        self.cull.dispatch(Command::SetState(targets, target));
+        if let Some(changes) = self.cull.dispatch(Command::SetState(targets, target)) {
+            if let Some(log) = &mut self.log {
+                let _ = log.record_do(&changes);
+            }
+            self.dirty = true;
+        }
         self.rebuild_visible();
     }
 
@@ -541,4 +926,48 @@ impl Default for Session {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Open the disposable cache, returning `None` on failure — the cache rebuilds,
+/// so a corrupt or unopenable file must never block opening the folder.
+fn open_cache(sidecar: &Path) -> Option<SharedCache> {
+    SqliteCache::open(&sidecar.join(CACHE_FILE))
+        .ok()
+        .map(|c| Arc::new(Mutex::new(c)))
+}
+
+/// A pool builder seeded to reclaim ids by fingerprint, or an empty one for a
+/// fresh folder.
+fn seed_builder(snapshot: &Option<ProjectSnapshot>) -> PoolBuilder {
+    match snapshot {
+        Some(s) => PoolBuilder::seeded(s.seed_map(), s.next_id),
+        None => PoolBuilder::default(),
+    }
+}
+
+/// Rebuild the verdict store from `project.json` (state) plus `undo.log`
+/// (stacks, folded not replayed). Empty when there's no saved project.
+fn seed_cull(snapshot: &Option<ProjectSnapshot>, sidecar: &Path) -> Cull {
+    let Some(snapshot) = snapshot else {
+        return Cull::new();
+    };
+    let stacks = undo_log::load(&sidecar.join(UNDO_LOG_FILE)).unwrap_or_default();
+    let undo = stacks.undo.into_iter().map(UndoEntry::from_changes).collect();
+    let redo = stacks.redo.into_iter().map(UndoEntry::from_changes).collect();
+    Cull::from_state(snapshot.verdicts(), undo, redo)
+}
+
+/// The default views array for a fresh project: one Grid view (§9b).
+fn default_views() -> Vec<Value> {
+    vec![serde_json::json!({ "kind": "Grid" })]
+}
+
+/// Make an absolute photo path relative to the project root for storage (§5).
+/// Paths already relative (or outside the root) are stored as-is.
+fn relativize(path: Option<&Path>, root: Option<&Path>) -> Option<PathBuf> {
+    let path = path?;
+    Some(match root {
+        Some(root) => path.strip_prefix(root).unwrap_or(path).to_path_buf(),
+        None => path.to_path_buf(),
+    })
 }

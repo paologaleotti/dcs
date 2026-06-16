@@ -23,7 +23,7 @@ rayon.workspace = true
 
 # source: scan + content fingerprint
 walkdir.workspace = true
-twox-hash.workspace = true
+blake3.workspace = true
 
 # disposable cache store
 rusqlite.workspace = true

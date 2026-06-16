@@ -11,4 +11,4 @@ pub mod selection;
 pub mod session;
 mod util;
 
-pub use session::{CellInfo, Session, VerdictFilter};
+pub use session::{CellInfo, SaveError, Session, VerdictFilter};

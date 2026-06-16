@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use time::PrimitiveDateTime;
 
+use crate::fingerprint::ContentFingerprint;
+
 /// Stable per-photo identifier. Assigned on import, never reused. Serializable
 /// because commands carrying `PhotoId`s are persisted to `undo.log` (§5).
 #[derive(
@@ -50,9 +52,17 @@ pub struct Photo {
     pub files: AssociatedFiles,
     pub photo_type: PhotoType,
     pub orientation: Orientation,
+    /// Content identity (§10b, #33): the fingerprint of the *display* file
+    /// (JPEG when present, else RAW). Keyed from import so a rename-in-place
+    /// reclaims this photo's id, verdicts, and tags instead of returning blank.
+    pub fingerprint: ContentFingerprint,
     /// Raw EXIF `DateTimeOriginal`, naive (no zone). Timezone adjustment to an
     /// `OffsetDateTime` is derived later (§2.4); `None` means undated.
     pub captured_at: Option<PrimitiveDateTime>,
+    /// The backing file is known (from `project.json`) but absent on disk (§4).
+    /// State is preserved and the cell renders as a placeholder; it reanimates
+    /// when the file returns, matched by fingerprint.
+    pub missing: bool,
 }
 
 /// The full set of imported photos, in scan order.
@@ -104,6 +114,28 @@ impl Photo {
 
     pub fn is_raw_only(&self) -> bool {
         matches!(self.photo_type, PhotoType::Raw)
+    }
+}
+
+impl Photo {
+    /// Build a placeholder for a known photo whose file is absent on disk (§4).
+    /// Carries its last-known paths and identity; `captured_at` is unknown until
+    /// the file returns, so it sorts undated.
+    pub fn missing(
+        id: PhotoId,
+        fingerprint: ContentFingerprint,
+        files: AssociatedFiles,
+        photo_type: PhotoType,
+    ) -> Self {
+        Photo {
+            id,
+            files,
+            photo_type,
+            orientation: Orientation::Normal,
+            fingerprint,
+            captured_at: None,
+            missing: true,
+        }
     }
 }
 

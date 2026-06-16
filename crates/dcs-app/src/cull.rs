@@ -33,6 +33,16 @@ pub struct UndoEntry {
 }
 
 impl UndoEntry {
+    /// Reconstruct an entry from persisted deltas (folded from `undo.log`).
+    pub fn from_changes(changes: Vec<(PhotoId, AcceptState, AcceptState)>) -> Self {
+        UndoEntry { changes }
+    }
+
+    /// The (photo, before, after) deltas — what the durable log records.
+    pub fn changes(&self) -> &[(PhotoId, AcceptState, AcceptState)] {
+        &self.changes
+    }
+
     /// Photos this entry touches — one per unique photo, never a duplicate.
     pub fn len(&self) -> usize {
         self.changes.len()
@@ -44,9 +54,12 @@ impl UndoEntry {
 }
 
 /// The owned verdict store and its undo/redo history.
+///
+/// Keyed by `PhotoId` (decision #33): identity is reconciled to the content
+/// fingerprint by the persistence layer at load/save, not here, so commands and
+/// the durable `undo.log` keep a stable key while verdicts still survive a
+/// rename-in-place.
 pub struct Cull {
-    // SEAM(#33): keyed by `PhotoId` this phase. The persistence phase re-keys
-    // this on the content fingerprint so verdicts survive a rename-in-place.
     verdicts: HashMap<PhotoId, AcceptState>,
     undo: VecDeque<UndoEntry>,
     redo: Vec<UndoEntry>,
@@ -58,6 +71,29 @@ impl Cull {
             verdicts: HashMap::new(),
             undo: VecDeque::new(),
             redo: Vec::new(),
+        }
+    }
+
+    /// Rebuild the store from persisted state on reopen: `verdicts` from
+    /// `project.json` (the authoritative state) and the undo/redo stacks folded
+    /// from `undo.log`. The stacks are *not* replayed onto state — state already
+    /// reflects them (open Q#9). Absent/`Unreviewed` verdicts are not stored, so
+    /// the map stays small.
+    pub fn from_state(
+        verdicts: impl IntoIterator<Item = (PhotoId, AcceptState)>,
+        undo: Vec<UndoEntry>,
+        redo: Vec<UndoEntry>,
+    ) -> Self {
+        let mut map = HashMap::new();
+        for (id, state) in verdicts {
+            if state != AcceptState::Unreviewed {
+                map.insert(id, state);
+            }
+        }
+        Cull {
+            verdicts: map,
+            undo: undo.into(),
+            redo,
         }
     }
 
@@ -96,17 +132,34 @@ impl Cull {
         self.redo.len()
     }
 
+    /// Undo entries oldest→newest, as delta vecs — what the log compacts to.
+    pub fn undo_entries(&self) -> Vec<Vec<(PhotoId, AcceptState, AcceptState)>> {
+        self.undo.iter().map(|e| e.changes.clone()).collect()
+    }
+
+    /// Redo entries oldest→newest (bottom→top of the stack).
+    pub fn redo_entries(&self) -> Vec<Vec<(PhotoId, AcceptState, AcceptState)>> {
+        self.redo.iter().map(|e| e.changes.clone()).collect()
+    }
+
     /// Apply a command, recording one reversible entry. Duplicate `PhotoId`s
     /// collapse to unique photos first (#10); a change that moves nothing
-    /// records no entry (and so cannot be "undone" into a surprise).
-    pub fn dispatch(&mut self, command: Command) {
+    /// records no entry (and so cannot be "undone" into a surprise). Returns the
+    /// recorded deltas so the caller can mirror them into the durable log, or
+    /// `None` when nothing moved.
+    pub fn dispatch(
+        &mut self,
+        command: Command,
+    ) -> Option<Vec<(PhotoId, AcceptState, AcceptState)>> {
         let Command::SetState(ids, target) = command;
         let changes = self.apply_set_state(&ids, target);
         if changes.is_empty() {
-            return;
+            return None;
         }
         self.redo.clear();
+        let recorded = changes.clone();
         self.push_undo(UndoEntry { changes });
+        Some(recorded)
     }
 
     /// Reverse the most recent entry, moving it onto the redo stack. Returns
@@ -132,6 +185,24 @@ impl Cull {
         }
         self.undo.push_back(entry);
         true
+    }
+
+    /// Forget photos entirely: drop their verdicts and scrub them from the
+    /// undo/redo stacks, removing any entry left empty. Used when the user
+    /// removes missing files (§4); a maintenance op, not itself undoable.
+    pub fn forget(&mut self, ids: &HashSet<PhotoId>) {
+        if ids.is_empty() {
+            return;
+        }
+        self.verdicts.retain(|id, _| !ids.contains(id));
+        for entry in &mut self.undo {
+            entry.changes.retain(|(id, _, _)| !ids.contains(id));
+        }
+        self.undo.retain(|e| !e.changes.is_empty());
+        for entry in &mut self.redo {
+            entry.changes.retain(|(id, _, _)| !ids.contains(id));
+        }
+        self.redo.retain(|e| !e.changes.is_empty());
     }
 
     fn apply_set_state(

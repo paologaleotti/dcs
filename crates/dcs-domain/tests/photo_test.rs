@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use dcs_domain::fingerprint::ContentFingerprint;
 use dcs_domain::photo::{AssociatedFiles, Orientation, Photo, PhotoId, PhotoType};
 
 fn photo(jpeg: Option<&str>, raw: Option<&str>, photo_type: PhotoType) -> Photo {
@@ -11,7 +12,9 @@ fn photo(jpeg: Option<&str>, raw: Option<&str>, photo_type: PhotoType) -> Photo 
         },
         photo_type,
         orientation: Orientation::Normal,
+        fingerprint: ContentFingerprint::from_bytes([0u8; 32]),
         captured_at: None,
+        missing: false,
     }
 }
 

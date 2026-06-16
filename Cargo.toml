@@ -25,7 +25,7 @@ turbojpeg = "1"
 kamadak-exif = "0.6"
 rayon = "1"
 walkdir = "2"
-twox-hash = "2"
+blake3 = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }
 crossbeam-channel = "0.5"
 rfd = "0.15"

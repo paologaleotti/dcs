@@ -323,9 +323,15 @@ fn paint_cell(
 ) {
     ui.painter().rect_filled(cell_rect, 0.0, theme::CELL_EMPTY);
 
-    if let Some(tex) = textures.texture(ui, session, info.id) {
+    if !info.missing && let Some(tex) = textures.texture(ui, session, info.id) {
         let fit = contain_fit(cell_rect, tex.size);
         ui.painter().image(tex.id, fit, full_uv(), Color32::WHITE);
+    }
+
+    // A missing file (§4) has no pixels — show a placeholder so its preserved
+    // verdict still reads, rather than a blank or a stale thumbnail.
+    if info.missing {
+        paint_missing(ui, cell_rect);
     }
 
     // Rejected cells dim, then carry the glyph on top so it stays legible.
@@ -394,6 +400,37 @@ fn paint_verdict_glyph(ui: &Ui, cell_rect: Rect, state: AcceptState) {
                 .line_segment([Pos2::new(c.x + r, c.y - r), Pos2::new(c.x - r, c.y + r)], stroke);
         }
         AcceptState::Unreviewed => {}
+    }
+}
+
+/// Placeholder for a missing file (§4): a hairline outline plus a `missing`
+/// label when the cell is large enough, else a small corner badge.
+fn paint_missing(ui: &Ui, cell_rect: Rect) {
+    ui.painter().rect_stroke(
+        cell_rect,
+        0.0,
+        Stroke::new(1.0, theme::HAIRLINE),
+        StrokeKind::Inside,
+    );
+    if cell_rect.width() >= BADGE_MIN_CELL {
+        ui.painter().text(
+            cell_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "missing",
+            FontId::monospace((cell_rect.width() * 0.12).clamp(10.0, 16.0)),
+            theme::TEXT_DIM,
+        );
+    } else {
+        let size = (cell_rect.width() * 0.16).clamp(12.0, 18.0);
+        let badge = Rect::from_min_size(cell_rect.min, Vec2::splat(size));
+        ui.painter().rect_filled(badge, 0.0, theme::BADGE_BG);
+        ui.painter().text(
+            badge.center(),
+            egui::Align2::CENTER_CENTER,
+            "!",
+            FontId::monospace(size * 0.7),
+            theme::TEXT_DIM,
+        );
     }
 }
 

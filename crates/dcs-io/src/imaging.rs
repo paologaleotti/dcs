@@ -14,11 +14,36 @@ use std::sync::OnceLock;
 use std::thread::available_parallelism;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
+use dcs_domain::fingerprint::ContentFingerprint;
 use dcs_domain::photo::Orientation;
 use dcs_domain::thumb::ThumbImage;
 use image::DynamicImage;
 use image::imageops::FilterType;
-use turbojpeg::{Decompressor, Image, PixelFormat, ScalingFactor};
+use turbojpeg::{Decompressor, Image, PixelFormat, ScalingFactor, Subsamp};
+
+use crate::cache::{SharedCache, ThumbCache, ThumbTier};
+
+/// JPEG quality for cached thumbnail blobs. High enough that the cache is
+/// visually indistinguishable from a fresh decode, small enough that a 5–6k
+/// folder's grid tier fits the disk budget comfortably.
+const CACHE_JPEG_QUALITY: i32 = 88;
+
+/// One decode job. Beyond the source file, it carries an optional disk-cache
+/// identity: when `cache_key` and `cache` are both set, the worker serves the
+/// thumbnail from the cache on a hit and populates it on a miss — all on the
+/// decode thread, so the UI thread never touches SQLite or the JPEG codec.
+pub struct DecodeRequest {
+    /// Opaque caller key, echoed back with the result.
+    pub key: u64,
+    pub path: PathBuf,
+    pub orientation: Orientation,
+    /// Target pixel edge (the thumbnail's longest side).
+    pub edge: u32,
+    /// Content identity for the disk cache; `None` skips the cache entirely.
+    pub cache_key: Option<ContentFingerprint>,
+    pub tier: ThumbTier,
+    pub cache: Option<SharedCache>,
+}
 
 /// Decodes thumbnails asynchronously. Requests carry an opaque caller key that
 /// is echoed back with the result; the caller assigns meaning (e.g. an epoch
@@ -26,8 +51,8 @@ use turbojpeg::{Decompressor, Image, PixelFormat, ScalingFactor};
 /// Every request yields exactly one result — `None` if the decode failed — so
 /// the caller can always retire its in-flight entry. Never blocks the caller.
 pub trait ThumbDecoder: Send + Sync {
-    /// Queue a decode at `edge` pixels (the thumbnail's longest side).
-    fn request(&self, key: u64, path: PathBuf, orientation: Orientation, edge: u32);
+    /// Queue a decode, optionally backed by the disk cache (see `DecodeRequest`).
+    fn request(&self, req: DecodeRequest);
 
     /// Take every result produced since the last call. Non-blocking.
     fn poll(&self) -> Vec<(u64, Option<ThumbImage>)>;
@@ -60,16 +85,72 @@ impl Default for RayonThumbDecoder {
 }
 
 impl ThumbDecoder for RayonThumbDecoder {
-    fn request(&self, key: u64, path: PathBuf, orientation: Orientation, edge: u32) {
+    fn request(&self, req: DecodeRequest) {
         let tx = self.tx.clone();
         self.pool.spawn(move || {
-            let _ = tx.send((key, decode_thumbnail(&path, orientation, edge)));
+            let key = req.key;
+            let _ = tx.send((key, decode_with_cache(req)));
         });
     }
 
     fn poll(&self) -> Vec<(u64, Option<ThumbImage>)> {
         self.rx.try_iter().collect()
     }
+}
+
+/// Resolve a thumbnail, going through the disk cache when the request carries an
+/// identity. A cache hit decodes the stored JPEG blob (already oriented and
+/// sized); a miss decodes the original, then encodes and stores it. The cache
+/// lock is taken only for the keyed get/put — the JPEG encode runs off-lock.
+fn decode_with_cache(req: DecodeRequest) -> Option<ThumbImage> {
+    if let (Some(fp), Some(cache)) = (req.cache_key, req.cache.as_ref()) {
+        let cached = cache.lock().ok().and_then(|guard| guard.get(&fp, req.tier));
+        if let Some(blob) = cached
+            && let Some(thumb) = decode_blob(&blob)
+        {
+            return Some(thumb);
+        }
+    }
+
+    let thumb = decode_thumbnail(&req.path, req.orientation, req.edge)?;
+
+    if let (Some(fp), Some(cache)) = (req.cache_key, req.cache.as_ref())
+        && let Some(blob) = encode_blob(&thumb)
+        && let Ok(guard) = cache.lock()
+    {
+        guard.put(&fp, req.tier, &blob);
+    }
+    Some(thumb)
+}
+
+/// Encode an already-prepared RGBA thumbnail to a JPEG blob for the cache.
+/// Returns `None` if the codec rejects the buffer (never fatal — a failed
+/// encode just means this thumb isn't cached).
+fn encode_blob(thumb: &ThumbImage) -> Option<Vec<u8>> {
+    if thumb.width == 0 || thumb.height == 0 {
+        return None;
+    }
+    let image = Image {
+        pixels: thumb.rgba.as_slice(),
+        width: thumb.width as usize,
+        pitch: thumb.width as usize * 4,
+        height: thumb.height as usize,
+        format: PixelFormat::RGBA,
+    };
+    turbojpeg::compress(image, CACHE_JPEG_QUALITY, Subsamp::Sub2x2)
+        .ok()
+        .map(|buf| buf.to_vec())
+}
+
+/// Decode a cached JPEG blob back to RGBA. The blob was stored post-orientation
+/// and post-resize, so this is a straight decompress — no further transforms.
+fn decode_blob(blob: &[u8]) -> Option<ThumbImage> {
+    let image = turbojpeg::decompress(blob, PixelFormat::RGBA).ok()?;
+    Some(ThumbImage {
+        width: image.width as u32,
+        height: image.height as u32,
+        rgba: image.pixels,
+    })
 }
 
 /// Decode one thumbnail at the given pixel edge: libjpeg-turbo DCT-scaled

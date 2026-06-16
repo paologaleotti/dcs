@@ -8,7 +8,9 @@
 
 pub mod command;
 pub mod cull;
+pub mod fingerprint;
 pub mod pairing;
 pub mod photo;
 pub mod sort;
 pub mod thumb;
+pub mod timezone;
