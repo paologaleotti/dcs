@@ -192,7 +192,7 @@ fn time_groups(
     day_numbers.sort_unstable();
     day_numbers.dedup();
 
-    buckets.sort_by(|(a, _), (b, _)| a.cmp(b));
+    buckets.sort_by_key(|(k, _)| *k);
     if sort.dir == SortDir::Desc {
         buckets.reverse();
     }
