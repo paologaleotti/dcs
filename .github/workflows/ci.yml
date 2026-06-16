@@ -59,11 +59,14 @@ jobs:
       - name: Format check
         run: cargo fmt --all --check
 
+      # Clippy runs in check mode (no codegen/link), so it compiles and lints the
+      # whole workspace — including dcs-ui and its wgpu/eframe stack — cheaply.
+      # This is also the build-validation step: if it passes, everything compiles.
       - name: Clippy (all targets, warnings as errors)
         run: cargo clippy --workspace --all-targets --locked
 
+      # Test everything except dcs-ui: it has no tests and is the only crate
+      # pulling the heavy wgpu/eframe/winit graph, so excluding it keeps the
+      # test build (full codegen) off the GPU stack entirely.
       - name: Test
-        run: cargo test --workspace --locked
-
-      - name: Build
-        run: cargo build --workspace --locked
+        run: cargo test --workspace --exclude dcs-ui --locked
