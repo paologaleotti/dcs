@@ -107,6 +107,7 @@ egui main thread never blocks: I/O requests return handles instantly. rayon deco
 
 Run and confirm all pass:
 ```
+cargo fmt
 cargo build --workspace
 cargo clippy --workspace -- -D warnings
 cargo test --workspace

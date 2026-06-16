@@ -12,6 +12,8 @@ serde.workspace = true
 time.workspace = true
 time-tz.workspace = true
 thiserror.workspace = true
+# Fuzzy subsequence scoring (Skim algorithm) behind our own thin wrapper.
+fuzzy-matcher.workspace = true
 
 [dev-dependencies]
 # Round-trip Command through JSON to lock the undo.log serialization seam (§5).

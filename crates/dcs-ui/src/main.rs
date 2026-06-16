@@ -6,6 +6,7 @@
 
 mod app;
 mod grid;
+mod picker;
 mod theme;
 
 use app::DcsApp;

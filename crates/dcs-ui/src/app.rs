@@ -11,7 +11,20 @@ use egui::{Align, Align2, FontId, Key, Layout, RichText, Ui};
 
 use crate::grid;
 use crate::grid::TextureCache;
+use crate::picker::{Picker, PickerEvent, PickerItem};
 use crate::theme;
+
+/// First row of the timezone picker — picking it clears the shoot zone back to
+/// the system default (so "no zone" stays a keyboard-reachable choice).
+const CLEAR_ZONE_ROW: &str = "(clear — use system default zone)";
+
+/// The verdict filter chips, in toolbar order.
+const VERDICT_FILTERS: [(&str, VerdictFilter); 4] = [
+    ("all", VerdictFilter::All),
+    ("unrev", VerdictFilter::Unreviewed),
+    ("acc", VerdictFilter::Accepted),
+    ("rej", VerdictFilter::Rejected),
+];
 
 const CELL_MIN: f32 = 80.0;
 const CELL_MAX: f32 = 400.0;
@@ -46,9 +59,9 @@ pub struct DcsApp {
     dirty_since: Option<Instant>,
     /// About window visibility.
     show_about: bool,
-    /// Shoot-timezone picker visibility + its search query.
-    show_zone_picker: bool,
-    zone_query: String,
+    /// Shoot-timezone picker — a keyboard-first fuzzy quick-pick (the same
+    /// component the command palette and tag palette will use).
+    zone_picker: Picker,
     /// Last time we refreshed the project lock; throttles the heartbeat (#34).
     last_heartbeat: Option<Instant>,
 }
@@ -72,8 +85,7 @@ impl DcsApp {
             pending_scroll: None,
             dirty_since: None,
             show_about: false,
-            show_zone_picker: false,
-            zone_query: String::new(),
+            zone_picker: Picker::new("Shoot timezone"),
             last_heartbeat: None,
         }
     }
@@ -84,12 +96,16 @@ impl eframe::App for DcsApp {
         let ctx = ui.ctx().clone();
         self.session.tick();
         self.handle_keys(&ctx);
+        self.handle_dropped_folder(&ctx);
         self.track_fps(&ctx);
 
         self.menu_bar(ui, &ctx);
-        self.top_bar(ui);
-        self.read_only_banner(ui);
-        self.status_bar(ui);
+        // Toolbar and status bar only exist once a project is open (§4).
+        if self.session.has_folder() {
+            self.top_bar(ui);
+            self.read_only_banner(ui);
+            self.status_bar(ui);
+        }
         self.central(ui);
         self.autosave(&ctx);
         self.heartbeat(&ctx);
@@ -118,30 +134,34 @@ impl eframe::App for DcsApp {
 
 impl DcsApp {
     fn top_bar(&mut self, ui: &mut Ui) {
-        egui::Panel::top("top").show_inside(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("Open folder…").clicked() {
-                    self.open_folder_dialog();
+        egui::Panel::top("top")
+            .frame(egui::Frame::default().fill(theme::CHROME_BG).inner_margin(egui::Margin::symmetric(8, 5)))
+            .show_inside(ui, |ui| {
+            // Center every item on the row's vertical axis so the small section
+            // labels line up with the taller chips.
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                micro_label(ui, "MODE");
+                let _ = ui.selectable_label(true, RichText::new("grid").monospace());
+                // Gallery mode isn't wired yet, so it shows disabled.
+                ui.add_enabled_ui(false, |ui| {
+                    let _ = ui.selectable_label(false, RichText::new("gallery").monospace());
+                });
+
+                ui.separator();
+                micro_label(ui, "VIEW");
+                for (label, filter) in VERDICT_FILTERS {
+                    self.filter_chip(ui, label, filter);
                 }
-                ui.separator();
-                ui.label(RichText::new("GRID").monospace().strong());
-                ui.label(RichText::new("gallery").monospace().color(theme::TEXT_DIM));
 
                 ui.separator();
-                ui.label(RichText::new("view").monospace().color(theme::TEXT_DIM));
-                self.filter_chip(ui, "all", VerdictFilter::All);
-                self.filter_chip(ui, "unrev", VerdictFilter::Unreviewed);
-                self.filter_chip(ui, "acc", VerdictFilter::Accepted);
-                self.filter_chip(ui, "rej", VerdictFilter::Rejected);
-
-                ui.separator();
-                let zone = self.session.shoot_zone().unwrap_or("set zone").to_string();
+                micro_label(ui, "TZ");
+                let zone = self.session.shoot_zone().unwrap_or("set").to_string();
                 if ui
-                    .button(RichText::new(format!("tz: {zone}")).monospace())
-                    .on_hover_text("Shoot timezone (freeze-critical)")
+                    .selectable_label(false, RichText::new(zone).monospace())
+                    .on_hover_text("Timezone used to group photos by time")
                     .clicked()
                 {
-                    self.show_zone_picker = true;
+                    self.zone_picker.open();
                 }
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -158,7 +178,7 @@ impl DcsApp {
                     if ui.button("−").clicked() {
                         self.zoom(1.0 / ZOOM_STEP);
                     }
-                    ui.label(RichText::new("zoom").monospace().color(theme::TEXT_DIM));
+                    micro_label(ui, "ZOOM");
                 });
             });
         });
@@ -235,6 +255,22 @@ impl DcsApp {
         });
     }
 
+    /// Open a folder dropped onto the window (§4). A dropped file opens its
+    /// containing folder, so dropping any photo works as well as a folder.
+    fn handle_dropped_folder(&mut self, ctx: &egui::Context) {
+        let Some(path) = ctx
+            .input(|i| i.raw.dropped_files.iter().find_map(|f| f.path.clone()))
+        else {
+            return;
+        };
+        let dir = if path.is_dir() {
+            path
+        } else {
+            path.parent().map(PathBuf::from).unwrap_or(path)
+        };
+        self.open_path(dir);
+    }
+
     /// Pick a folder and open it, persisting the current project first.
     fn open_folder_dialog(&mut self) {
         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
@@ -305,62 +341,34 @@ impl DcsApp {
         self.show_about = open;
     }
 
-    /// Searchable IANA timezone picker (open Q#5). Type to filter; click to set
-    /// the project's shoot zone (persisted in config).
+    /// Searchable timezone picker on the reusable [`Picker`]. First row clears
+    /// the zone back to the system default.
     fn zone_picker(&mut self, ctx: &egui::Context) {
-        if !self.show_zone_picker {
+        if !self.zone_picker.is_open() {
             return;
         }
-        let mut open = true;
-        egui::Window::new("Shoot timezone")
-            .collapsible(false)
-            .resizable(true)
-            .default_size([320.0, 440.0])
-            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.label(
-                    RichText::new("freeze-critical — used for time grouping & crystallization")
-                        .monospace()
-                        .size(11.0)
-                        .color(theme::TEXT_DIM),
-                );
-                ui.horizontal(|ui| {
-                    let current = self.session.shoot_zone().unwrap_or("none").to_string();
-                    ui.label(RichText::new(format!("current: {current}")).monospace());
-                    if self.session.shoot_zone().is_some() && ui.button("clear").clicked() {
-                        self.session.set_shoot_zone(None);
-                    }
-                });
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.zone_query)
-                        .hint_text("search… e.g. tokyo")
-                        .desired_width(f32::INFINITY),
-                );
-                ui.separator();
+        let subtitle = match self.session.shoot_zone() {
+            Some(z) => format!("current: {z}"),
+            None => "current: system default".to_string(),
+        };
+        let zones = dcs_domain::timezone::zone_names();
+        let mut items: Vec<PickerItem> = Vec::with_capacity(zones.len() + 1);
+        items.push(PickerItem {
+            label: CLEAR_ZONE_ROW,
+            detail: Some("system default"),
+        });
+        items.extend(zones.iter().map(|z| PickerItem::new(z)));
 
-                let query = self.zone_query.to_lowercase();
-                let current = self.session.shoot_zone().map(str::to_string);
-                let mut picked: Option<String> = None;
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    for name in dcs_domain::timezone::zone_names() {
-                        if !query.is_empty() && !name.to_lowercase().contains(&query) {
-                            continue;
-                        }
-                        let selected = current.as_deref() == Some(name);
-                        if ui
-                            .selectable_label(selected, RichText::new(name).monospace())
-                            .clicked()
-                        {
-                            picked = Some(name.to_string());
-                        }
-                    }
-                });
-                if let Some(name) = picked {
-                    self.session.set_shoot_zone(Some(name));
-                }
-            });
-        self.show_zone_picker = open;
+        match self
+            .zone_picker
+            .show(ctx, Some(&subtitle), "search zone… e.g. tokyo", &items)
+        {
+            PickerEvent::Picked(0) => self.session.set_shoot_zone(None),
+            PickerEvent::Picked(i) => {
+                self.session.set_shoot_zone(Some(zones[i - 1].to_string()));
+            }
+            PickerEvent::Dismissed | PickerEvent::Pending => {}
+        }
     }
 
     /// Refresh the project lock on a throttled heartbeat so peers see us as live
@@ -422,7 +430,13 @@ impl DcsApp {
 
     fn central(&mut self, ui: &mut Ui) {
         egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(theme::SHEET_BG))
+            .frame(
+                egui::Frame::default()
+                    .fill(theme::SHEET_BG)
+                    // Match the toolbar's horizontal inset so the first column
+                    // lines up under it.
+                    .inner_margin(egui::Margin::symmetric(8, 6)),
+            )
             .show_inside(ui, |ui| {
                 if self.session.photo_count() == 0 {
                     self.empty_state(ui);
@@ -444,33 +458,61 @@ impl DcsApp {
             });
     }
 
-    fn empty_state(&self, ui: &mut Ui) {
-        // `photo_count` is post-filter, so an empty grid means one of three
-        // things — distinguish them instead of always inviting "Open folder".
+    fn empty_state(&mut self, ui: &mut Ui) {
+        // `photo_count` is post-filter, so an empty grid is one of three cases.
         let scanning = self.session.is_scanning();
         let no_folder = self.session.pool_len() == 0;
-        ui.centered_and_justified(|ui| {
+        let mut open_clicked = false;
+        // A top spacer of ~half the leftover height centers the fixed-size block.
+        ui.vertical_centered(|ui| {
+            let avail = ui.available_height();
+            let pad = |ui: &mut Ui, content_h: f32| {
+                ui.add_space(((avail - content_h) * 0.5).max(0.0));
+            };
             if scanning && no_folder {
+                pad(ui, 20.0);
                 ui.label(RichText::new("scanning…").monospace().color(theme::TEXT_DIM));
             } else if no_folder {
-                ui.label(RichText::new("Open folder…").monospace().color(theme::TEXT_DIM));
+                pad(ui, 120.0);
+                ui.label(RichText::new("dcs").monospace().strong().size(22.0));
+                ui.label(
+                    RichText::new("digital contact sheet")
+                        .monospace()
+                        .color(theme::TEXT_DIM),
+                );
+                ui.add_space(16.0);
+                if ui
+                    .button(RichText::new("Open folder…").monospace().size(14.0))
+                    .clicked()
+                {
+                    open_clicked = true;
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("or drag a folder in")
+                        .monospace()
+                        .size(11.0)
+                        .color(theme::HAIRLINE),
+                );
             } else {
                 // Pool has photos; the active verdict filter hides them all.
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        RichText::new(format!("no {} photos", filter_word(self.session.filter())))
-                            .monospace()
-                            .color(theme::TEXT_DIM),
-                    );
-                    ui.label(
-                        RichText::new("view: all to show everything")
-                            .monospace()
-                            .size(11.0)
-                            .color(theme::HAIRLINE),
-                    );
-                });
+                pad(ui, 48.0);
+                ui.label(
+                    RichText::new(format!("no {} photos", filter_word(self.session.filter())))
+                        .monospace()
+                        .color(theme::TEXT_DIM),
+                );
+                ui.label(
+                    RichText::new("view: all to show everything")
+                        .monospace()
+                        .size(11.0)
+                        .color(theme::HAIRLINE),
+                );
             }
         });
+        if open_clicked {
+            self.open_folder_dialog();
+        }
     }
 
     fn diagnostics(&self, ctx: &egui::Context) {
@@ -499,12 +541,15 @@ impl DcsApp {
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
-        // A modal is up: Esc closes it and grid shortcuts stay inert (so the
-        // contact sheet doesn't react behind the dialog).
-        if self.show_about || self.show_zone_picker {
+        // The picker owns the keyboard while open (it consumes its own nav keys
+        // in `Picker::show`), so the grid stays inert behind it — just bail.
+        if self.zone_picker.is_open() {
+            return;
+        }
+        // The About window is a plain modal: Esc closes it, grid keys inert.
+        if self.show_about {
             if ctx.input(|i| i.key_pressed(Key::Escape)) {
                 self.show_about = false;
-                self.show_zone_picker = false;
             }
             return;
         }
@@ -610,6 +655,16 @@ impl DcsApp {
 
 fn frame_ms(fps: f32) -> f32 {
     if fps > 0.0 { 1000.0 / fps } else { 0.0 }
+}
+
+/// A small uppercase mono section label, dim — the "edge annotation" style
+/// (§3). One source so every toolbar group labels the same way.
+fn micro_label(ui: &mut Ui, text: &str) {
+    ui.label(
+        RichText::new(text)
+            .font(FontId::monospace(10.0))
+            .color(theme::TEXT_DIM),
+    );
 }
 
 /// The verdict-filter word for the empty-view message (`All` never empties).
