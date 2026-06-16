@@ -109,8 +109,7 @@ impl Picker {
             return PickerEvent::Pending;
         }
 
-        // Rank once per frame: every item whose label fuzzy-matches the query,
-        // best score first, ties broken by original order (stable).
+        // Fuzzy-match the query, best score first, ties by original order.
         let mut ranked: Vec<(usize, dcs_domain::fuzzy::FuzzyMatch)> = items
             .iter()
             .enumerate()
@@ -133,14 +132,11 @@ impl Picker {
             }
             Nav::Move | Nav::None => {}
         }
-        // On reopen the cursor is back at 0, but egui's ScrollArea remembers its
-        // old offset by id — force it to the top this frame so the list and the
-        // cursor agree. (`just_opened` is cleared in the focus block below, so
-        // capture it first.)
+        // On reopen, force the scroll back to the top so it agrees with cursor 0.
         let opened_fresh = self.just_opened;
         let scroll_to_cursor = matches!(nav, Nav::Move) || opened_fresh;
-        // Hover only claims the cursor when the pointer is actually moving, so a
-        // mouse resting over a row doesn't fight the arrow keys.
+        // Hover claims the cursor only while the pointer moves, so a resting
+        // mouse doesn't fight the arrow keys.
         let pointer_moving = ctx.input(|i| i.pointer.delta() != Vec2::ZERO);
 
         let mut event = PickerEvent::Pending;
@@ -166,8 +162,7 @@ impl Picker {
                         .desired_width(f32::INFINITY)
                         .font(FontId::monospace(14.0)),
                 );
-                // The field owns the keyboard the whole time it is open, so
-                // typing always lands in the query and the grid stays inert.
+                // Keep the field focused so typing always lands in the query.
                 if self.just_opened {
                     search.request_focus();
                     self.just_opened = false;
@@ -216,7 +211,6 @@ impl Picker {
                 });
             });
 
-        // Window's own close button (the X) dismisses too.
         if !window_open {
             self.open = false;
             return PickerEvent::Dismissed;

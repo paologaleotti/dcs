@@ -9,10 +9,11 @@
 //! age out re-upload from the session's RAM pixel cache (a memcpy, not a
 //! decode). The per-cell hot path allocates nothing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use dcs_app::{CellInfo, Session};
 use dcs_domain::cull::AcceptState;
+use dcs_domain::grouping::GroupKind;
 use dcs_domain::photo::PhotoId;
 use egui::{
     Color32, FontId, Id, Pos2, Rect, Sense, Stroke, StrokeKind, TextureHandle, TextureId,
@@ -162,36 +163,35 @@ pub fn row_stride(cell: f32) -> f32 {
     cell + (cell * 0.1).max(4.0)
 }
 
-/// What the grid reports back so the app can drive keyboard nav and auto-scroll
-/// next frame: cells drawn (diagnostics), the column count (row math for `↑↓`),
-/// and the scroll geometry (to keep the focus cursor on screen).
+/// Header band height in points — a quiet edge annotation (§3), not a cell row.
+const HEADER_H: f32 = 30.0;
+
+/// What the grid reports back: cells drawn (diagnostics) and the column count
+/// the app's keyboard nav uses for `↑↓` row moves.
 pub struct GridResponse {
     pub visible: usize,
     pub cols: usize,
-    pub scroll_y: f32,
-    pub viewport_h: f32,
 }
 
-/// Paint the grid. `cell` is the square cell edge in points; `view_width` is the
-/// width available for column math (measured before the scroll area so the
-/// count stays stable). `pending_scroll`, when set, forces the vertical offset
-/// for this frame to keep the focus cursor visible after a nav move.
+/// Paint the grouped, virtualized grid. `cell` is the square cell edge; the grid
+/// is segmented by the session's derived groups (§2.8), each with a header band
+/// then its cells flowing in rows of `cols`. Only the rows intersecting the
+/// viewport are painted. When `scroll_to_focus` is set, the focus cell is
+/// scrolled into view (after a keyboard nav move).
 pub fn show(
     ui: &mut Ui,
     session: &mut Session,
     textures: &mut TextureCache,
     cell: f32,
     view_width: f32,
-    pending_scroll: Option<f32>,
+    scroll_to_focus: bool,
+    collapsed: &mut HashSet<String>,
 ) -> GridResponse {
-    let viewport_h = ui.available_height();
     let count = session.photo_count();
     if count == 0 {
         return GridResponse {
             visible: 0,
             cols: 1,
-            scroll_y: 0.0,
-            viewport_h,
         };
     }
     textures.begin_frame();
@@ -199,7 +199,6 @@ pub fn show(
     let stride = row_stride(cell);
     let gap = stride - cell;
     let cols = (((view_width + gap) / stride).floor() as usize).max(1);
-    let rows = count.div_ceil(cols);
 
     // Default browsing uses only the cheap base thumbnail. Once zoomed in,
     // visible cells additionally request a sharp decode sized to device pixels.
@@ -209,93 +208,322 @@ pub fn show(
         session.clear_hires();
     }
     let focus = session.focus();
-    let mut visible = 0usize;
-    // Applied after the scroll area so the selection isn't mutated mid-paint.
-    let mut clicked: Option<usize> = None;
-
-    // `stride` bakes in the gap; zero inter-row spacing so the real row pitch
-    // stays `stride` (else it drifts from the nav/scroll math).
-    ui.spacing_mut().item_spacing.y = 0.0;
-    let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
-    if let Some(offset) = pending_scroll {
-        area = area.vertical_scroll_offset(offset);
+    // Drop collapse entries for titles no longer present (regroup/sort/filter
+    // changed the group set) so the set can't grow without bound across changes.
+    if !collapsed.is_empty() {
+        let live: HashSet<&str> = session.groups().iter().map(|g| g.title.as_str()).collect();
+        collapsed.retain(|t| live.contains(t.as_str()));
     }
-    let out = area.show_rows(ui, stride, rows, |ui, row_range| {
-        request_base_band(session, cols, count, &row_range, rows);
+    let layout = Layout::build(group_inputs(session, collapsed), cols, stride);
+    let mut visible = 0usize;
+    let mut clicked: Option<usize> = None;
+    // Header title to flip collapse on, applied after the paint borrow ends.
+    let mut toggle: Option<String> = None;
 
-        for row in row_range {
-            let (strip, _) =
-                ui.allocate_exact_size(Vec2::new(ui.available_width(), stride), Sense::hover());
-            for col in 0..cols {
-                let idx = row * cols + col;
-                if idx >= count {
-                    break;
-                }
-                let Some(info) = session.cell_info(idx) else {
-                    break;
-                };
-                if zoomed {
-                    session.request_hires(idx, hires_edge);
-                }
-                let origin = Pos2::new(strip.left() + col as f32 * stride, strip.top());
-                let cell_rect = Rect::from_min_size(origin, Vec2::splat(cell));
-                let resp = ui.interact(cell_rect, Id::new(("dcs_cell", info.id.0)), Sense::click());
-                if resp.clicked() {
-                    clicked = Some(idx);
-                }
-                paint_cell(ui, session, textures, info, focus == Some(idx), cell_rect);
-                visible += 1;
+    ui.spacing_mut().item_spacing = Vec2::ZERO;
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show_viewport(ui, |ui, viewport| {
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(view_width, layout.total), Sense::hover());
+            let origin = rect.min;
+
+            if scroll_to_focus
+                && let Some(f) = focus
+                && let Some(r) = layout.cell_rect(f, origin, cell, stride)
+            {
+                ui.scroll_to_rect(r, Some(egui::Align::Center));
             }
-        }
-    });
+
+            let (first, last) = layout.visible_rows(viewport.min.y, viewport.max.y);
+            for r in first..last {
+                let y = origin.y + layout.offsets[r];
+                match &layout.rows[r] {
+                    Row::Header(h) => {
+                        let info = &layout.headers[*h];
+                        let hrect = Rect::from_min_size(
+                            Pos2::new(origin.x, y),
+                            Vec2::new(view_width, HEADER_H),
+                        );
+                        let resp =
+                            ui.interact(hrect, Id::new(("dcs_hdr", &info.title)), Sense::click());
+                        if resp.clicked() {
+                            toggle = Some(info.title.clone());
+                        }
+                        paint_header(ui, info, hrect, resp.hovered());
+                    }
+                    Row::Cells { start, len } => {
+                        for c in 0..*len {
+                            let idx = start + c;
+                            let Some(info) = session.cell_info(idx) else {
+                                continue;
+                            };
+                            if zoomed {
+                                session.request_hires(idx, hires_edge);
+                            }
+                            let cell_rect = Rect::from_min_size(
+                                Pos2::new(origin.x + c as f32 * stride, y),
+                                Vec2::splat(cell),
+                            );
+                            let resp = ui.interact(
+                                cell_rect,
+                                Id::new(("dcs_cell", info.id.0)),
+                                Sense::click(),
+                            );
+                            if resp.clicked() {
+                                clicked = Some(idx);
+                            }
+                            paint_cell(ui, session, textures, info, focus == Some(idx), cell_rect);
+                            visible += 1;
+                        }
+                    }
+                }
+            }
+            // Prefetch the rows around the viewport so scrolling stays smooth.
+            // Walking rows (not a min/max index span) keeps collapsed groups
+            // cheap: a collapsed group contributes only its single cover cell,
+            // never the hidden run between covers.
+            let pf_first = first.saturating_sub(PREFETCH_ROWS);
+            let pf_last = (last + PREFETCH_ROWS).min(layout.rows.len());
+            for r in pf_first..pf_last {
+                if let Row::Cells { start, len } = layout.rows[r] {
+                    for idx in start..start + len {
+                        session.request_base(idx);
+                    }
+                }
+            }
+        });
 
     // The UI only reports the raw click + modifiers; the app owns the policy.
     if let Some(idx) = clicked {
         let (shift, cmd) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
         session.pointer_select(idx, shift, cmd);
     }
+    // A clicked header flips its collapse state (ephemeral UI, keyed by title).
+    if let Some(title) = toggle
+        && !collapsed.remove(&title)
+    {
+        collapsed.insert(title);
+    }
 
-    // Keep filling base thumbnails for the rest of the folder in the
-    // background — viewport requests above already took priority this frame.
+    // Keep filling base thumbnails for the rest of the folder in the background.
     session.fill_base_background();
 
     textures.evict_over_budget();
-    GridResponse {
-        visible,
-        cols,
-        scroll_y: out.state.offset.y,
-        // The true scrollable viewport from the same source as the offset, so
-        // the focus-visibility math is self-consistent (no off-by-one row).
-        viewport_h: out.inner_rect.height(),
+    GridResponse { visible, cols }
+}
+
+/// Pre-computed visual layout: the ordered header/cell rows with their vertical
+/// offsets, so the viewport band can be found by binary search and the focus
+/// cell located for auto-scroll. Owns its header text so painting touches no
+/// session state (which the per-cell loop mutates).
+struct Layout {
+    rows: Vec<Row>,
+    /// `offsets[r]` = top of row `r`; `offsets[rows.len()]` = total height.
+    offsets: Vec<f32>,
+    total: f32,
+    headers: Vec<HeaderInfo>,
+}
+
+#[derive(Clone, Copy)]
+enum Row {
+    Header(usize),
+    Cells { start: usize, len: usize },
+}
+
+struct HeaderInfo {
+    title: String,
+    count: usize,
+    total: usize,
+    collapsed: bool,
+}
+
+/// A group prepared for layout: its span plus whether it's collapsed and, if so,
+/// the cover cell to stand in for it (first accepted, else first — #16).
+struct GroupInput {
+    title: String,
+    kind: GroupKind,
+    start: usize,
+    count: usize,
+    total: usize,
+    collapsed: bool,
+    cover: usize,
+}
+
+/// Resolve the per-group layout inputs from the session and the collapse set.
+/// Reads verdicts (for the cover) before the mutable paint loop borrows.
+fn group_inputs(session: &Session, collapsed: &HashSet<String>) -> Vec<GroupInput> {
+    session
+        .groups()
+        .iter()
+        .map(|g| {
+            let collapsible = g.kind != GroupKind::Stream;
+            let is_collapsed = collapsible && collapsed.contains(&g.title);
+            let cover = if is_collapsed {
+                session.group_cover(g)
+            } else {
+                g.start
+            };
+            GroupInput {
+                title: g.title.clone(),
+                kind: g.kind,
+                start: g.start,
+                count: g.count,
+                total: g.total,
+                collapsed: is_collapsed,
+                cover,
+            }
+        })
+        .collect()
+}
+
+impl Layout {
+    fn build(groups: Vec<GroupInput>, cols: usize, stride: f32) -> Layout {
+        let mut rows = Vec::new();
+        let mut headers = Vec::new();
+        for g in groups {
+            // The single `none`-axis stream has no header (§2.8).
+            if g.kind != GroupKind::Stream {
+                headers.push(HeaderInfo {
+                    title: g.title,
+                    count: g.count,
+                    total: g.total,
+                    collapsed: g.collapsed,
+                });
+                rows.push(Row::Header(headers.len() - 1));
+            }
+            if g.collapsed {
+                // Collapsed: a single cover cell stands in for the group.
+                rows.push(Row::Cells {
+                    start: g.cover,
+                    len: 1,
+                });
+                continue;
+            }
+            let mut c = 0;
+            while c < g.count {
+                let len = (g.count - c).min(cols);
+                rows.push(Row::Cells {
+                    start: g.start + c,
+                    len,
+                });
+                c += len;
+            }
+        }
+        let mut offsets = Vec::with_capacity(rows.len() + 1);
+        let mut y = 0.0;
+        for row in &rows {
+            offsets.push(y);
+            y += match row {
+                Row::Header(_) => HEADER_H,
+                Row::Cells { .. } => stride,
+            };
+        }
+        offsets.push(y);
+        Layout {
+            rows,
+            offsets,
+            total: y,
+            headers,
+        }
+    }
+
+    /// The half-open row range intersecting the vertical viewport `[top, bot]`.
+    fn visible_rows(&self, top: f32, bot: f32) -> (usize, usize) {
+        // First row whose bottom is past `top`; last row whose top is before `bot`.
+        let first = self
+            .offsets
+            .partition_point(|&y| y <= top)
+            .saturating_sub(1);
+        let last = self.offsets.partition_point(|&y| y < bot);
+        (first.min(self.rows.len()), last.min(self.rows.len()))
+    }
+
+    /// Screen rect of the cell at display index `idx`, for auto-scroll.
+    fn cell_rect(&self, idx: usize, origin: Pos2, cell: f32, stride: f32) -> Option<Rect> {
+        for (r, row) in self.rows.iter().enumerate() {
+            if let Row::Cells { start, len } = row
+                && idx >= *start
+                && idx < start + len
+            {
+                let col = idx - start;
+                return Some(Rect::from_min_size(
+                    Pos2::new(origin.x + col as f32 * stride, origin.y + self.offsets[r]),
+                    Vec2::splat(cell),
+                ));
+            }
+        }
+        None
     }
 }
 
-/// Request base thumbnails for the visible rows first, then the prefetch
-/// margin (below, then above), so on-screen cells win the decode pool over
-/// rows that just scrolled out of view.
-fn request_base_band(
-    session: &mut Session,
-    cols: usize,
-    count: usize,
-    row_range: &std::ops::Range<usize>,
-    rows: usize,
-) {
-    let above = row_range.start.saturating_sub(PREFETCH_ROWS)..row_range.start;
-    let below = row_range.end..(row_range.end + PREFETCH_ROWS).min(rows);
-    let request_rows = |session: &mut Session, rows: std::ops::Range<usize>| {
-        for row in rows {
-            for col in 0..cols {
-                let idx = row * cols + col;
-                if idx >= count {
-                    break;
-                }
-                session.request_base(idx);
-            }
-        }
+/// A collapse caret painted as a small triangle (no font glyph, so it always
+/// renders): pointing right when collapsed, down when expanded.
+fn paint_caret(p: &egui::Painter, center: Pos2, collapsed: bool) {
+    let r = 4.0;
+    let pts = if collapsed {
+        vec![
+            Pos2::new(center.x - r * 0.6, center.y - r),
+            Pos2::new(center.x + r * 0.7, center.y),
+            Pos2::new(center.x - r * 0.6, center.y + r),
+        ]
+    } else {
+        vec![
+            Pos2::new(center.x - r, center.y - r * 0.6),
+            Pos2::new(center.x + r, center.y - r * 0.6),
+            Pos2::new(center.x, center.y + r * 0.7),
+        ]
     };
-    request_rows(session, row_range.clone());
-    request_rows(session, below);
-    request_rows(session, above);
+    p.add(egui::Shape::convex_polygon(
+        pts,
+        theme::TEXT_DIM,
+        Stroke::NONE,
+    ));
+}
+
+/// A group header (§2.8, §3): a charcoal band distinct from the sheet, a
+/// collapse caret, the title in sans, and a mono `shown of total` count — an
+/// edge annotation that's also the click target for collapsing.
+fn paint_header(ui: &Ui, info: &HeaderInfo, rect: Rect, hovered: bool) {
+    let p = ui.painter();
+    // The band reads as chrome over the lighter sheet, brighter on hover.
+    let band = if hovered {
+        Color32::from_gray(18)
+    } else {
+        theme::CHROME_BG
+    };
+    p.rect_filled(rect, 0.0, band);
+    p.hline(
+        rect.x_range(),
+        rect.top() + 0.5,
+        Stroke::new(1.0, theme::HAIRLINE),
+    );
+    let cy = rect.center().y;
+    paint_caret(p, Pos2::new(rect.left() + 10.0, cy), info.collapsed);
+    let title_color = if hovered {
+        theme::FOCUS_OUTLINE
+    } else {
+        theme::SELECT_OUTLINE
+    };
+    p.text(
+        Pos2::new(rect.left() + 24.0, cy),
+        egui::Align2::LEFT_CENTER,
+        &info.title,
+        FontId::proportional(14.0),
+        title_color,
+    );
+    let count = if info.count == info.total {
+        format!("{}", info.total)
+    } else {
+        format!("{} of {}", info.count, info.total)
+    };
+    p.text(
+        Pos2::new(rect.right() - 8.0, cy),
+        egui::Align2::RIGHT_CENTER,
+        count,
+        FontId::monospace(11.0),
+        theme::TEXT_DIM,
+    );
 }
 
 /// Smallest decode tier covering `px` on-screen pixels.

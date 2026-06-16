@@ -3,6 +3,8 @@
 //! MRU ordering that drives the palette's default order.
 
 use dcs_app::{ActionEffect, AppAction, Session, VerdictFilter, catalog};
+use dcs_domain::grouping::{Axis, TimeGranularity};
+use dcs_domain::sort::{Sort, SortDir, SortKey};
 
 /// A fresh session has no folder: file/edit actions that need state stay out of
 /// the catalog, but the always-available ones are present.
@@ -84,6 +86,59 @@ fn mru_tracks_most_recent_first() {
     // Re-running ZoomIn moves it to front without duplicating.
     session.run_action(AppAction::ZoomIn);
     assert_eq!(session.action_mru(), &["zoom-in", "about", "zoom-out"]);
+}
+
+/// Grouping + sort actions dispatch into the session's derived settings.
+#[test]
+fn grouping_actions_change_axis_and_sort() {
+    let mut session = Session::new();
+    assert_eq!(
+        session.run_action(AppAction::GroupBy(Axis::None)),
+        ActionEffect::None
+    );
+    assert_eq!(session.axis(), Axis::None);
+
+    session.run_action(AppAction::SetGranularity(TimeGranularity::Day));
+    assert_eq!(session.axis(), Axis::Time(TimeGranularity::Day));
+
+    let name_desc = Sort {
+        key: SortKey::Name,
+        dir: SortDir::Desc,
+    };
+    session.run_action(AppAction::SetSort(name_desc));
+    assert_eq!(session.sort(), name_desc);
+}
+
+/// The catalog offers the grouping/sort changes, omitting the active choice.
+#[test]
+fn catalog_exposes_grouping_and_sort_options() {
+    let session = Session::new(); // default axis Time(Auto), sort Time Asc
+    let ids: Vec<&str> = catalog(&session).iter().map(|e| e.action.id()).collect();
+
+    // Default is the auto time axis: "none" is offered, the active "auto" not.
+    assert!(ids.contains(&"group-none"));
+    assert!(!ids.contains(&"gran-auto"));
+    assert!(ids.contains(&"gran-day"));
+    // Active sort (time asc) omitted; the others offered.
+    assert!(!ids.contains(&"sort-time-asc"));
+    assert!(ids.contains(&"sort-name-desc"));
+    // Collapse/expand all offered while grouped.
+    assert!(ids.contains(&"collapse-all-groups"));
+    assert!(ids.contains(&"expand-all-groups"));
+}
+
+/// Off the none axis, the granularities (the time-axis switch) are all offered
+/// and "none" is hidden.
+#[test]
+fn catalog_offers_granularities_to_switch_onto_time() {
+    let mut session = Session::new();
+    session.set_axis(Axis::None);
+    let ids: Vec<&str> = catalog(&session).iter().map(|e| e.action.id()).collect();
+    assert!(!ids.contains(&"group-none"));
+    assert!(ids.contains(&"gran-day"));
+    assert!(ids.contains(&"gran-auto"));
+    // No headers on the stream axis, so collapse/expand are hidden.
+    assert!(!ids.contains(&"collapse-all-groups"));
 }
 
 /// The catalog is ordered MRU-first, so the palette opens on recent actions.

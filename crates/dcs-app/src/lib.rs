@@ -13,4 +13,9 @@ pub mod session;
 mod util;
 
 pub use registry::{ActionEffect, ActionEntry, AppAction, Category, catalog};
-pub use session::{CellInfo, SaveError, Session, VerdictFilter};
+pub use session::{CellInfo, SaveError, Session, VerdictFilter, VisibleGroup};
+
+// Derived display-setting types surfaced through `AppAction`/`Session`, so the
+// UI names them via the conductor rather than reaching into `dcs-domain`.
+pub use dcs_domain::grouping::{Axis, TimeGranularity};
+pub use dcs_domain::sort::{Sort, SortDir, SortKey};

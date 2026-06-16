@@ -62,6 +62,20 @@ impl Selection {
             None => 0,
             Some(cur) => (cur as isize + dx + dy * cols).clamp(0, last) as usize,
         };
+        self.set_focus_index(next, order, extend);
+    }
+
+    /// Place the focus on display index `next` (clamped to `order`) and update
+    /// the anchor + selection: `extend` (Shift) grows the range from the anchor,
+    /// a plain move drops the anchor on `next` and selects only it. The primitive
+    /// behind both flat (`move_focus`) and layout-aware navigation.
+    pub fn set_focus_index(&mut self, next: usize, order: &[PhotoId], extend: bool) {
+        if order.is_empty() {
+            self.focus = None;
+            self.anchor = None;
+            return;
+        }
+        let next = next.min(order.len() - 1);
         self.focus = Some(next);
         if extend {
             let anchor = self.anchor.unwrap_or(next);

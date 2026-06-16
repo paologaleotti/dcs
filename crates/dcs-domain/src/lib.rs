@@ -10,6 +10,7 @@ pub mod command;
 pub mod cull;
 pub mod fingerprint;
 pub mod fuzzy;
+pub mod grouping;
 pub mod pairing;
 pub mod photo;
 pub mod sort;

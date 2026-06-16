@@ -3,10 +3,12 @@
 //! Ephemeral UI state — zoom, the GPU texture cache, debug flags — lives here
 //! and never travels down (§9).
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use dcs_app::{Session, VerdictFilter};
+use dcs_domain::grouping::GroupKind;
 use egui::{Align, Align2, FontId, Key, Layout, RichText, Ui};
 
 use crate::grid;
@@ -53,14 +55,12 @@ pub struct DcsApp {
     debug: bool,
     fps: f32,
     visible: usize,
-    /// Grid geometry from the last painted frame, used by keyboard nav before
-    /// the grid is laid out this frame (row math + auto-scroll).
+    /// Column count from the last painted frame — keyboard `↑↓` row math runs
+    /// before the grid is laid out this frame.
     cols: usize,
-    scroll_y: f32,
-    viewport_h: f32,
-    /// When set, forces the grid's scroll offset for one frame to keep the
-    /// focus cursor visible after a nav move.
-    pending_scroll: Option<f32>,
+    /// Set when a keyboard nav move happened, so the grid scrolls the focus cell
+    /// into view next paint. Cleared once consumed.
+    scroll_to_focus: bool,
     /// When the project first became dirty since the last save — drives the
     /// debounced autosave. `None` while clean.
     dirty_since: Option<Instant>,
@@ -71,6 +71,8 @@ pub struct DcsApp {
     zone_picker: Picker,
     /// The `Cmd/Ctrl+P` command palette over the whole registry (§2.10).
     palette: Picker,
+    /// Collapsed group titles (ephemeral UI state, §2.8). Keyed by header title.
+    collapsed: HashSet<String>,
     /// Last time we refreshed the project lock; throttles the heartbeat (#34).
     last_heartbeat: Option<Instant>,
 }
@@ -89,13 +91,12 @@ impl DcsApp {
             fps: 0.0,
             visible: 0,
             cols: 1,
-            scroll_y: 0.0,
-            viewport_h: 0.0,
-            pending_scroll: None,
+            scroll_to_focus: false,
             dirty_since: None,
             show_about: false,
             zone_picker: Picker::new("Shoot timezone"),
             palette: Picker::new("Command Palette"),
+            collapsed: HashSet::new(),
             last_heartbeat: None,
         }
     }
@@ -145,8 +146,7 @@ impl eframe::App for DcsApp {
 
 impl DcsApp {
     fn top_bar(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        // Collect the clicked action and dispatch once, after the panel closure,
-        // so the registry stays the single mutation path (no session pokes here).
+        // Dispatch after the closure so the registry stays the only mutation path.
         let mut clicked: Option<dcs_app::AppAction> = None;
         egui::Panel::top("top")
             .frame(
@@ -175,6 +175,16 @@ impl DcsApp {
                         {
                             clicked = Some(dcs_app::AppAction::SetFilter(filter));
                         }
+                    }
+
+                    ui.separator();
+                    micro_label(ui, "GROUP");
+                    if let Some(a) = self.group_menu(ui) {
+                        clicked = Some(a);
+                    }
+                    micro_label(ui, "SORT");
+                    if let Some(a) = self.sort_menu(ui) {
+                        clicked = Some(a);
                     }
 
                     ui.separator();
@@ -209,6 +219,89 @@ impl DcsApp {
         if let Some(action) = clicked {
             self.dispatch(action, ctx);
         }
+    }
+
+    /// The GROUP dropdown (§2.3 always-visible control): pick the axis +
+    /// granularity inline. The palette mirrors these; the menu is the direct UI.
+    fn group_menu(&self, ui: &mut Ui) -> Option<dcs_app::AppAction> {
+        use dcs_app::{Axis, TimeGranularity};
+        let axis = self.session.axis();
+        let mut picked = None;
+        ui.menu_button(RichText::new(self.group_label()).monospace(), |ui| {
+            if ui
+                .selectable_label(axis == Axis::None, RichText::new("None").monospace())
+                .clicked()
+            {
+                picked = Some(dcs_app::AppAction::GroupBy(Axis::None));
+                ui.close();
+            }
+            ui.separator();
+            for (g, label) in [
+                (TimeGranularity::Auto, "Auto"),
+                (TimeGranularity::SmartDay, "Smart day"),
+                (TimeGranularity::Hour, "Hour"),
+                (TimeGranularity::Day, "Day"),
+                (TimeGranularity::Week, "Week"),
+            ] {
+                if ui
+                    .selectable_label(axis == Axis::Time(g), RichText::new(label).monospace())
+                    .clicked()
+                {
+                    picked = Some(dcs_app::AppAction::SetGranularity(g));
+                    ui.close();
+                }
+            }
+        });
+        picked
+    }
+
+    /// The SORT dropdown: pick key + direction inline.
+    fn sort_menu(&self, ui: &mut Ui) -> Option<dcs_app::AppAction> {
+        use dcs_app::{Sort, SortDir, SortKey};
+        let active = self.session.sort();
+        let mut picked = None;
+        ui.menu_button(RichText::new(self.sort_label()).monospace(), |ui| {
+            for (key, name) in [(SortKey::Time, "Time"), (SortKey::Name, "Name")] {
+                for dir in [SortDir::Asc, SortDir::Desc] {
+                    let sort = Sort { key, dir };
+                    let label = format!("{name} {}", sort_dir_label(dir));
+                    if ui
+                        .selectable_label(active == sort, RichText::new(label).monospace())
+                        .clicked()
+                    {
+                        picked = Some(dcs_app::AppAction::SetSort(sort));
+                        ui.close();
+                    }
+                }
+            }
+        });
+        picked
+    }
+
+    /// Short label for the active grouping (§2.3 always visible): the axis, or
+    /// the time granularity with `auto`'s resolution shown, e.g. `auto (day)`.
+    fn group_label(&self) -> String {
+        use dcs_app::{Axis, TimeGranularity};
+        match self.session.axis() {
+            Axis::None => "none".to_string(),
+            Axis::Time(g) => {
+                let resolved = self.session.resolved_granularity();
+                match (g, resolved) {
+                    (TimeGranularity::Auto, Some(r)) => format!("auto ({})", gran_word(r)),
+                    _ => gran_word(g).to_string(),
+                }
+            }
+        }
+    }
+
+    /// Short label for the active sort, e.g. `time ↑ asc`.
+    fn sort_label(&self) -> String {
+        use dcs_app::SortKey;
+        let key = match self.session.sort().key {
+            SortKey::Time => "time",
+            SortKey::Name => "name",
+        };
+        format!("{key} {}", sort_dir_label(self.session.sort().dir))
     }
 
     fn menu_bar(&mut self, ui: &mut Ui, ctx: &egui::Context) {
@@ -480,12 +573,11 @@ impl DcsApp {
                     &mut self.textures,
                     self.cell,
                     view_width,
-                    self.pending_scroll.take(),
+                    std::mem::take(&mut self.scroll_to_focus),
+                    &mut self.collapsed,
                 );
                 self.visible = resp.visible;
                 self.cols = resp.cols;
-                self.scroll_y = resp.scroll_y;
-                self.viewport_h = resp.viewport_h;
             });
     }
 
@@ -627,33 +719,97 @@ impl DcsApp {
             E::ToggleDiagnostics => self.debug = !self.debug,
             E::OpenZonePicker => self.zone_picker.open(),
             E::ShowAbout => self.show_about = true,
+            E::CollapseAllGroups => {
+                let titles: Vec<String> = self
+                    .session
+                    .groups()
+                    .iter()
+                    .filter(|g| g.kind != GroupKind::Stream)
+                    .map(|g| g.title.clone())
+                    .collect();
+                self.collapsed.extend(titles);
+            }
+            E::ExpandAllGroups => self.collapsed.clear(),
             E::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         }
     }
 
-    /// Arrow navigation and selection — UI-only because they depend on the grid
-    /// geometry (column count, scroll). `Esc` clears the selection (§2.12).
+    /// Arrow navigation and selection — UI-only because they run over the visual
+    /// group layout (column count + collapse), which is a view fact (§2.8).
+    /// `Esc` clears the selection (§2.12). A move flags the grid to scroll the
+    /// focus cell into view next paint.
     fn handle_grid_keys(&mut self, ctx: &egui::Context) {
         let shift = ctx.input(|i| i.modifiers.shift);
-        let nav = |app: &mut Self, dx, dy| {
-            app.session.nav(dx, dy, app.cols, shift);
-            app.ensure_focus_visible();
-        };
         if ctx.input(|i| i.key_pressed(Key::ArrowLeft)) {
-            nav(self, -1, 0);
+            self.nav(-1, 0, shift);
         }
         if ctx.input(|i| i.key_pressed(Key::ArrowRight)) {
-            nav(self, 1, 0);
+            self.nav(1, 0, shift);
         }
         if ctx.input(|i| i.key_pressed(Key::ArrowUp)) {
-            nav(self, 0, -1);
+            self.nav(0, -1, shift);
         }
         if ctx.input(|i| i.key_pressed(Key::ArrowDown)) {
-            nav(self, 0, 1);
+            self.nav(0, 1, shift);
         }
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.session.clear_selection();
         }
+    }
+
+    /// Move the focus over the visual group layout. `←→` step through the flat
+    /// run of focusable cells (skipping the members a collapsed group hides);
+    /// `↑↓` move one visual row, holding the column where the target row allows.
+    /// A collapsed group exposes only its cover cell (#16), so focus never lands
+    /// on a hidden cell. Group boundaries reset the row, matching the painted
+    /// layout (each group flows its own rows of `cols`).
+    fn nav(&mut self, dx: isize, dy: isize, extend: bool) {
+        let cols = self.cols.max(1);
+        let rows = self.nav_rows(cols);
+        let Some(first) = rows.first().and_then(|r| r.first()).copied() else {
+            return;
+        };
+        let cur = self.session.focus();
+        let Some((r, col)) = cur.and_then(|f| nav_locate(&rows, f)) else {
+            // No cursor (or it sat on a now-hidden cell): grab the first cell.
+            self.session.set_focus(first, extend);
+            self.scroll_to_focus = true;
+            return;
+        };
+        let target = if dy != 0 {
+            let nr = (r as isize + dy).clamp(0, rows.len() as isize - 1) as usize;
+            let nc = col.min(rows[nr].len() - 1);
+            rows[nr][nc]
+        } else {
+            // Horizontal: walk the flat sequence so moves cross row/group edges.
+            let flat: Vec<usize> = rows.iter().flatten().copied().collect();
+            let pos = flat.iter().position(|&i| Some(i) == cur).unwrap_or(0);
+            let np = (pos as isize + dx).clamp(0, flat.len() as isize - 1) as usize;
+            flat[np]
+        };
+        self.session.set_focus(target, extend);
+        self.scroll_to_focus = true;
+    }
+
+    /// The focusable cells as visual rows: each group flows in rows of `cols`,
+    /// a collapsed group contributes a single row holding only its cover. Mirrors
+    /// the grid's paint layout so nav and the painted cells agree.
+    fn nav_rows(&self, cols: usize) -> Vec<Vec<usize>> {
+        let mut rows = Vec::new();
+        for g in self.session.groups() {
+            let collapsed = g.kind != GroupKind::Stream && self.collapsed.contains(&g.title);
+            if collapsed {
+                rows.push(vec![self.session.group_cover(g)]);
+                continue;
+            }
+            let mut c = 0;
+            while c < g.count {
+                let len = (g.count - c).min(cols);
+                rows.push((g.start + c..g.start + c + len).collect());
+                c += len;
+            }
+        }
+        rows
     }
 
     /// The `Cmd/Ctrl+P` command palette (§2.10) on the reusable [`Picker`].
@@ -680,29 +836,6 @@ impl DcsApp {
         if let Some(action) = picked {
             self.dispatch(action, ctx);
         }
-    }
-
-    /// Minimal scroll offset to bring the focus cell fully into view, applied
-    /// next frame via `pending_scroll`. No-op when already visible.
-    fn ensure_focus_visible(&mut self) {
-        let Some(focus) = self.session.focus() else {
-            return;
-        };
-        let cols = self.cols.max(1);
-        let stride = grid::row_stride(self.cell);
-        let row = focus / cols;
-        let row_top = row as f32 * stride;
-        let row_bot = row_top + stride;
-        let view_top = self.scroll_y;
-        let view_bot = self.scroll_y + self.viewport_h;
-        let target = if row_top < view_top {
-            Some(row_top)
-        } else if row_bot > view_bot {
-            Some(row_bot - self.viewport_h)
-        } else {
-            None
-        };
-        self.pending_scroll = target.map(|t| t.max(0.0));
     }
 
     fn track_fps(&mut self, ctx: &egui::Context) {
@@ -750,6 +883,35 @@ impl DcsApp {
 
 fn frame_ms(fps: f32) -> f32 {
     if fps > 0.0 { 1000.0 / fps } else { 0.0 }
+}
+
+/// Locate display index `idx` in the navigable row layout as `(row, col)`.
+/// `None` when the cell isn't focusable (e.g. hidden inside a collapsed group).
+fn nav_locate(rows: &[Vec<usize>], idx: usize) -> Option<(usize, usize)> {
+    rows.iter()
+        .enumerate()
+        .find_map(|(r, row)| row.iter().position(|&i| i == idx).map(|c| (r, c)))
+}
+
+/// Arrow + word for a sort direction, e.g. `↑ asc` — both the glyph and the
+/// spelled-out word so it reads even where the arrow font is sparse.
+fn sort_dir_label(dir: dcs_app::SortDir) -> &'static str {
+    match dir {
+        dcs_app::SortDir::Asc => "↑ asc",
+        dcs_app::SortDir::Desc => "↓ desc",
+    }
+}
+
+/// One-word label for a time granularity, for the toolbar group readout.
+fn gran_word(g: dcs_app::TimeGranularity) -> &'static str {
+    use dcs_app::TimeGranularity as G;
+    match g {
+        G::Auto => "auto",
+        G::SmartDay => "smart day",
+        G::Hour => "hour",
+        G::Day => "day",
+        G::Week => "week",
+    }
 }
 
 /// A small uppercase mono section label, dim — the "edge annotation" style

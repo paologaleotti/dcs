@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::Duration;
 
-use dcs_app::{Session, VerdictFilter};
+use dcs_app::{Axis, Session, VerdictFilter};
 use dcs_domain::cull::AcceptState;
+use dcs_domain::grouping::GroupKind;
 use image::{Rgb, RgbImage};
 
 fn temp_folder(tag: &str) -> PathBuf {
@@ -216,6 +217,79 @@ fn accept_toggles_off_focus_and_undo_redo_round_trip() {
     assert_eq!(session.verdict(id0), AcceptState::Accepted);
     assert!(session.redo());
     assert_eq!(session.verdict(id0), AcceptState::Unreviewed);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn groups_expose_filtered_spans_and_omit_empty_groups() {
+    let (mut session, dir) = opened_with(3, "group_spans");
+
+    // Plain JPEGs carry no capture time, so the default time axis pools them all
+    // into one `No date` leftover group spanning the whole visible order.
+    let g = session.groups();
+    assert_eq!(g.len(), 1);
+    assert_eq!(g[0].kind, GroupKind::Leftover);
+    assert_eq!(g[0].title, "No date");
+    assert_eq!((g[0].start, g[0].count, g[0].total), (0, 3, 3));
+
+    // Accept one; under the Accepted filter the span reports 1 visible of 3.
+    session.nav(1, 0, 3, false); // focus index 0
+    session.accept();
+    session.set_filter(VerdictFilter::Accepted);
+    let g = session.groups();
+    assert_eq!(g.len(), 1);
+    assert_eq!((g[0].start, g[0].count, g[0].total), (0, 1, 3));
+
+    // A filter no photo matches drops the group entirely — never an empty header.
+    session.set_filter(VerdictFilter::Rejected);
+    assert!(session.groups().is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn axis_none_collapses_to_a_single_stream_group() {
+    let (mut session, dir) = opened_with(3, "group_stream");
+    session.set_axis(Axis::None);
+    let g = session.groups();
+    assert_eq!(g.len(), 1);
+    assert_eq!(g[0].kind, GroupKind::Stream);
+    assert_eq!((g[0].start, g[0].count, g[0].total), (0, 3, 3));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn group_cover_is_first_accepted_else_first_cell() {
+    let (mut session, dir) = opened_with(3, "group_cover");
+
+    // Nothing accepted yet → the cover is the group's first cell.
+    let g0 = session.groups()[0].clone();
+    assert_eq!(session.group_cover(&g0), 0);
+
+    // Accept the second cell; it becomes the cover the collapsed group shows (#16).
+    session.set_focus(1, false);
+    session.accept();
+    let g0 = session.groups()[0].clone();
+    assert_eq!(session.group_cover(&g0), 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn set_focus_clamps_and_extends_from_the_anchor() {
+    let (mut session, dir) = opened_with(4, "set_focus");
+
+    session.set_focus(99, false); // out of range → clamped to the last cell
+    assert_eq!(session.focus(), Some(3));
+
+    session.set_focus(1, false); // plain move drops the anchor on 1
+    assert_eq!(session.focus(), Some(1));
+    assert_eq!(session.selection_count(), 1);
+
+    session.set_focus(3, true); // extend selects the anchor→focus run 1..=3
+    assert_eq!(session.focus(), Some(3));
+    assert_eq!(session.selection_count(), 3);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

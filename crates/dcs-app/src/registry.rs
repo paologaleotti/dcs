@@ -12,6 +12,9 @@
 
 use std::path::PathBuf;
 
+use dcs_domain::grouping::{Axis, TimeGranularity};
+use dcs_domain::sort::{Sort, SortDir, SortKey};
+
 use crate::session::{Session, VerdictFilter};
 
 /// Every invocable command. `Copy` so it can be matched, listed, and bound to
@@ -24,6 +27,11 @@ pub enum AppAction {
     ForgetMissing,
     ClearRecents,
     SetFilter(VerdictFilter),
+    GroupBy(Axis),
+    SetGranularity(TimeGranularity),
+    CollapseAllGroups,
+    ExpandAllGroups,
+    SetSort(Sort),
     ZoomIn,
     ZoomOut,
     ToggleDiagnostics,
@@ -51,6 +59,31 @@ impl AppAction {
             AppAction::SetFilter(VerdictFilter::Unreviewed) => "view-unreviewed",
             AppAction::SetFilter(VerdictFilter::Accepted) => "view-accepted",
             AppAction::SetFilter(VerdictFilter::Rejected) => "view-rejected",
+            AppAction::GroupBy(Axis::Time(_)) => "group-time",
+            AppAction::GroupBy(Axis::None) => "group-none",
+            AppAction::SetGranularity(TimeGranularity::Auto) => "gran-auto",
+            AppAction::SetGranularity(TimeGranularity::SmartDay) => "gran-smart-day",
+            AppAction::SetGranularity(TimeGranularity::Hour) => "gran-hour",
+            AppAction::SetGranularity(TimeGranularity::Day) => "gran-day",
+            AppAction::SetGranularity(TimeGranularity::Week) => "gran-week",
+            AppAction::CollapseAllGroups => "collapse-all-groups",
+            AppAction::ExpandAllGroups => "expand-all-groups",
+            AppAction::SetSort(Sort {
+                key: SortKey::Time,
+                dir: SortDir::Asc,
+            }) => "sort-time-asc",
+            AppAction::SetSort(Sort {
+                key: SortKey::Time,
+                dir: SortDir::Desc,
+            }) => "sort-time-desc",
+            AppAction::SetSort(Sort {
+                key: SortKey::Name,
+                dir: SortDir::Asc,
+            }) => "sort-name-asc",
+            AppAction::SetSort(Sort {
+                key: SortKey::Name,
+                dir: SortDir::Desc,
+            }) => "sort-name-desc",
             AppAction::ZoomIn => "zoom-in",
             AppAction::ZoomOut => "zoom-out",
             AppAction::ToggleDiagnostics => "toggle-diagnostics",
@@ -83,6 +116,8 @@ pub enum ActionEffect {
     ToggleDiagnostics,
     OpenZonePicker,
     ShowAbout,
+    CollapseAllGroups,
+    ExpandAllGroups,
     Quit,
 }
 
@@ -98,6 +133,7 @@ pub struct ActionEntry {
 pub enum Category {
     File,
     View,
+    Group,
     Edit,
     Zone,
     App,
@@ -166,6 +202,8 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
         "Toggle Diagnostics",
         Category::View,
     );
+
+    push_group_actions(&mut e, session);
 
     if session.selection_count() > 0 {
         push(
@@ -236,6 +274,20 @@ impl Session {
                 self.set_filter(filter);
                 ActionEffect::None
             }
+            AppAction::GroupBy(axis) => {
+                self.set_axis(axis);
+                ActionEffect::None
+            }
+            AppAction::SetGranularity(g) => {
+                self.set_axis(Axis::Time(g));
+                ActionEffect::None
+            }
+            AppAction::CollapseAllGroups => ActionEffect::CollapseAllGroups,
+            AppAction::ExpandAllGroups => ActionEffect::ExpandAllGroups,
+            AppAction::SetSort(sort) => {
+                self.set_sort(sort);
+                ActionEffect::None
+            }
             AppAction::ZoomIn => ActionEffect::ZoomIn,
             AppAction::ZoomOut => ActionEffect::ZoomOut,
             AppAction::ToggleDiagnostics => ActionEffect::ToggleDiagnostics,
@@ -272,8 +324,7 @@ fn push_filter(
     filter: VerdictFilter,
     active: VerdictFilter,
 ) {
-    // The active view is a no-op — leave it out so the palette only offers a
-    // change.
+    // The active view is omitted — the palette only offers a change.
     if filter == active {
         return;
     }
@@ -282,6 +333,50 @@ fn push_filter(
         title: title.to_string(),
         category: Category::View,
     });
+}
+
+/// Grouping + sort entries (§2.3, §2.8). The axis switch is always offered; the
+/// granularity sub-options appear only while grouping by time. The active
+/// choice is omitted so the palette only ever offers a change.
+fn push_group_actions(e: &mut Vec<ActionEntry>, session: &Session) {
+    let axis = session.axis();
+    let group = |e: &mut Vec<ActionEntry>, action, title: &str| {
+        e.push(ActionEntry {
+            action,
+            title: title.to_string(),
+            category: Category::Group,
+        });
+    };
+
+    if axis != Axis::None {
+        group(e, AppAction::GroupBy(Axis::None), "Group by: None");
+    }
+    for (g, title) in [
+        (TimeGranularity::Auto, "Group by: Auto"),
+        (TimeGranularity::SmartDay, "Group by: Smart day"),
+        (TimeGranularity::Hour, "Group by: Hour"),
+        (TimeGranularity::Day, "Group by: Day"),
+        (TimeGranularity::Week, "Group by: Week"),
+    ] {
+        if axis != Axis::Time(g) {
+            group(e, AppAction::SetGranularity(g), title);
+        }
+    }
+    // Collapse/expand only make sense when groups have headers (not the stream).
+    if axis != Axis::None {
+        group(e, AppAction::CollapseAllGroups, "Group: Collapse All");
+        group(e, AppAction::ExpandAllGroups, "Group: Expand All");
+    }
+
+    let active = session.sort();
+    for (key, name) in [(SortKey::Time, "Time"), (SortKey::Name, "Name")] {
+        for (dir, word) in [(SortDir::Asc, "↑ asc"), (SortDir::Desc, "↓ desc")] {
+            let sort = Sort { key, dir };
+            if sort != active {
+                group(e, AppAction::SetSort(sort), &format!("Sort: {name} {word}"));
+            }
+        }
+    }
 }
 
 /// Stable-sort entries so recently-used actions float to the top; everything
