@@ -205,7 +205,9 @@ fn read_meta(path: &Path) -> (Orientation, Option<PrimitiveDateTime>) {
 
 fn ascii_value(field: &exif::Field) -> Option<&str> {
     match &field.value {
-        exif::Value::Ascii(parts) => parts.first().and_then(|bytes| std::str::from_utf8(bytes).ok()),
+        exif::Value::Ascii(parts) => parts
+            .first()
+            .and_then(|bytes| std::str::from_utf8(bytes).ok()),
         _ => None,
     }
 }

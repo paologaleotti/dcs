@@ -65,8 +65,16 @@ fn large_file_uses_head_tail_and_size() {
     write(&dir.join("b.jpg"), &b);
 
     let files = scan_all(&dir, None);
-    let fp_a = files.iter().find(|f| f.path.ends_with("a.jpg")).unwrap().fingerprint;
-    let fp_b = files.iter().find(|f| f.path.ends_with("b.jpg")).unwrap().fingerprint;
+    let fp_a = files
+        .iter()
+        .find(|f| f.path.ends_with("a.jpg"))
+        .unwrap()
+        .fingerprint;
+    let fp_b = files
+        .iter()
+        .find(|f| f.path.ends_with("b.jpg"))
+        .unwrap()
+        .fingerprint;
     // Head, tail, and size all match; only the unhashed middle differs, so the
     // head+tail strategy treats them as identical (documented trade-off, #33).
     assert_eq!(fp_a, fp_b);
@@ -76,7 +84,9 @@ fn large_file_uses_head_tail_and_size() {
 fn cache_prefilter_records_fingerprints() {
     let dir = tempdir();
     write(&dir.join("a.jpg"), b"cache me");
-    let cache = Arc::new(Mutex::new(SqliteCache::in_memory(DEFAULT_THUMB_CAP_BYTES).unwrap()));
+    let cache = Arc::new(Mutex::new(
+        SqliteCache::in_memory(DEFAULT_THUMB_CAP_BYTES).unwrap(),
+    ));
 
     let first = scan_all(&dir, Some(Arc::clone(&cache)));
     let fp_first = first[0].fingerprint;
@@ -105,7 +115,10 @@ fn tempdir() -> PathBuf {
         .unwrap()
         .as_nanos();
     // Thread id keeps parallel test cases from colliding on the same folder.
-    let dir = std::env::temp_dir().join(format!("dcs-source-test-{nanos}-{:?}", std::thread::current().id()));
+    let dir = std::env::temp_dir().join(format!(
+        "dcs-source-test-{nanos}-{:?}",
+        std::thread::current().id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }

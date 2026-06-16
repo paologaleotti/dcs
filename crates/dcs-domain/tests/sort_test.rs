@@ -57,7 +57,11 @@ fn empty_pool_yields_empty_order() {
 
 #[test]
 fn all_undated_falls_back_to_name_order() {
-    let pool = pair([at("a/c.JPG", None), at("a/a.JPG", None), at("a/b.JPG", None)]);
+    let pool = pair([
+        at("a/c.JPG", None),
+        at("a/a.JPG", None),
+        at("a/b.JPG", None),
+    ]);
     let order = by_time_asc(pool.photos());
     let names: Vec<_> = order
         .iter()

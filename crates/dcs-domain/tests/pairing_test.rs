@@ -74,7 +74,11 @@ fn lone_jpeg_and_lone_raw_get_correct_types() {
         file("a/only.JPG", FileKind::Jpeg),
         file("a/only_raw.RAF", FileKind::Raw),
     ]);
-    let jpeg = pool.photos().iter().find(|p| p.file_name() == "only.JPG").unwrap();
+    let jpeg = pool
+        .photos()
+        .iter()
+        .find(|p| p.file_name() == "only.JPG")
+        .unwrap();
     assert_eq!(jpeg.photo_type, PhotoType::Jpeg);
     let raw = pool.photos().iter().find(|p| p.is_raw_only()).unwrap();
     assert_eq!(raw.photo_type, PhotoType::Raw);
@@ -94,7 +98,9 @@ fn ids_are_assigned_in_first_appearance_order() {
 
 #[test]
 fn classify_covers_many_raw_extensions() {
-    for ext in ["raf", "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "pef"] {
+    for ext in [
+        "raf", "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "pef",
+    ] {
         let p = format!("a/x.{}", ext.to_uppercase());
         assert_eq!(classify(Path::new(&p)), Some(FileKind::Raw), "ext {ext}");
     }

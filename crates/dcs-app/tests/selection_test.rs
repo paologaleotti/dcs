@@ -22,7 +22,11 @@ fn plain_arrow_moves_focus_and_selects_only_it() {
     let mut sel = Selection::new();
     sel.move_focus(1, 0, 4, &o, false); // first press with no cursor grabs index 0
     assert_eq!(sel.focus(), Some(0));
-    assert_eq!(ids(&sel, &o), vec![0], "plain move selects only the focused cell");
+    assert_eq!(
+        ids(&sel, &o),
+        vec![0],
+        "plain move selects only the focused cell"
+    );
 
     sel.move_focus(0, 1, 4, &o, false); // down one row (cols = 4) → 0 + 4 = 4
     assert_eq!(sel.focus(), Some(4));
@@ -50,7 +54,11 @@ fn shift_arrow_extends_the_range_in_display_order() {
     sel.move_focus(1, 0, 4, &o, true); // extend to 3
     sel.move_focus(0, 1, 4, &o, true); // extend down a row to 7
     assert_eq!(sel.focus(), Some(7));
-    assert_eq!(ids(&sel, &o), vec![2, 3, 4, 5, 6, 7], "anchor..=focus in display order");
+    assert_eq!(
+        ids(&sel, &o),
+        vec![2, 3, 4, 5, 6, 7],
+        "anchor..=focus in display order"
+    );
 }
 
 #[test]
@@ -60,7 +68,11 @@ fn shift_extend_backwards_covers_the_same_span() {
     sel.select_only(7, &o); // anchor at 7
     sel.move_focus(-1, 0, 4, &o, true); // extend back to 6
     sel.move_focus(0, -1, 4, &o, true); // up a row to 2
-    assert_eq!(ids(&sel, &o), vec![2, 3, 4, 5, 6, 7], "range is order-independent of direction");
+    assert_eq!(
+        ids(&sel, &o),
+        vec![2, 3, 4, 5, 6, 7],
+        "range is order-independent of direction"
+    );
 }
 
 #[test]
@@ -82,7 +94,11 @@ fn select_all_visible_takes_every_cell() {
     let mut sel = Selection::new();
     sel.select_all_visible(&o);
     assert_eq!(sel.count(), 12);
-    assert_eq!(sel.focus(), Some(0), "focus parks on the first cell if it had none");
+    assert_eq!(
+        sel.focus(),
+        Some(0),
+        "focus parks on the first cell if it had none"
+    );
 }
 
 #[test]
@@ -110,7 +126,11 @@ fn selection_is_visible_only_and_deduped() {
         .into_iter()
         .map(|p| p.0)
         .collect();
-    assert_eq!(targets, vec![0, 2, 4], "off-screen ids never sneak into a batch op (#14)");
+    assert_eq!(
+        targets,
+        vec![0, 2, 4],
+        "off-screen ids never sneak into a batch op (#14)"
+    );
 }
 
 #[test]
@@ -121,7 +141,11 @@ fn click_then_shift_click_selects_the_range() {
     assert_eq!(ids(&sel, &o), vec![2]);
     sel.extend_to(6, &o); // shift+click cell 6
     assert_eq!(sel.focus(), Some(6));
-    assert_eq!(ids(&sel, &o), vec![2, 3, 4, 5, 6], "shift+click selects anchor..=clicked");
+    assert_eq!(
+        ids(&sel, &o),
+        vec![2, 3, 4, 5, 6],
+        "shift+click selects anchor..=clicked"
+    );
 }
 
 #[test]
@@ -143,7 +167,11 @@ fn ctrl_click_toggles_one_cell_without_disturbing_others() {
     assert_eq!(ids(&sel, &o), vec![1, 5, 9]);
     sel.toggle_at(5, &o); // remove 5
     assert_eq!(ids(&sel, &o), vec![1, 9]);
-    assert_eq!(sel.focus(), Some(5), "toggled cell becomes the focus + anchor");
+    assert_eq!(
+        sel.focus(),
+        Some(5),
+        "toggled cell becomes the focus + anchor"
+    );
 }
 
 #[test]

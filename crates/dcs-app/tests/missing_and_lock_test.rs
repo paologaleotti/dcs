@@ -24,7 +24,11 @@ fn temp_folder(tag: &str) -> PathBuf {
 fn write_jpeg(dir: &Path, name: &str, seed: u8) {
     let mut img = RgbImage::new(64, 48);
     for (x, y, px) in img.enumerate_pixels_mut() {
-        *px = Rgb([(x as u8).wrapping_add(seed), (y as u8).wrapping_mul(seed.max(1)), seed]);
+        *px = Rgb([
+            (x as u8).wrapping_add(seed),
+            (y as u8).wrapping_mul(seed.max(1)),
+            seed,
+        ]);
     }
     img.save(dir.join(name)).expect("encode jpeg");
 }
@@ -73,7 +77,11 @@ fn vanished_file_becomes_a_missing_placeholder_preserving_state() {
     std::fs::remove_file(dir.join("gone.jpg")).unwrap();
 
     let s = open(&dir, 2);
-    assert_eq!(s.pool_len(), 2, "the vanished photo is still present as a placeholder");
+    assert_eq!(
+        s.pool_len(),
+        2,
+        "the vanished photo is still present as a placeholder"
+    );
     assert_eq!(missing_count(&s), 1);
     // Its rejected verdict is preserved (1 rejected counted across both photos).
     let (_acc, rej, _unrev) = s.verdict_counts();
@@ -99,8 +107,16 @@ fn returned_file_reanimates() {
     // Restore identical content → same fingerprint → reanimates.
     write_jpeg(&dir, "a.jpg", 30);
     let s = open(&dir, 1);
-    assert_eq!(missing_count(&s), 0, "file returned, placeholder reanimated");
-    assert_eq!(s.verdict_counts().0, 1, "verdict intact through the round-trip");
+    assert_eq!(
+        missing_count(&s),
+        0,
+        "file returned, placeholder reanimated"
+    );
+    assert_eq!(
+        s.verdict_counts().0,
+        1,
+        "verdict intact through the round-trip"
+    );
 }
 
 #[test]
@@ -156,7 +172,11 @@ fn forgotten_file_returning_comes_back_as_a_fresh_unreviewed_photo() {
     write_jpeg(&dir, "a.jpg", 30);
     let s = open(&dir, 1);
     assert_eq!(s.pool_len(), 1);
-    assert_eq!(s.verdict_counts(), (0, 0, 1), "returns unreviewed, not accepted");
+    assert_eq!(
+        s.verdict_counts(),
+        (0, 0, 1),
+        "returns unreviewed, not accepted"
+    );
 }
 
 #[test]
@@ -176,7 +196,11 @@ fn missing_photos_issue_no_decode_requests() {
     assert_eq!(s.missing_count(), 1);
     s.request_base(0);
     s.request_hires(0, 512);
-    assert_eq!(s.decode_queue_depth(), 0, "missing files never enter the decode pool");
+    assert_eq!(
+        s.decode_queue_depth(),
+        0,
+        "missing files never enter the decode pool"
+    );
 }
 
 #[test]
@@ -217,7 +241,10 @@ fn second_instance_is_read_only_and_can_take_over() {
 
     // Second session on the same folder opens read-only.
     let mut second = open(&dir, 1);
-    assert!(second.is_read_only(), "a live first instance forces read-only");
+    assert!(
+        second.is_read_only(),
+        "a live first instance forces read-only"
+    );
 
     // Mutations are blocked while read-only.
     let before = second.verdict_counts();
@@ -247,7 +274,10 @@ fn reopening_or_rescanning_the_same_folder_stays_writable() {
     // not mistaken for a live second instance.
     s.open_folder(dir.clone());
     drive(&mut s, 1);
-    assert!(!s.is_read_only(), "reopening our own folder must stay writable");
+    assert!(
+        !s.is_read_only(),
+        "reopening our own folder must stay writable"
+    );
 
     // Rescan goes through the same path.
     s.rescan();

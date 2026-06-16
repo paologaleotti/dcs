@@ -156,13 +156,25 @@ mod tests {
 
     #[test]
     fn decode_key_round_trips_encode_key() {
-        assert_eq!(decode_key(encode_key(7, PhotoId(123), false)), (7, PhotoId(123), false));
-        assert_eq!(decode_key(encode_key(7, PhotoId(123), true)), (7, PhotoId(123), true));
+        assert_eq!(
+            decode_key(encode_key(7, PhotoId(123), false)),
+            (7, PhotoId(123), false)
+        );
+        assert_eq!(
+            decode_key(encode_key(7, PhotoId(123), true)),
+            (7, PhotoId(123), true)
+        );
     }
 
     #[test]
     fn keys_differ_by_epoch_and_tier_for_same_id() {
-        assert_ne!(encode_key(1, PhotoId(5), false), encode_key(2, PhotoId(5), false));
-        assert_ne!(encode_key(1, PhotoId(5), false), encode_key(1, PhotoId(5), true));
+        assert_ne!(
+            encode_key(1, PhotoId(5), false),
+            encode_key(2, PhotoId(5), false)
+        );
+        assert_ne!(
+            encode_key(1, PhotoId(5), false),
+            encode_key(1, PhotoId(5), true)
+        );
     }
 }

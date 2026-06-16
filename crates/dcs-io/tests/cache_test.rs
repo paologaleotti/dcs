@@ -40,7 +40,10 @@ fn thumb_round_trips_per_tier() {
     let cache = SqliteCache::in_memory(DEFAULT_THUMB_CAP_BYTES).unwrap();
     cache.put(&fp(5), ThumbTier::Grid, b"grid-bytes");
     cache.put(&fp(5), ThumbTier::Gallery, b"gallery-bytes");
-    assert_eq!(cache.get(&fp(5), ThumbTier::Grid).as_deref(), Some(&b"grid-bytes"[..]));
+    assert_eq!(
+        cache.get(&fp(5), ThumbTier::Grid).as_deref(),
+        Some(&b"grid-bytes"[..])
+    );
     assert_eq!(
         cache.get(&fp(5), ThumbTier::Gallery).as_deref(),
         Some(&b"gallery-bytes"[..])
@@ -53,7 +56,10 @@ fn thumb_put_overwrites_same_key_and_tier() {
     let cache = SqliteCache::in_memory(DEFAULT_THUMB_CAP_BYTES).unwrap();
     cache.put(&fp(5), ThumbTier::Grid, b"old");
     cache.put(&fp(5), ThumbTier::Grid, b"new");
-    assert_eq!(cache.get(&fp(5), ThumbTier::Grid).as_deref(), Some(&b"new"[..]));
+    assert_eq!(
+        cache.get(&fp(5), ThumbTier::Grid).as_deref(),
+        Some(&b"new"[..])
+    );
 }
 
 #[test]
@@ -68,8 +74,14 @@ fn lru_evicts_oldest_when_over_cap() {
     assert!(cache.get(&fp(1), ThumbTier::Grid).is_some());
     cache.put(&fp(3), ThumbTier::Grid, &blob); // pushes over cap → evict LRU (#2)
 
-    assert!(cache.get(&fp(1), ThumbTier::Grid).is_some(), "recently used survives");
-    assert!(cache.get(&fp(3), ThumbTier::Grid).is_some(), "newest survives");
+    assert!(
+        cache.get(&fp(1), ThumbTier::Grid).is_some(),
+        "recently used survives"
+    );
+    assert!(
+        cache.get(&fp(3), ThumbTier::Grid).is_some(),
+        "newest survives"
+    );
     assert!(cache.get(&fp(2), ThumbTier::Grid).is_none(), "LRU evicted");
     assert!(cache.thumb_bytes() <= 250);
 }
@@ -85,7 +97,10 @@ fn cache_persists_across_reopen() {
     }
     let cache = SqliteCache::open(&path).unwrap();
     assert_eq!(cache.lookup("a/x.jpg", 1, 10), Some(fp(3)));
-    assert_eq!(cache.get(&fp(3), ThumbTier::Grid).as_deref(), Some(&b"persisted"[..]));
+    assert_eq!(
+        cache.get(&fp(3), ThumbTier::Grid).as_deref(),
+        Some(&b"persisted"[..])
+    );
 }
 
 #[test]

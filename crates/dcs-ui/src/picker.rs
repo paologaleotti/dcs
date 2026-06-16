@@ -12,8 +12,8 @@
 
 use dcs_domain::fuzzy::fuzzy_match;
 use egui::{
-    text::LayoutJob, Align, Align2, Color32, FontId, Key, Modifiers, RichText, ScrollArea, Sense,
-    TextEdit, TextFormat, Ui, Vec2,
+    Align, Align2, Color32, FontId, Key, Modifiers, RichText, ScrollArea, Sense, TextEdit,
+    TextFormat, Ui, Vec2, text::LayoutJob,
 };
 
 use crate::theme;
@@ -200,20 +200,20 @@ impl Picker {
                     area = area.vertical_scroll_offset(0.0);
                 }
                 area.show_rows(ui, row_h, ranked.len(), |ui, range| {
-                        for r in range {
-                            let (idx, m) = &ranked[r];
-                            let row = Row {
-                                item: items[*idx],
-                                hits: &m.positions,
-                                index: r,
-                                want_scroll: scroll_to_cursor && r == self.cursor,
-                                pointer_moving,
-                            };
-                            if self.row(ui, row_h, row) {
-                                event = PickerEvent::Picked(*idx);
-                            }
+                    for r in range {
+                        let (idx, m) = &ranked[r];
+                        let row = Row {
+                            item: items[*idx],
+                            hits: &m.positions,
+                            index: r,
+                            want_scroll: scroll_to_cursor && r == self.cursor,
+                            pointer_moving,
+                        };
+                        if self.row(ui, row_h, row) {
+                            event = PickerEvent::Picked(*idx);
                         }
-                    });
+                    }
+                });
             });
 
         // Window's own close button (the X) dismisses too.
@@ -244,7 +244,11 @@ impl Picker {
         if on {
             ui.painter().rect_filled(rect, 0.0, theme::CELL_EMPTY);
         }
-        let text_color = if on { theme::FOCUS_OUTLINE } else { theme::TEXT_DIM };
+        let text_color = if on {
+            theme::FOCUS_OUTLINE
+        } else {
+            theme::TEXT_DIM
+        };
         let job = highlight(row.item.label, row.hits, text_color);
         let galley = ui.painter().layout_job(job);
         let text_pos = egui::pos2(rect.left() + 6.0, rect.center().y - galley.size().y / 2.0);

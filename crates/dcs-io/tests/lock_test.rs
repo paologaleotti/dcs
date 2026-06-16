@@ -7,7 +7,10 @@ fn tempdir() -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("dcs-lock-{nanos}-{:?}", std::thread::current().id()));
+    let dir = std::env::temp_dir().join(format!(
+        "dcs-lock-{nanos}-{:?}",
+        std::thread::current().id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -28,7 +31,11 @@ fn second_live_instance_is_read_only() {
     let (_first, a) = ProjectLock::acquire(&dir, STALE);
     assert_eq!(a, LockOutcome::Acquired);
     let (second, b) = ProjectLock::acquire(&dir, STALE);
-    assert_eq!(b, LockOutcome::HeldByOther, "fresh lock held by the live first instance");
+    assert_eq!(
+        b,
+        LockOutcome::HeldByOther,
+        "fresh lock held by the live first instance"
+    );
     assert!(!second.is_owned());
 }
 
@@ -38,7 +45,11 @@ fn stale_lock_is_reclaimed() {
     let (_first, _) = ProjectLock::acquire(&dir, STALE);
     // A zero-length stale window makes the existing lock instantly stale.
     let (second, outcome) = ProjectLock::acquire(&dir, Duration::from_secs(0));
-    assert_eq!(outcome, LockOutcome::Acquired, "an abandoned lock is reclaimed");
+    assert_eq!(
+        outcome,
+        LockOutcome::Acquired,
+        "an abandoned lock is reclaimed"
+    );
     assert!(second.is_owned());
 }
 
@@ -83,7 +94,11 @@ fn releasing_after_a_peer_took_over_does_not_delete_their_lock() {
     // The original owner releasing must not clobber the peer's lock.
     owner.release();
     let (_third, outcome) = ProjectLock::acquire(&dir, STALE);
-    assert_eq!(outcome, LockOutcome::HeldByOther, "peer's lock survived the stale owner's release");
+    assert_eq!(
+        outcome,
+        LockOutcome::HeldByOther,
+        "peer's lock survived the stale owner's release"
+    );
 }
 
 #[test]

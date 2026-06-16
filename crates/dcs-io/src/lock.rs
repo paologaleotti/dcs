@@ -47,7 +47,14 @@ impl ProjectLock {
         let path = dir.join(LOCK_FILE);
         let token = make_token();
         if held_by_live_instance(&path, stale) {
-            return (ProjectLock { path, token, owned: false }, LockOutcome::HeldByOther);
+            return (
+                ProjectLock {
+                    path,
+                    token,
+                    owned: false,
+                },
+                LockOutcome::HeldByOther,
+            );
         }
         // Write our token, then read it back: whoever's write survived owns it.
         let owned = stamp(&path, token).is_ok() && read_token(&path) == Some(token);
@@ -75,7 +82,8 @@ impl ProjectLock {
     /// Forcibly claim the lock (the UI's "Take over"), stamping it as ours and
     /// verifying our token survived.
     pub fn take_over(&mut self) {
-        self.owned = stamp(&self.path, self.token).is_ok() && read_token(&self.path) == Some(self.token);
+        self.owned =
+            stamp(&self.path, self.token).is_ok() && read_token(&self.path) == Some(self.token);
     }
 
     /// Release the lock if we still own it — but only when the file still holds

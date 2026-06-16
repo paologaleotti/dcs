@@ -70,7 +70,9 @@ impl UndoLog {
 
     /// Record one applied command's deltas (and the implied redo-clear).
     pub fn record_do(&mut self, changes: &[VerdictChange]) -> Result<(), LogError> {
-        self.append(&LogRecord::Do { changes: changes.to_vec() })
+        self.append(&LogRecord::Do {
+            changes: changes.to_vec(),
+        })
     }
 
     /// Record an undo cursor move.
@@ -141,10 +143,20 @@ pub fn compact(path: &Path, stacks: &Stacks, cap: usize) -> Result<(), LogError>
     let undo = trim_oldest(&stacks.undo, cap);
     let mut out = Vec::new();
     for entry in undo {
-        write_record(&mut out, &LogRecord::Do { changes: entry.clone() })?;
+        write_record(
+            &mut out,
+            &LogRecord::Do {
+                changes: entry.clone(),
+            },
+        )?;
     }
     for entry in stacks.redo.iter().rev() {
-        write_record(&mut out, &LogRecord::Do { changes: entry.clone() })?;
+        write_record(
+            &mut out,
+            &LogRecord::Do {
+                changes: entry.clone(),
+            },
+        )?;
     }
     for _ in 0..stacks.redo.len() {
         write_record(&mut out, &LogRecord::Undo)?;

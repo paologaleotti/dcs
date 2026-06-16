@@ -143,7 +143,8 @@ impl PoolBuilder {
         };
         let files = AssociatedFiles { jpeg, raw };
         let photo_type = derive_type(&files);
-        self.photos.push(Photo::missing(id, fingerprint, files, photo_type));
+        self.photos
+            .push(Photo::missing(id, fingerprint, files, photo_type));
         true
     }
 

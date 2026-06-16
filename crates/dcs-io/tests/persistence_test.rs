@@ -64,7 +64,10 @@ fn unknown_view_kind_is_preserved_verbatim() {
     }));
     store.save(&dir, &snap).unwrap();
     let loaded = store.load(&dir).unwrap().unwrap();
-    assert_eq!(loaded.views, snap.views, "unknown kinds round-trip untouched");
+    assert_eq!(
+        loaded.views, snap.views,
+        "unknown kinds round-trip untouched"
+    );
 }
 
 #[test]
@@ -75,7 +78,12 @@ fn unreviewed_photos_are_persisted_for_id_reclaim() {
     let store = JsonProjectStore;
     store.save(&dir, &snapshot()).unwrap();
     let loaded = store.load(&dir).unwrap().unwrap();
-    assert!(loaded.photos.iter().any(|p| p.verdict == AcceptState::Unreviewed));
+    assert!(
+        loaded
+            .photos
+            .iter()
+            .any(|p| p.verdict == AcceptState::Unreviewed)
+    );
     assert_eq!(loaded.seed_map().get(&fp(3)), Some(&PhotoId(2)));
 }
 
@@ -87,7 +95,10 @@ fn config_and_paths_round_trip() {
     let loaded = store.load(&dir).unwrap().unwrap();
     assert_eq!(loaded.config.shoot_zone.as_deref(), Some("Europe/Rome"));
     assert_eq!(loaded.config.grid_zoom, Some(180.0));
-    assert_eq!(loaded.photos[0].jpeg, Some(std::path::PathBuf::from("a.jpg")));
+    assert_eq!(
+        loaded.photos[0].jpeg,
+        Some(std::path::PathBuf::from("a.jpg"))
+    );
 }
 
 #[test]
@@ -139,7 +150,10 @@ fn save_rotates_a_backup_and_leaves_no_temp() {
 
     // The backup now holds the prior (first) version; the main holds the new one.
     assert!(dir.join("project.json.bak").exists());
-    assert!(!dir.join("project.json.tmp").exists(), "temp must not linger");
+    assert!(
+        !dir.join("project.json.tmp").exists(),
+        "temp must not linger"
+    );
     assert_eq!(store.load(&dir).unwrap().unwrap().next_id, 20);
 }
 
@@ -163,7 +177,10 @@ fn tempdir() -> std::path::PathBuf {
         .unwrap()
         .as_nanos();
     let dir = std::env::temp_dir()
-        .join(format!("dcs-persist-test-{nanos}-{:?}", std::thread::current().id()))
+        .join(format!(
+            "dcs-persist-test-{nanos}-{:?}",
+            std::thread::current().id()
+        ))
         .join(".dcs");
     std::fs::create_dir_all(&dir).unwrap();
     dir

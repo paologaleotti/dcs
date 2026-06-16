@@ -88,9 +88,9 @@ impl TextureCache {
             [view.image.width as usize, view.image.height as usize],
             &view.image.rgba,
         );
-        let handle = ui
-            .ctx()
-            .load_texture(format!("thumb-{}", id.0), color, TextureOptions::LINEAR);
+        let handle =
+            ui.ctx()
+                .load_texture(format!("thumb-{}", id.0), color, TextureOptions::LINEAR);
         let weight = view.image.width as u64 * view.image.height as u64 * 4;
         let tref = TexRef::of(&handle);
         let replaced = self.map.insert(
@@ -323,7 +323,9 @@ fn paint_cell(
 ) {
     ui.painter().rect_filled(cell_rect, 0.0, theme::CELL_EMPTY);
 
-    if !info.missing && let Some(tex) = textures.texture(ui, session, info.id) {
+    if !info.missing
+        && let Some(tex) = textures.texture(ui, session, info.id)
+    {
         let fit = contain_fit(cell_rect, tex.size);
         ui.painter().image(tex.id, fit, full_uv(), Color32::WHITE);
     }
@@ -394,10 +396,14 @@ fn paint_verdict_glyph(ui: &Ui, cell_rect: Rect, state: AcceptState) {
             ui.painter().add(egui::Shape::line(pts, stroke));
         }
         AcceptState::Rejected => {
-            ui.painter()
-                .line_segment([Pos2::new(c.x - r, c.y - r), Pos2::new(c.x + r, c.y + r)], stroke);
-            ui.painter()
-                .line_segment([Pos2::new(c.x + r, c.y - r), Pos2::new(c.x - r, c.y + r)], stroke);
+            ui.painter().line_segment(
+                [Pos2::new(c.x - r, c.y - r), Pos2::new(c.x + r, c.y + r)],
+                stroke,
+            );
+            ui.painter().line_segment(
+                [Pos2::new(c.x + r, c.y - r), Pos2::new(c.x - r, c.y + r)],
+                stroke,
+            );
         }
         AcceptState::Unreviewed => {}
     }

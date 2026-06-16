@@ -119,7 +119,8 @@ impl SqliteCache {
 
     fn from_conn(conn: Connection, thumb_cap_bytes: u64) -> Result<Self, CacheError> {
         // WAL keeps the scan worker's writes from blocking concurrent reads.
-        conn.pragma_update(None, "journal_mode", "WAL").map_err(db)?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(db)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS fingerprints (
                  path  TEXT PRIMARY KEY,
@@ -147,9 +148,11 @@ impl SqliteCache {
     /// Total bytes currently held by thumb blobs (diagnostics + eviction).
     pub fn thumb_bytes(&self) -> u64 {
         self.conn
-            .query_row("SELECT COALESCE(SUM(LENGTH(blob)), 0) FROM thumbs", [], |r| {
-                r.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT COALESCE(SUM(LENGTH(blob)), 0) FROM thumbs",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
             .map(|n| n.max(0) as u64)
             .unwrap_or(0)
     }
@@ -232,7 +235,12 @@ impl ThumbCache for SqliteCache {
         let stored = self.conn.execute(
             "INSERT INTO thumbs (content_key, tier, blob, last_used) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(content_key, tier) DO UPDATE SET blob = ?3, last_used = ?4",
-            params![key.as_bytes().as_slice(), tier_code(tier), blob, self.next_tick()],
+            params![
+                key.as_bytes().as_slice(),
+                tier_code(tier),
+                blob,
+                self.next_tick()
+            ],
         );
         if stored.is_ok() {
             self.evict_to_cap();

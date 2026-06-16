@@ -77,13 +77,20 @@ fn compaction_trims_undo_to_the_newest_cap_entries() {
     };
     undo_log::compact(&path, &stacks, 2).unwrap();
     let loaded = undo_log::load(&path).unwrap();
-    assert_eq!(loaded.undo, vec![entry(4), entry(5)], "oldest dropped, newest kept");
+    assert_eq!(
+        loaded.undo,
+        vec![entry(4), entry(5)],
+        "oldest dropped, newest kept"
+    );
 }
 
 #[test]
 fn appending_after_compaction_keeps_folding_correctly() {
     let path = log_path();
-    let start = Stacks { undo: vec![entry(1)], redo: vec![] };
+    let start = Stacks {
+        undo: vec![entry(1)],
+        redo: vec![],
+    };
     undo_log::compact(&path, &start, 100).unwrap();
 
     let mut log = UndoLog::open(&path).unwrap();
@@ -102,10 +109,17 @@ fn a_torn_trailing_line_is_ignored_not_fatal() {
     drop(log);
     // Simulate a crash mid-append: a partial JSON line with no newline.
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
     f.write_all(b"{\"Do\":{\"changes\":[").unwrap();
     drop(f);
 
     let stacks = undo_log::load(&path).unwrap();
-    assert_eq!(stacks.undo, vec![entry(1)], "good entries survive, torn line dropped");
+    assert_eq!(
+        stacks.undo,
+        vec![entry(1)],
+        "good entries survive, torn line dropped"
+    );
 }

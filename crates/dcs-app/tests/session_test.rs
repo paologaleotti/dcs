@@ -38,7 +38,11 @@ fn drain_until(session: &mut Session, want: usize) {
 
 /// Drive `tick` (re-issuing `request` each pass) until `done` holds or the
 /// budget runs out — for async decode results.
-fn pump_until(session: &mut Session, mut request: impl FnMut(&mut Session), done: impl Fn(&Session) -> bool) {
+fn pump_until(
+    session: &mut Session,
+    mut request: impl FnMut(&mut Session),
+    done: impl Fn(&Session) -> bool,
+) {
     for _ in 0..3000 {
         request(session);
         session.tick();
@@ -115,7 +119,10 @@ fn requesting_thumbnails_never_panics_and_skips_unloadable() {
     }
     assert_eq!(session.loaded_count(), 0);
     assert_eq!(session.hires_count(), 0);
-    assert!(!session.has_pending(), "failed decodes still retire their requests");
+    assert!(
+        !session.has_pending(),
+        "failed decodes still retire their requests"
+    );
 
     // Dropping hi-res is always safe, even when empty.
     session.clear_hires();
@@ -161,8 +168,16 @@ fn background_fill_decodes_the_whole_folder_without_viewport_requests() {
     drain_until(&mut session, 5);
 
     // Only the background fill drives decoding — no per-cell request_base.
-    pump_until(&mut session, |s| s.fill_base_background(), |s| s.loaded_count() >= 5);
-    assert_eq!(session.loaded_count(), 5, "every photo's base decodes in the background");
+    pump_until(
+        &mut session,
+        |s| s.fill_base_background(),
+        |s| s.loaded_count() >= 5,
+    );
+    assert_eq!(
+        session.loaded_count(),
+        5,
+        "every photo's base decodes in the background"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -275,22 +290,39 @@ fn hi_res_upgrades_then_clears_back_to_base() {
     let mut session = Session::new();
     session.open_folder(dir.clone());
     drain_until(&mut session, 1);
-    pump_until(&mut session, |s| s.request_base(0), |s| s.loaded_count() >= 1);
+    pump_until(
+        &mut session,
+        |s| s.request_base(0),
+        |s| s.loaded_count() >= 1,
+    );
 
     let id = session.cell_info(0).unwrap().id;
     let base_version = session.thumb(id).unwrap().version;
 
-    pump_until(&mut session, |s| s.request_hires(0, 512), |s| s.hires_count() >= 1);
+    pump_until(
+        &mut session,
+        |s| s.request_hires(0, 512),
+        |s| s.hires_count() >= 1,
+    );
     assert_eq!(session.hires_count(), 1);
     let view = session.thumb(id).unwrap();
-    assert!(view.version != base_version, "hi-res is a newer version than base");
-    assert!(view.image.width.max(view.image.height) > 256, "hi-res is sharper than base");
+    assert!(
+        view.version != base_version,
+        "hi-res is a newer version than base"
+    );
+    assert!(
+        view.image.width.max(view.image.height) > 256,
+        "hi-res is sharper than base"
+    );
 
     // Zoom-out drops hi-res RAM; the base thumbnail still displays.
     session.clear_hires();
     assert_eq!(session.hires_count(), 0);
     let after = session.thumb(id).unwrap();
-    assert_eq!(after.version, base_version, "falls back to the base thumbnail");
+    assert_eq!(
+        after.version, base_version,
+        "falls back to the base thumbnail"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -215,7 +215,8 @@ fn decode_scaled(path: &Path, edge: u32) -> Option<DynamicImage> {
             format: PixelFormat::RGBA,
         };
         decompressor.decompress(&data, image).ok()?;
-        image::RgbaImage::from_raw(width as u32, height as u32, pixels).map(DynamicImage::ImageRgba8)
+        image::RgbaImage::from_raw(width as u32, height as u32, pixels)
+            .map(DynamicImage::ImageRgba8)
     })
 }
 

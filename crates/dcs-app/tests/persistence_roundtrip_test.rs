@@ -25,7 +25,11 @@ fn temp_folder(tag: &str) -> PathBuf {
 fn write_jpeg(dir: &Path, name: &str, seed: u8) {
     let mut img = RgbImage::new(64, 48);
     for (x, y, px) in img.enumerate_pixels_mut() {
-        *px = Rgb([(x as u8).wrapping_add(seed), (y as u8).wrapping_mul(seed.max(1)), seed]);
+        *px = Rgb([
+            (x as u8).wrapping_add(seed),
+            (y as u8).wrapping_mul(seed.max(1)),
+            seed,
+        ]);
     }
     img.save(dir.join(name)).expect("encode jpeg");
 }
@@ -63,7 +67,11 @@ fn verdicts_survive_save_and_reopen() {
 
     // A brand-new session on the same folder must restore the verdicts.
     let s = open(&dir, 3);
-    assert_eq!(s.verdict_counts(), (1, 1, 1), "verdicts restored from project.json");
+    assert_eq!(
+        s.verdict_counts(),
+        (1, 1, 1),
+        "verdicts restored from project.json"
+    );
     let first = s.photo_at(0).unwrap().id;
     let second = s.photo_at(1).unwrap().id;
     assert_eq!(s.verdict(first), AcceptState::Accepted);
@@ -80,9 +88,15 @@ fn save_writes_the_sidecar_stores() {
     s.save().unwrap();
 
     let sidecar = dir.join(".dcs");
-    assert!(sidecar.join("project.json").exists(), "precious store written");
+    assert!(
+        sidecar.join("project.json").exists(),
+        "precious store written"
+    );
     assert!(sidecar.join("undo.log").exists(), "durable log written");
-    assert!(sidecar.join("cache.sqlite3").exists(), "disposable cache opened");
+    assert!(
+        sidecar.join("cache.sqlite3").exists(),
+        "disposable cache opened"
+    );
 }
 
 #[test]
@@ -129,7 +143,11 @@ fn undo_history_survives_reopen() {
 
     // Undo reverses the most recent action (the reject), not state from scratch.
     assert!(s.undo());
-    assert_eq!(s.verdict_counts(), (1, 0, 1), "reject undone, accept intact");
+    assert_eq!(
+        s.verdict_counts(),
+        (1, 0, 1),
+        "reject undone, accept intact"
+    );
 
     // And redo re-applies it.
     assert!(s.can_redo());
@@ -154,7 +172,11 @@ fn undo_log_keeps_appending_after_an_in_session_save() {
     s.reject(); // action B — appended after compaction; must be durable
 
     let stacks = dcs_io::undo_log::load(&dir.join(".dcs").join("undo.log")).unwrap();
-    assert_eq!(stacks.undo.len(), 2, "post-save action is still durably logged");
+    assert_eq!(
+        stacks.undo.len(),
+        2,
+        "post-save action is still durably logged"
+    );
 }
 
 #[test]
@@ -167,10 +189,17 @@ fn reopen_reclaims_the_same_photo_ids() {
         s.click_select(0);
         s.accept();
         s.save().unwrap();
-        (0..s.pool_len()).map(|i| s.photo_at(i).unwrap().id.0).collect()
+        (0..s.pool_len())
+            .map(|i| s.photo_at(i).unwrap().id.0)
+            .collect()
     };
 
     let s = open(&dir, 2);
-    let ids_after: Vec<u32> = (0..s.pool_len()).map(|i| s.photo_at(i).unwrap().id.0).collect();
-    assert_eq!(ids_before, ids_after, "ids are reclaimed by fingerprint, not reassigned");
+    let ids_after: Vec<u32> = (0..s.pool_len())
+        .map(|i| s.photo_at(i).unwrap().id.0)
+        .collect();
+    assert_eq!(
+        ids_before, ids_after,
+        "ids are reclaimed by fingerprint, not reassigned"
+    );
 }

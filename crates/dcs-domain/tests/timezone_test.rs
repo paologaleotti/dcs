@@ -4,7 +4,10 @@ use dcs_domain::timezone;
 fn zone_names_are_sorted_nonempty_and_include_known_zones() {
     let names = timezone::zone_names();
     assert!(names.len() > 100, "the IANA database has hundreds of zones");
-    assert!(names.windows(2).all(|w| w[0] <= w[1]), "sorted for the picker");
+    assert!(
+        names.windows(2).all(|w| w[0] <= w[1]),
+        "sorted for the picker"
+    );
     assert!(names.contains(&"Europe/Rome"));
     assert!(names.contains(&"Asia/Tokyo"));
     assert!(names.contains(&"UTC"));

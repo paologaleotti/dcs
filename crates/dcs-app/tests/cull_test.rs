@@ -13,12 +13,20 @@ fn set(ids: &[u32], target: AcceptState) -> Command {
 #[test]
 fn dispatch_applies_and_absent_defaults_to_unreviewed() {
     let mut cull = Cull::new();
-    assert_eq!(cull.state(PhotoId(1)), AcceptState::Unreviewed, "absent = unreviewed");
+    assert_eq!(
+        cull.state(PhotoId(1)),
+        AcceptState::Unreviewed,
+        "absent = unreviewed"
+    );
 
     cull.dispatch(set(&[1, 2], AcceptState::Accepted));
     assert_eq!(cull.state(PhotoId(1)), AcceptState::Accepted);
     assert_eq!(cull.state(PhotoId(2)), AcceptState::Accepted);
-    assert_eq!(cull.state(PhotoId(3)), AcceptState::Unreviewed, "untouched stays unreviewed");
+    assert_eq!(
+        cull.state(PhotoId(3)),
+        AcceptState::Unreviewed,
+        "untouched stays unreviewed"
+    );
 
     let c = cull.counts();
     assert_eq!((c.accepted, c.rejected), (2, 0));
@@ -37,9 +45,21 @@ fn undo_redo_round_trips_a_mixed_selection() {
     assert_eq!(cull.state(PhotoId(3)), AcceptState::Accepted);
 
     assert!(cull.undo());
-    assert_eq!(cull.state(PhotoId(1)), AcceptState::Accepted, "1 was already accepted");
-    assert_eq!(cull.state(PhotoId(2)), AcceptState::Rejected, "2 restored to rejected");
-    assert_eq!(cull.state(PhotoId(3)), AcceptState::Unreviewed, "3 restored to unreviewed");
+    assert_eq!(
+        cull.state(PhotoId(1)),
+        AcceptState::Accepted,
+        "1 was already accepted"
+    );
+    assert_eq!(
+        cull.state(PhotoId(2)),
+        AcceptState::Rejected,
+        "2 restored to rejected"
+    );
+    assert_eq!(
+        cull.state(PhotoId(3)),
+        AcceptState::Unreviewed,
+        "3 restored to unreviewed"
+    );
 
     assert!(cull.redo());
     assert_eq!(cull.state(PhotoId(2)), AcceptState::Accepted);
@@ -63,11 +83,18 @@ fn duplicate_ids_dedup_to_one_change_per_photo() {
 fn noop_command_records_nothing() {
     let mut cull = Cull::new();
     cull.dispatch(set(&[1], AcceptState::Unreviewed)); // already unreviewed
-    assert!(!cull.can_undo(), "a change that moves nothing is not undoable");
+    assert!(
+        !cull.can_undo(),
+        "a change that moves nothing is not undoable"
+    );
 
     cull.dispatch(set(&[1], AcceptState::Accepted));
     cull.dispatch(set(&[1], AcceptState::Accepted)); // re-accept, no change
-    assert_eq!(cull.undo_depth(), 1, "the redundant re-accept records nothing");
+    assert_eq!(
+        cull.undo_depth(),
+        1,
+        "the redundant re-accept records nothing"
+    );
 }
 
 #[test]
@@ -115,6 +142,10 @@ fn undo_stack_is_bounded() {
         };
         cull.dispatch(set(&[i], target));
     }
-    assert!(cull.undo_depth() <= 1000, "stack stays bounded: {}", cull.undo_depth());
+    assert!(
+        cull.undo_depth() <= 1000,
+        "stack stays bounded: {}",
+        cull.undo_depth()
+    );
     assert!(cull.undo(), "the newest entries remain undoable");
 }

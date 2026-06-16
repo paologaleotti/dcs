@@ -18,7 +18,10 @@ fn decodes_landscape_jpeg_to_contain_fit_thumbnail() {
     let thumb = decode_thumbnail(&path, Orientation::Normal, 256).expect("decode");
 
     assert!(thumb.width <= 256 && thumb.height <= 256);
-    assert!(thumb.width == 256 || thumb.height == 256, "must touch the box");
+    assert!(
+        thumb.width == 256 || thumb.height == 256,
+        "must touch the box"
+    );
     assert_eq!(thumb.rgba.len() as u32, thumb.width * thumb.height * 4);
 
     let aspect = thumb.width as f32 / thumb.height as f32;
@@ -84,6 +87,9 @@ fn decodes_real_image_aspect_with_no_letterbox() {
     let path = write_jpeg("dcs_thumb_wide.jpg", 1000, 500);
     let thumb = decode_thumbnail(&path, Orientation::Normal, 256).expect("decode");
     let aspect = thumb.width as f32 / thumb.height as f32;
-    assert!((aspect - 2.0).abs() < 0.05, "aspect preserved, got {aspect}");
+    assert!(
+        (aspect - 2.0).abs() < 0.05,
+        "aspect preserved, got {aspect}"
+    );
     let _ = std::fs::remove_file(&path);
 }

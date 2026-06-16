@@ -135,53 +135,57 @@ impl eframe::App for DcsApp {
 impl DcsApp {
     fn top_bar(&mut self, ui: &mut Ui) {
         egui::Panel::top("top")
-            .frame(egui::Frame::default().fill(theme::CHROME_BG).inner_margin(egui::Margin::symmetric(8, 5)))
+            .frame(
+                egui::Frame::default()
+                    .fill(theme::CHROME_BG)
+                    .inner_margin(egui::Margin::symmetric(8, 5)),
+            )
             .show_inside(ui, |ui| {
-            // Center every item on the row's vertical axis so the small section
-            // labels line up with the taller chips.
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                micro_label(ui, "MODE");
-                let _ = ui.selectable_label(true, RichText::new("grid").monospace());
-                // Gallery mode isn't wired yet, so it shows disabled.
-                ui.add_enabled_ui(false, |ui| {
-                    let _ = ui.selectable_label(false, RichText::new("gallery").monospace());
-                });
+                // Center every item on the row's vertical axis so the small section
+                // labels line up with the taller chips.
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    micro_label(ui, "MODE");
+                    let _ = ui.selectable_label(true, RichText::new("grid").monospace());
+                    // Gallery mode isn't wired yet, so it shows disabled.
+                    ui.add_enabled_ui(false, |ui| {
+                        let _ = ui.selectable_label(false, RichText::new("gallery").monospace());
+                    });
 
-                ui.separator();
-                micro_label(ui, "VIEW");
-                for (label, filter) in VERDICT_FILTERS {
-                    self.filter_chip(ui, label, filter);
-                }
+                    ui.separator();
+                    micro_label(ui, "VIEW");
+                    for (label, filter) in VERDICT_FILTERS {
+                        self.filter_chip(ui, label, filter);
+                    }
 
-                ui.separator();
-                micro_label(ui, "TZ");
-                let zone = self.session.shoot_zone().unwrap_or("set").to_string();
-                if ui
-                    .selectable_label(false, RichText::new(zone).monospace())
-                    .on_hover_text("Timezone used to group photos by time")
-                    .clicked()
-                {
-                    self.zone_picker.open();
-                }
-
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.separator();
+                    micro_label(ui, "TZ");
+                    let zone = self.session.shoot_zone().unwrap_or("set").to_string();
                     if ui
-                        .selectable_label(self.debug, RichText::new("dbg").monospace())
+                        .selectable_label(false, RichText::new(zone).monospace())
+                        .on_hover_text("Timezone used to group photos by time")
                         .clicked()
                     {
-                        self.debug = !self.debug;
+                        self.zone_picker.open();
                     }
-                    ui.separator();
-                    if ui.button("+").clicked() {
-                        self.zoom(ZOOM_STEP);
-                    }
-                    if ui.button("−").clicked() {
-                        self.zoom(1.0 / ZOOM_STEP);
-                    }
-                    micro_label(ui, "ZOOM");
+
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .selectable_label(self.debug, RichText::new("dbg").monospace())
+                            .clicked()
+                        {
+                            self.debug = !self.debug;
+                        }
+                        ui.separator();
+                        if ui.button("+").clicked() {
+                            self.zoom(ZOOM_STEP);
+                        }
+                        if ui.button("−").clicked() {
+                            self.zoom(1.0 / ZOOM_STEP);
+                        }
+                        micro_label(ui, "ZOOM");
+                    });
                 });
             });
-        });
     }
 
     fn menu_bar(&mut self, ui: &mut Ui, ctx: &egui::Context) {
@@ -258,8 +262,7 @@ impl DcsApp {
     /// Open a folder dropped onto the window (§4). A dropped file opens its
     /// containing folder, so dropping any photo works as well as a folder.
     fn handle_dropped_folder(&mut self, ctx: &egui::Context) {
-        let Some(path) = ctx
-            .input(|i| i.raw.dropped_files.iter().find_map(|f| f.path.clone()))
+        let Some(path) = ctx.input(|i| i.raw.dropped_files.iter().find_map(|f| f.path.clone()))
         else {
             return;
         };
@@ -327,15 +330,20 @@ impl DcsApp {
             .show(ctx, |ui| {
                 ui.label(RichText::new("dcs").monospace().strong().size(18.0));
                 ui.label(
-                    RichText::new(concat!("digital contact sheet · v", env!("CARGO_PKG_VERSION")))
-                        .monospace()
-                        .color(theme::TEXT_DIM),
+                    RichText::new(concat!(
+                        "digital contact sheet · v",
+                        env!("CARGO_PKG_VERSION")
+                    ))
+                    .monospace()
+                    .color(theme::TEXT_DIM),
                 );
                 ui.add_space(6.0);
                 ui.label(
-                    RichText::new("Fast, keyboard-first photo culling.\nScan · cull · tag · export.")
-                        .monospace()
-                        .size(12.0),
+                    RichText::new(
+                        "Fast, keyboard-first photo culling.\nScan · cull · tag · export.",
+                    )
+                    .monospace()
+                    .size(12.0),
                 );
             });
         self.show_about = open;
@@ -471,7 +479,11 @@ impl DcsApp {
             };
             if scanning && no_folder {
                 pad(ui, 20.0);
-                ui.label(RichText::new("scanning…").monospace().color(theme::TEXT_DIM));
+                ui.label(
+                    RichText::new("scanning…")
+                        .monospace()
+                        .color(theme::TEXT_DIM),
+                );
             } else if no_folder {
                 pad(ui, 120.0);
                 ui.label(RichText::new("dcs").monospace().strong().size(22.0));
@@ -702,16 +714,32 @@ fn resolve_bindings(ctx: &egui::Context) -> Vec<Action> {
         let shift = i.modifiers.shift;
         let mut actions = Vec::new();
         if i.key_pressed(Key::ArrowLeft) {
-            actions.push(Action::Nav { dx: -1, dy: 0, extend: shift });
+            actions.push(Action::Nav {
+                dx: -1,
+                dy: 0,
+                extend: shift,
+            });
         }
         if i.key_pressed(Key::ArrowRight) {
-            actions.push(Action::Nav { dx: 1, dy: 0, extend: shift });
+            actions.push(Action::Nav {
+                dx: 1,
+                dy: 0,
+                extend: shift,
+            });
         }
         if i.key_pressed(Key::ArrowUp) {
-            actions.push(Action::Nav { dx: 0, dy: -1, extend: shift });
+            actions.push(Action::Nav {
+                dx: 0,
+                dy: -1,
+                extend: shift,
+            });
         }
         if i.key_pressed(Key::ArrowDown) {
-            actions.push(Action::Nav { dx: 0, dy: 1, extend: shift });
+            actions.push(Action::Nav {
+                dx: 0,
+                dy: 1,
+                extend: shift,
+            });
         }
         if i.key_pressed(Key::A) && !cmd {
             actions.push(Action::Accept);

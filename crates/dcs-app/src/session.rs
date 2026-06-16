@@ -952,8 +952,16 @@ fn seed_cull(snapshot: &Option<ProjectSnapshot>, sidecar: &Path) -> Cull {
         return Cull::new();
     };
     let stacks = undo_log::load(&sidecar.join(UNDO_LOG_FILE)).unwrap_or_default();
-    let undo = stacks.undo.into_iter().map(UndoEntry::from_changes).collect();
-    let redo = stacks.redo.into_iter().map(UndoEntry::from_changes).collect();
+    let undo = stacks
+        .undo
+        .into_iter()
+        .map(UndoEntry::from_changes)
+        .collect();
+    let redo = stacks
+        .redo
+        .into_iter()
+        .map(UndoEntry::from_changes)
+        .collect();
     Cull::from_state(snapshot.verdicts(), undo, redo)
 }
 

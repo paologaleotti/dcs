@@ -19,7 +19,10 @@ fn record_caps_at_max() {
     }
     assert_eq!(r.projects.len(), MAX_RECENTS);
     // The most-recent insert is first; the oldest were dropped.
-    assert_eq!(r.projects[0], PathBuf::from(format!("/p{}", MAX_RECENTS + 4)));
+    assert_eq!(
+        r.projects[0],
+        PathBuf::from(format!("/p{}", MAX_RECENTS + 4))
+    );
 }
 
 #[test]
@@ -63,7 +66,10 @@ fn tempdir() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("dcs-recents-{nanos}-{:?}", std::thread::current().id()));
+    let dir = std::env::temp_dir().join(format!(
+        "dcs-recents-{nanos}-{:?}",
+        std::thread::current().id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
