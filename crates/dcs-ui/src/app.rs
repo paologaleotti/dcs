@@ -11,6 +11,7 @@ use dcs_app::{Session, VerdictFilter};
 use dcs_domain::grouping::GroupKind;
 use egui::{Align, Align2, FontId, Key, Layout, RichText, Ui};
 
+use crate::export::ExportDialog;
 use crate::grid;
 use crate::grid::TextureCache;
 use crate::keymap;
@@ -73,6 +74,8 @@ pub struct DcsApp {
     palette: Picker,
     /// Collapsed group titles (ephemeral UI state, §2.8). Keyed by header title.
     collapsed: HashSet<String>,
+    /// Export dialog state (§6); persisted across opens.
+    export: ExportDialog,
     /// Last time we refreshed the project lock; throttles the heartbeat (#34).
     last_heartbeat: Option<Instant>,
 }
@@ -97,6 +100,7 @@ impl DcsApp {
             zone_picker: Picker::new("Shoot timezone"),
             palette: Picker::new("Command Palette"),
             collapsed: HashSet::new(),
+            export: ExportDialog::default(),
             last_heartbeat: None,
         }
     }
@@ -121,6 +125,7 @@ impl eframe::App for DcsApp {
         self.autosave(&ctx);
         self.heartbeat(&ctx);
         self.about_window(&ctx);
+        self.export_dialog(&ctx);
         self.zone_picker(&ctx);
         self.command_palette(&ctx);
         if self.debug {
@@ -213,6 +218,17 @@ impl DcsApp {
                             clicked = Some(dcs_app::AppAction::ZoomOut);
                         }
                         micro_label(ui, "ZOOM");
+
+                        ui.separator();
+                        if ui
+                            .add_enabled(
+                                self.session.pool_len() > 0,
+                                egui::Button::new(RichText::new("Export…").monospace()),
+                            )
+                            .clicked()
+                        {
+                            clicked = Some(dcs_app::AppAction::OpenExport);
+                        }
                     });
                 });
             });
@@ -366,6 +382,24 @@ impl DcsApp {
                         ui.close();
                     }
                     ui.separator();
+                    if ui
+                        .add_enabled(self.session.pool_len() > 0, egui::Button::new("Export…"))
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::OpenExport);
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.session.has_rejected(),
+                            egui::Button::new("Reveal Rejected in File Manager"),
+                        )
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::RevealRejected);
+                        ui.close();
+                    }
+                    ui.separator();
                     if ui.button("Quit").clicked() {
                         clicked = Some(AppAction::Quit);
                     }
@@ -465,6 +499,258 @@ impl DcsApp {
                 );
             });
         self.show_about = open;
+    }
+
+    /// The export dialog (§6.1–6.7): staged settings, a live dry-run preview, and
+    /// progress — the preview and the run share one `ExportPlan` from the
+    /// conductor, so the dialog never lies about what it copies.
+    fn export_dialog(&mut self, ctx: &egui::Context) {
+        if !self.export.open {
+            return;
+        }
+        use dcs_app::{Collision, ExportScope, FileSelection, Layout};
+
+        // Resolve everything that needs the session before the panel borrows
+        // `self.export` mutably for its controls. Only the settings view needs
+        // the scope counts and live plan, so skip that work once a run starts.
+        let status = self.session.export_status();
+        let idle = status.is_none();
+        let scopes = [
+            (ExportScope::Selection, "Selection"),
+            (ExportScope::Accepted, "Accepted"),
+            (ExportScope::AcceptedAndUnreviewed, "Accepted + Unreviewed"),
+            (ExportScope::Unreviewed, "Unreviewed"),
+            (ExportScope::Rejected, "Rejected"),
+            (ExportScope::Everything, "Everything"),
+        ];
+        let scope_counts: Vec<(ExportScope, &str, usize)> = if idle {
+            scopes
+                .iter()
+                .map(|&(s, l)| (s, l, self.session.export_scope_count(s)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let unreviewed = if idle {
+            self.session.unreviewed_count()
+        } else {
+            0
+        };
+        let preview = idle
+            .then(|| self.export.request())
+            .flatten()
+            .map(|r| self.session.plan_export(self.export.scope, &r));
+
+        let mut keep_open = true;
+        let (mut choose, mut run, mut cancel, mut open_dest, mut close) =
+            (false, false, false, false, false);
+
+        egui::Window::new("Export")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut keep_open)
+            .show(ctx, |ui| {
+                ui.set_width(440.0);
+
+                if let Some(st) = status {
+                    if st.running {
+                        ui.label(
+                            RichText::new(format!("Copying… {}/{}", st.done(), st.total))
+                                .monospace(),
+                        );
+                        ui.add(egui::ProgressBar::new(progress(st.done(), st.total)));
+                        ui.add_space(6.0);
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    } else {
+                        ui.label(
+                            RichText::new(format!(
+                                "Done — {} copied, {} skipped, {} failed.",
+                                st.copied, st.skipped, st.failed
+                            ))
+                            .strong(),
+                        );
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Open folder").clicked() {
+                                open_dest = true;
+                            }
+                            if ui.button("Close").clicked() {
+                                close = true;
+                            }
+                        });
+                    }
+                    return;
+                }
+
+                let max_h = ui.ctx().content_rect().height() * 0.55;
+                egui::ScrollArea::vertical()
+                    .max_height(max_h)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        section(ui, "Scope", |ui| {
+                            for (scope, label, count) in &scope_counts {
+                                ui.radio_value(
+                                    &mut self.export.scope,
+                                    *scope,
+                                    format!("{label}  ·  {count}"),
+                                );
+                            }
+                            if self.export.scope == ExportScope::Accepted && unreviewed > 0 {
+                                ui.add_space(2.0);
+                                ui.label(
+                                    RichText::new(format!("{unreviewed} unreviewed excluded"))
+                                        .small()
+                                        .color(theme::TEXT_DIM),
+                                );
+                            }
+                        });
+
+                        section(ui, "Files", |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.radio_value(&mut self.export.files, FileSelection::Both, "Both");
+                                ui.radio_value(
+                                    &mut self.export.files,
+                                    FileSelection::Jpeg,
+                                    "JPEG only",
+                                );
+                                ui.radio_value(
+                                    &mut self.export.files,
+                                    FileSelection::Raw,
+                                    "RAW only",
+                                );
+                                ui.radio_value(
+                                    &mut self.export.files,
+                                    FileSelection::Original,
+                                    "Original",
+                                );
+                            });
+                        });
+
+                        section(ui, "Layout", |ui| {
+                            ui.radio_value(&mut self.export.layout, Layout::Together, "One folder");
+                            ui.radio_value(
+                                &mut self.export.layout,
+                                Layout::SplitJpegRaw,
+                                "Split JPEG / RAW",
+                            );
+                            ui.radio_value(
+                                &mut self.export.layout,
+                                Layout::MirrorSource,
+                                "Mirror source tree",
+                            );
+                            ui.radio_value(
+                                &mut self.export.layout,
+                                Layout::GroupAsFolders,
+                                "A folder per group",
+                            );
+                        });
+
+                        section(ui, "On name collision", |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.radio_value(
+                                    &mut self.export.collision,
+                                    Collision::Rename,
+                                    "Rename (-1, -2…)",
+                                );
+                                ui.radio_value(&mut self.export.collision, Collision::Skip, "Skip");
+                            });
+                        });
+
+                        section(ui, "Rename template", |ui| {
+                            ui.checkbox(&mut self.export.template_on, "Rename copies");
+                            if self.export.template_on {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.export.template)
+                                        .desired_width(f32::INFINITY)
+                                        .hint_text("{name}_{seq}"),
+                                );
+                                ui.label(
+                                    RichText::new("tokens: {name} {date} {time} {group} {seq}")
+                                        .small()
+                                        .color(theme::TEXT_DIM),
+                                );
+                            }
+                        });
+
+                        section(ui, "Destination", |ui| {
+                            ui.horizontal(|ui| {
+                                if ui.button("Choose…").clicked() {
+                                    choose = true;
+                                }
+                                match &self.export.dest {
+                                    Some(p) => ui.label(RichText::new(p.display().to_string())),
+                                    None => ui
+                                        .label(RichText::new("none chosen").color(theme::TEXT_DIM)),
+                                };
+                            });
+                        });
+                    });
+
+                ui.separator();
+                ui.add_space(4.0);
+
+                let mut ops = 0usize;
+                match &preview {
+                    None => {
+                        ui.label(
+                            RichText::new("Choose a destination to preview.")
+                                .color(theme::TEXT_DIM),
+                        );
+                    }
+                    Some(Ok(plan)) => {
+                        ops = plan.ops.len();
+                        ui.label(&plan.summary);
+                        if !plan.skipped.is_empty() {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} skipped — no matching file",
+                                    plan.skipped.len()
+                                ))
+                                .small()
+                                .color(theme::TEXT_DIM),
+                            );
+                        }
+                    }
+                    Some(Err(e)) => {
+                        ui.label(RichText::new(e.to_string()).color(theme::VERDICT_REJECT));
+                    }
+                }
+                ui.add_space(6.0);
+                let files = if ops == 1 { "file" } else { "files" };
+                ui.add_enabled_ui(ops > 0, |ui| {
+                    if ui
+                        .add_sized(
+                            [ui.available_width(), 28.0],
+                            egui::Button::new(
+                                RichText::new(format!("Copy {ops} {files}")).strong(),
+                            ),
+                        )
+                        .clicked()
+                    {
+                        run = true;
+                    }
+                });
+            });
+
+        if choose && let Some(dir) = rfd::FileDialog::new().pick_folder() {
+            self.export.dest = Some(dir);
+        }
+        if run && let Some(Ok(plan)) = preview {
+            self.session.start_export(plan);
+        }
+        if cancel {
+            self.session.cancel_export();
+        }
+        if open_dest && let Some(dest) = self.export.dest.clone() {
+            self.session.reveal(&dest);
+        }
+        if !keep_open || close {
+            self.export.open = false;
+            self.session.clear_export_status();
+        }
     }
 
     /// Searchable timezone picker on the reusable [`Picker`]. First row clears
@@ -680,6 +966,14 @@ impl DcsApp {
             }
             return;
         }
+        // The export dialog is modal too: Esc dismisses it, grid keys inert.
+        if self.export.open {
+            if ctx.input(|i| i.key_pressed(Key::Escape)) {
+                self.export.open = false;
+                self.session.clear_export_status();
+            }
+            return;
+        }
         // A focused text field owns the keyboard so its edits don't leak to the
         // grid.
         if ctx.egui_wants_keyboard_input() {
@@ -719,6 +1013,13 @@ impl DcsApp {
             E::ToggleDiagnostics => self.debug = !self.debug,
             E::OpenZonePicker => self.zone_picker.open(),
             E::ShowAbout => self.show_about = true,
+            E::OpenExport => {
+                self.export.open = true;
+                // Default scope to the current selection when there is one (§6.2).
+                if self.session.selection_count() > 0 {
+                    self.export.scope = dcs_app::ExportScope::Selection;
+                }
+            }
             E::CollapseAllGroups => {
                 let titles: Vec<String> = self
                     .session
@@ -891,6 +1192,24 @@ fn nav_locate(rows: &[Vec<usize>], idx: usize) -> Option<(usize, usize)> {
     rows.iter()
         .enumerate()
         .find_map(|(r, row)| row.iter().position(|&i| i == idx).map(|c| (r, c)))
+}
+
+/// Fraction copied so far, for the export progress bar.
+fn progress(done: usize, total: usize) -> f32 {
+    if total == 0 {
+        1.0
+    } else {
+        (done as f32 / total as f32).clamp(0.0, 1.0)
+    }
+}
+
+/// A titled settings block in the export dialog: a heading, the controls
+/// indented beneath it, and surrounding space to set it off from its neighbors.
+fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
+    ui.add_space(8.0);
+    ui.label(RichText::new(title).strong());
+    ui.add_space(2.0);
+    ui.indent(title, body);
 }
 
 /// Arrow + word for a sort direction, e.g. `↑ asc` — both the glyph and the

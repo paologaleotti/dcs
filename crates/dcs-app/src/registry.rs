@@ -41,6 +41,8 @@ pub enum AppAction {
     Undo,
     Redo,
     SetShootZone,
+    OpenExport,
+    RevealRejected,
     About,
     Quit,
 }
@@ -93,6 +95,8 @@ impl AppAction {
             AppAction::Undo => "undo",
             AppAction::Redo => "redo",
             AppAction::SetShootZone => "set-shoot-zone",
+            AppAction::OpenExport => "open-export",
+            AppAction::RevealRejected => "reveal-rejected",
             AppAction::About => "about",
             AppAction::Quit => "quit",
         }
@@ -118,6 +122,8 @@ pub enum ActionEffect {
     ShowAbout,
     CollapseAllGroups,
     ExpandAllGroups,
+    /// Open the export dialog (it owns the staged settings + live preview).
+    OpenExport,
     Quit,
 }
 
@@ -232,6 +238,18 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
         push(&mut e, AppAction::Redo, "Redo", Category::Edit);
     }
 
+    if session.pool_len() > 0 {
+        push(&mut e, AppAction::OpenExport, "Export…", Category::File);
+    }
+    if session.has_rejected() {
+        push(
+            &mut e,
+            AppAction::RevealRejected,
+            "Reveal Rejected in File Manager",
+            Category::File,
+        );
+    }
+
     push(
         &mut e,
         AppAction::SetShootZone,
@@ -312,6 +330,11 @@ impl Session {
                 ActionEffect::None
             }
             AppAction::SetShootZone => ActionEffect::OpenZonePicker,
+            AppAction::OpenExport => ActionEffect::OpenExport,
+            AppAction::RevealRejected => {
+                self.reveal_rejected();
+                ActionEffect::None
+            }
             AppAction::About => ActionEffect::ShowAbout,
             AppAction::Quit => ActionEffect::Quit,
         }

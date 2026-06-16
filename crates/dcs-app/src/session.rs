@@ -13,12 +13,13 @@
 //! about to paint (plus hi-res for the visible cells when zoomed), and reads
 //! back the best resident thumbnail per cell.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use dcs_domain::command::Command;
 use dcs_domain::cull::AcceptState;
+use dcs_domain::export::{self, ExportItem, ExportPlan, ExportRequest};
 use dcs_domain::grouping::{self, Axis, DerivedGroup, GroupKind, TimeGranularity};
 use dcs_domain::pairing::PoolBuilder;
 use dcs_domain::photo::{Photo, PhotoId};
@@ -26,6 +27,7 @@ use dcs_domain::sort::Sort;
 use dcs_domain::thumb::ThumbImage;
 use dcs_domain::timezone;
 use dcs_io::cache::{SharedCache, SqliteCache, ThumbTier};
+use dcs_io::export::{ExportEvent, ExportHandle, run_export};
 use dcs_io::imaging::{DecodeRequest, RayonThumbDecoder, ThumbDecoder};
 use dcs_io::lock::{self, LockOutcome, ProjectLock};
 use dcs_io::persistence::{
@@ -39,6 +41,7 @@ use thiserror::Error;
 use time_tz::Tz;
 
 use crate::cull::{Cull, UndoEntry};
+use crate::export::{ExportScope, ExportStatus};
 use crate::selection::Selection;
 use crate::util::{LruMap, decode_key, encode_key};
 
@@ -197,6 +200,10 @@ pub struct Session {
     /// Command-palette most-recently-used action ids, newest first. Drives the
     /// palette's default order (§2.10); ephemeral, not persisted in v1.
     mru: Vec<&'static str>,
+    /// Running export executor (§6.9), polled in `tick`. `None` when idle.
+    export_handle: Option<ExportHandle>,
+    /// Progress of the running or last-finished export, read by the dialog.
+    export_status: Option<ExportStatus>,
 }
 
 impl Session {
@@ -240,6 +247,8 @@ impl Session {
             recents: Recents::default(),
             dirty: false,
             mru: Vec::new(),
+            export_handle: None,
+            export_status: None,
         }
     }
 
@@ -257,6 +266,9 @@ impl Session {
         self.resolved_gran = None;
         self.sel = Selection::new();
         self.filter = VerdictFilter::All;
+        // Abandon any running export from the previous folder (its handle drops).
+        self.export_handle = None;
+        self.export_status = None;
         self.base = LruMap::new(BASE_CACHE_BYTES);
         self.hires = LruMap::new(HIRES_CACHE_BYTES);
         self.base_inflight.clear();
@@ -332,6 +344,36 @@ impl Session {
                 continue; // stale decode from a previously opened folder
             }
             self.absorb_thumb(id, hires, image);
+        }
+        self.poll_export();
+    }
+
+    /// Drain export-executor events into the live status; clear the handle when
+    /// the run finishes so the dialog can show its completion state (§6.7).
+    fn poll_export(&mut self) {
+        let Some(handle) = self.export_handle.as_ref() else {
+            return;
+        };
+        let mut events = handle.poll();
+        let running = handle.is_running();
+        if !running {
+            // The worker finishes the loop *then* flips the done flag, so events
+            // sent between the poll above and this check are still in the channel.
+            // Drain once more before retiring the handle or they're lost.
+            events.extend(handle.poll());
+        }
+        if let Some(status) = self.export_status.as_mut() {
+            for event in events {
+                match event {
+                    ExportEvent::Copied { .. } => status.copied += 1,
+                    ExportEvent::Skipped { .. } => status.skipped += 1,
+                    ExportEvent::Failed { .. } => status.failed += 1,
+                }
+            }
+            status.running = running;
+        }
+        if !running {
+            self.export_handle = None;
         }
     }
 
@@ -836,6 +878,128 @@ impl Session {
         self.sort = sort;
         self.bg_cursor = 0;
         self.regroup();
+    }
+
+    /// Plan an export over `scope` with the dialog's `request`, via the pure
+    /// planner (§6.9). The result drives both the live preview and the run, so
+    /// the dialog can never disagree with what gets copied. Pure: no disk access.
+    pub fn plan_export(
+        &self,
+        scope: ExportScope,
+        request: &ExportRequest,
+    ) -> Result<ExportPlan, dcs_domain::export::ExportError> {
+        let photos = self.builder.photos();
+        let title_of = self.group_titles();
+        let items: Vec<ExportItem> = self
+            .scope_indices(scope)
+            .into_iter()
+            .map(|i| ExportItem {
+                photo: &photos[i],
+                group_title: title_of.get(&i).copied(),
+            })
+            .collect();
+        let root = self.root.as_deref().unwrap_or(Path::new(""));
+        export::plan_export(&items, root, request)
+    }
+
+    /// How many photos `scope` resolves to — the dialog's live per-scope count.
+    pub fn export_scope_count(&self, scope: ExportScope) -> usize {
+        self.scope_indices(scope).len()
+    }
+
+    /// Unreviewed photos in the pool — surfaced as the "N unreviewed excluded"
+    /// honesty note when scope is `Accepted` (§6.2).
+    pub fn unreviewed_count(&self) -> usize {
+        self.export_scope_count(ExportScope::Unreviewed)
+    }
+
+    /// Hand a planned export to the `dcs-io` executor and begin tracking it.
+    pub fn start_export(&mut self, plan: ExportPlan) {
+        let total = plan.ops.len();
+        self.export_handle = Some(run_export(plan));
+        self.export_status = Some(ExportStatus {
+            total,
+            running: true,
+            ..ExportStatus::default()
+        });
+    }
+
+    /// Progress of the running or last-finished export, if one has started.
+    pub fn export_status(&self) -> Option<ExportStatus> {
+        self.export_status
+    }
+
+    /// Request cancellation of the running export (§6.7).
+    pub fn cancel_export(&self) {
+        if let Some(handle) = &self.export_handle {
+            handle.cancel();
+        }
+    }
+
+    /// Forget the last export's finished status (the dialog dismissing its toast).
+    pub fn clear_export_status(&mut self) {
+        if self.export_handle.is_none() {
+            self.export_status = None;
+        }
+    }
+
+    /// Whether any photo is rejected — gates the "reveal rejected" action.
+    /// Reads the maintained verdict tally (O(reviewed)) rather than scanning the
+    /// whole pool, since the menu bar polls this every frame.
+    pub fn has_rejected(&self) -> bool {
+        self.cull.counts().rejected > 0
+    }
+
+    /// Open the OS file manager at the source folder so the rejected originals
+    /// can be acted on outside the app (§6.5). No-op when no folder is open.
+    pub fn reveal_rejected(&self) {
+        if let Some(root) = &self.root {
+            self.reveal(root);
+        }
+    }
+
+    /// Open the OS file manager at `path` — the "Open folder" affordance after an
+    /// export (§6.7).
+    pub fn reveal(&self, path: &Path) {
+        dcs_io::reveal::reveal(path);
+    }
+
+    /// Pool indices in `scope`, in display order so `{seq}` and the on-disk
+    /// order match the sheet.
+    fn scope_indices(&self, scope: ExportScope) -> Vec<usize> {
+        let photos = self.builder.photos();
+        self.order
+            .iter()
+            .copied()
+            .filter(|&i| {
+                let id = photos[i].id;
+                match scope {
+                    ExportScope::Selection => self.sel.is_selected(id),
+                    ExportScope::Accepted => self.cull.state(id) == AcceptState::Accepted,
+                    ExportScope::Rejected => self.cull.state(id) == AcceptState::Rejected,
+                    ExportScope::Unreviewed => self.cull.state(id) == AcceptState::Unreviewed,
+                    ExportScope::AcceptedAndUnreviewed => {
+                        self.cull.state(id) != AcceptState::Rejected
+                    }
+                    ExportScope::Everything => true,
+                }
+            })
+            .collect()
+    }
+
+    /// Map each pool index to its derived group title (for `GroupAsFolders` and
+    /// `{group}`). The empty stream title (axis `none`) maps to nothing.
+    fn group_titles(&self) -> HashMap<usize, &str> {
+        let mut map = HashMap::new();
+        for group in &self.groups {
+            if group.title.is_empty() {
+                continue;
+            }
+            for &member in &group.members {
+                map.insert(member, group.title.as_str());
+            }
+        }
+        map
     }
 
     /// Move the focus cursor (`←→` = ±1 column, `↑↓` = ±1 row) over the flat

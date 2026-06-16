@@ -5,6 +5,7 @@
 //! tree. (§9)
 
 mod app;
+mod export;
 mod grid;
 mod keymap;
 mod picker;
