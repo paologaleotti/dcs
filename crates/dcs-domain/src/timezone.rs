@@ -3,8 +3,8 @@
 //! module is the pure source of the zone list (for a picker), zone lookup, and
 //! the per-instant `OffsetDateTime` adjustment that grouping derives from.
 
-use time::{OffsetDateTime, PrimitiveDateTime};
-use time_tz::{PrimitiveDateTimeExt, TimeZone, Tz, timezones};
+use time::{OffsetDateTime, PrimitiveDateTime, UtcOffset};
+use time_tz::{OffsetDateTimeExt, PrimitiveDateTimeExt, TimeZone, Tz, timezones};
 
 /// Every IANA zone name, sorted — the data behind a timezone picker.
 pub fn zone_names() -> Vec<&'static str> {
@@ -24,19 +24,35 @@ pub fn zone(name: &str) -> Option<&'static Tz> {
     timezones::get_by_name(name)
 }
 
-/// Anchor a naive EXIF capture time to the shoot zone, deriving the offset *for
-/// that instant* so a trip spanning a DST change stays correct (#7). The offset
-/// is per-photo, never a single project-wide constant.
+/// Resolve the absolute capture instant from the naive EXIF time. The naive time
+/// is wall-clock with no zone, so it must be anchored before it means an instant:
+/// a per-photo EXIF offset (`OffsetTimeOriginal`) wins when present, otherwise the
+/// camera zone supplies the offset *for that instant* (DST mid-trip safe, #7).
 ///
-/// On the rare impossible local time (the spring-forward gap), we fall back to
-/// UTC rather than panic — a real capture never lands there, and grouping must
-/// stay total.
-pub fn adjusted(naive: PrimitiveDateTime, zone: &Tz) -> OffsetDateTime {
-    match naive.assume_timezone(zone) {
-        time_tz::OffsetResult::Some(dt) => dt,
-        // Ambiguous (fall-back hour, seen twice): take the first (pre-transition)
-        // occurrence — deterministic and good enough for grouping.
-        time_tz::OffsetResult::Ambiguous(first, _) => first,
-        time_tz::OffsetResult::None => naive.assume_utc(),
+/// On the rare impossible local time (the spring-forward gap) we fall back to UTC
+/// rather than panic — a real capture never lands there, and derivation must stay
+/// total.
+pub fn source_instant(
+    naive: PrimitiveDateTime,
+    captured_offset: Option<UtcOffset>,
+    camera_zone: &Tz,
+) -> OffsetDateTime {
+    match captured_offset {
+        Some(offset) => naive.assume_offset(offset),
+        None => match naive.assume_timezone(camera_zone) {
+            time_tz::OffsetResult::Some(dt) => dt,
+            // Ambiguous (fall-back hour, seen twice): take the first (pre-transition)
+            // occurrence — deterministic and good enough for grouping.
+            time_tz::OffsetResult::Ambiguous(first, _) => first,
+            time_tz::OffsetResult::None => naive.assume_utc(),
+        },
     }
+}
+
+/// Convert an absolute capture instant into the display (shoot) zone, deriving the
+/// offset for that instant so a trip spanning a DST change stays correct (#7). The
+/// returned wall-clock is what grouping and the caption read; it only differs from
+/// the shot time when the display zone differs from the photo's source offset.
+pub fn adjusted(instant: OffsetDateTime, display_zone: &Tz) -> OffsetDateTime {
+    instant.to_timezone(display_zone)
 }

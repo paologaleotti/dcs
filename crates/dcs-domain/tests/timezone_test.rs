@@ -1,4 +1,9 @@
 use dcs_domain::timezone;
+use time::macros::datetime;
+
+fn rome() -> &'static time_tz::Tz {
+    timezone::zone("Europe/Rome").expect("Rome exists")
+}
 
 #[test]
 fn zone_names_are_sorted_nonempty_and_include_known_zones() {
@@ -19,4 +24,37 @@ fn is_valid_accepts_known_and_rejects_bogus() {
     assert!(timezone::is_valid("Asia/Tokyo"));
     assert!(!timezone::is_valid("Mars/Olympus_Mons"));
     assert!(!timezone::is_valid(""));
+}
+
+#[test]
+fn source_instant_spring_forward_gap_falls_back_to_utc() {
+    // 2025-03-30 02:00→03:00 in Rome: 02:30 never existed. Derivation must stay
+    // total — fall back to UTC (offset 0) rather than panic.
+    let gap = timezone::source_instant(datetime!(2025-03-30 02:30:00), None, rome());
+    assert_eq!(gap.offset().whole_hours(), 0, "impossible local time → UTC");
+}
+
+#[test]
+fn source_instant_fall_back_hour_takes_first_occurrence() {
+    // 2025-10-26 03:00→02:00 in Rome: 02:30 happens twice (CEST then CET). The
+    // first (pre-transition, +02:00) occurrence is chosen, deterministically.
+    let ambiguous = timezone::source_instant(datetime!(2025-10-26 02:30:00), None, rome());
+    assert_eq!(
+        ambiguous.offset().whole_hours(),
+        2,
+        "ambiguous hour → first (CEST) occurrence"
+    );
+}
+
+#[test]
+fn source_instant_prefers_exif_offset_over_camera_zone() {
+    // A photo carrying its own EXIF offset ignores the camera-zone argument.
+    use time::macros::offset;
+    let instant = timezone::source_instant(
+        datetime!(2025-07-15 12:00:00),
+        Some(offset!(+05:30)),
+        rome(),
+    );
+    assert_eq!(instant.offset().whole_hours(), 5);
+    assert_eq!(instant.offset().minutes_past_hour(), 30);
 }

@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use time::PrimitiveDateTime;
+use time::{PrimitiveDateTime, UtcOffset};
 
 use crate::fingerprint::ContentFingerprint;
 
@@ -152,6 +152,10 @@ pub struct Photo {
     /// Raw EXIF `DateTimeOriginal`, naive (no zone). Timezone adjustment to an
     /// `OffsetDateTime` is derived later (§2.4); `None` means undated.
     pub captured_at: Option<PrimitiveDateTime>,
+    /// EXIF `OffsetTimeOriginal`, the camera's UTC offset at capture when the tag
+    /// is present. Lets the absolute instant be derived per-photo without guessing
+    /// a camera zone; `None` falls back to the project camera zone.
+    pub captured_offset: Option<UtcOffset>,
     /// EXIF capture facts for the gallery caption. Derived, not persisted —
     /// empty for missing photos until the file returns.
     pub meta: CaptureMeta,
@@ -230,6 +234,7 @@ impl Photo {
             orientation: Orientation::Normal,
             fingerprint,
             captured_at: None,
+            captured_offset: None,
             meta: CaptureMeta::default(),
             missing: true,
         }

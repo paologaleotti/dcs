@@ -89,9 +89,13 @@ pub struct DcsApp {
     dirty_since: Option<Instant>,
     /// About window visibility.
     show_about: bool,
-    /// Shoot-timezone picker — a keyboard-first fuzzy quick-pick (the same
-    /// component the command palette and tag palette will use).
+    /// Photo metadata window visibility (`I`); reads the focused photo each frame.
+    show_metadata: bool,
+    /// Shoot-timezone (display) picker — a keyboard-first fuzzy quick-pick (the
+    /// same component the command palette and tag palette will use).
     zone_picker: Picker,
+    /// Camera-timezone picker — the zone the camera clock was set to.
+    camera_zone_picker: Picker,
     /// The `Cmd/Ctrl+P` command palette over the whole registry (§2.10).
     palette: Picker,
     /// Collapsed group titles (ephemeral UI state, §2.8). Keyed by header title.
@@ -126,7 +130,9 @@ impl DcsApp {
             scroll_to_focus: false,
             dirty_since: None,
             show_about: false,
-            zone_picker: Picker::new("Shoot timezone"),
+            show_metadata: false,
+            zone_picker: Picker::new("Travel timezone"),
+            camera_zone_picker: Picker::new("Camera timezone"),
             palette: Picker::new("Command Palette"),
             collapsed: HashSet::new(),
             export: ExportDialog::default(),
@@ -157,8 +163,10 @@ impl eframe::App for DcsApp {
         self.autosave(&ctx);
         self.heartbeat(&ctx);
         self.about_window(&ctx);
+        self.metadata_window(&ctx);
         self.export_dialog(&ctx);
         self.zone_picker(&ctx);
+        self.camera_zone_picker(&ctx);
         self.command_palette(&ctx);
         if self.debug {
             self.diagnostics(&ctx);
@@ -247,13 +255,8 @@ impl DcsApp {
 
                     ui.separator();
                     micro_label(ui, "TZ");
-                    let zone = self.session.shoot_zone().unwrap_or("set").to_string();
-                    if ui
-                        .selectable_label(false, RichText::new(zone).monospace())
-                        .on_hover_text("Timezone used to group photos by time")
-                        .clicked()
-                    {
-                        clicked = Some(dcs_app::AppAction::SetShootZone);
+                    if let Some(a) = self.tz_menu(ui) {
+                        clicked = Some(a);
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -343,6 +346,54 @@ impl DcsApp {
                     }
                 }
             }
+        });
+        picked
+    }
+
+    /// The TZ dropdown: one entry point for both timezones. The button shows the
+    /// active travel zone (what times are displayed in); the menu sets the travel
+    /// and camera zones and explains how they interact.
+    fn tz_menu(&self, ui: &mut Ui) -> Option<dcs_app::AppAction> {
+        let mut picked = None;
+        let travel = self.session.shoot_zone();
+        let label = travel.unwrap_or("set").to_string();
+        ui.menu_button(RichText::new(label).monospace(), |ui| {
+            ui.set_min_width(240.0);
+            ui.label(RichText::new("TIMEZONES").small().weak());
+            ui.add_space(2.0);
+
+            let travel_now = travel.unwrap_or("system default");
+            if tz_row(
+                ui,
+                "Travel TZ",
+                travel_now,
+                "Times are shown & grouped in this zone",
+            )
+            .clicked()
+            {
+                picked = Some(dcs_app::AppAction::SetShootZone);
+                ui.close();
+            }
+            let camera_now = self.session.camera_zone().unwrap_or("system default");
+            if tz_row(
+                ui,
+                "Camera TZ",
+                camera_now,
+                "Zone the camera clock was set to — used only when a photo has no EXIF offset",
+            )
+            .clicked()
+            {
+                picked = Some(dcs_app::AppAction::SetCameraZone);
+                ui.close();
+            }
+
+            ui.add_space(4.0);
+            ui.separator();
+            ui.label(
+                RichText::new("A photo's own EXIF offset always wins over the camera zone.")
+                    .small()
+                    .weak(),
+            );
         });
         picked
     }
@@ -552,6 +603,49 @@ impl DcsApp {
                 );
             });
         self.show_about = open;
+    }
+
+    /// Full metadata for the focused photo (`I`): a labelled two-column grid of
+    /// every known fact — gear, capture times, both timezones, and file paths.
+    fn metadata_window(&mut self, ctx: &egui::Context) {
+        if !self.show_metadata {
+            return;
+        }
+        // Closes itself if focus is lost (e.g. the pool emptied) so it never
+        // strands an empty frame.
+        let Some(rows) = self
+            .session
+            .focus()
+            .and_then(|focus| self.session.photo_metadata(focus))
+        else {
+            self.show_metadata = false;
+            return;
+        };
+        let mut open = true;
+        egui::Window::new("Photo metadata")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                egui::Grid::new("metadata-grid")
+                    .num_columns(2)
+                    .spacing([18.0, 6.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for (label, value) in &rows {
+                            ui.label(
+                                RichText::new(*label)
+                                    .monospace()
+                                    .size(12.0)
+                                    .color(theme::TEXT_DIM),
+                            );
+                            ui.label(RichText::new(value).monospace().size(12.0));
+                            ui.end_row();
+                        }
+                    });
+            });
+        self.show_metadata = open;
     }
 
     /// The export dialog (§6.1–6.7): staged settings, a live dry-run preview, and
@@ -806,8 +900,8 @@ impl DcsApp {
         if cancel {
             self.session.cancel_export();
         }
-        if open_dest && let Some(dest) = self.export.dest.clone() {
-            self.session.reveal(&dest);
+        if open_dest && let Some(dest) = self.export.dest.as_deref() {
+            self.session.reveal(dest);
         }
         if !keep_open || close {
             self.export.open = false;
@@ -840,6 +934,36 @@ impl DcsApp {
             PickerEvent::Picked(0) => self.session.set_shoot_zone(None),
             PickerEvent::Picked(i) => {
                 self.session.set_shoot_zone(Some(zones[i - 1].to_string()));
+            }
+            PickerEvent::Dismissed | PickerEvent::Pending => {}
+        }
+    }
+
+    /// Camera-timezone picker: the zone the camera clock was set to, anchoring a
+    /// naive EXIF time that carries no offset. First row clears to system default.
+    fn camera_zone_picker(&mut self, ctx: &egui::Context) {
+        if !self.camera_zone_picker.is_open() {
+            return;
+        }
+        let subtitle = match self.session.camera_zone() {
+            Some(z) => format!("current: {z}"),
+            None => "current: system default".to_string(),
+        };
+        let zones = dcs_domain::timezone::zone_names();
+        let mut items: Vec<PickerItem> = Vec::with_capacity(zones.len() + 1);
+        items.push(PickerItem {
+            label: CLEAR_ZONE_ROW,
+            detail: Some("system default"),
+        });
+        items.extend(zones.iter().map(|z| PickerItem::new(z)));
+
+        match self
+            .camera_zone_picker
+            .show(ctx, Some(&subtitle), "search zone… e.g. tokyo", &items)
+        {
+            PickerEvent::Picked(0) => self.session.set_camera_zone(None),
+            PickerEvent::Picked(i) => {
+                self.session.set_camera_zone(Some(zones[i - 1].to_string()));
             }
             PickerEvent::Dismissed | PickerEvent::Pending => {}
         }
@@ -1076,13 +1200,21 @@ impl DcsApp {
     fn handle_keys(&mut self, ctx: &egui::Context) {
         // Any picker owns the keyboard while open (it consumes its own keys in
         // `Picker::show`), so the grid stays inert behind it — just bail.
-        if self.palette.is_open() || self.zone_picker.is_open() {
+        if self.palette.is_open() || self.zone_picker.is_open() || self.camera_zone_picker.is_open()
+        {
             return;
         }
         // The About window is a plain modal: Esc closes it, grid keys inert.
         if self.show_about {
             if ctx.input(|i| i.key_pressed(Key::Escape)) {
                 self.show_about = false;
+            }
+            return;
+        }
+        // The metadata window: Esc (or `I` again) closes it, grid keys inert.
+        if self.show_metadata {
+            if ctx.input(|i| i.key_pressed(Key::Escape) || i.key_pressed(Key::I)) {
+                self.show_metadata = false;
             }
             return;
         }
@@ -1199,6 +1331,8 @@ impl DcsApp {
             E::ZoomOut => self.zoom(1.0 / ZOOM_STEP),
             E::ToggleDiagnostics => self.debug = !self.debug,
             E::OpenZonePicker => self.zone_picker.open(),
+            E::OpenCameraZonePicker => self.camera_zone_picker.open(),
+            E::ShowMetadata => self.show_metadata = true,
             E::ShowAbout => self.show_about = true,
             E::OpenExport => {
                 self.export.open = true;
@@ -1428,6 +1562,14 @@ fn micro_label(ui: &mut Ui, text: &str) {
             .font(FontId::monospace(10.0))
             .color(theme::TEXT_DIM),
     );
+}
+
+/// One full-width clickable row in the TZ menu: field name + its current value,
+/// with a hover hint. Returns the row's response so the caller can dispatch.
+fn tz_row(ui: &mut Ui, name: &str, value: &str, hint: &str) -> egui::Response {
+    let text = format!("{name:<10}{value}");
+    let row = ui.selectable_label(false, RichText::new(text).monospace());
+    row.on_hover_text(hint)
 }
 
 /// The verdict-filter word for the empty-view message (`All` never empties).

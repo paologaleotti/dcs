@@ -75,6 +75,7 @@ const fn cmd_shift(key: Key) -> Chord {
 const KEYMAP: &[(AppAction, Chord)] = &[
     (AppAction::Accept, plain(Key::A)),
     (AppAction::Reject, plain(Key::X)),
+    (AppAction::ShowMetadata, plain(Key::I)),
     (AppAction::Undo, cmd(Key::Z)),
     (AppAction::Redo, cmd_shift(Key::Z)),
     (AppAction::OpenFolder, cmd(Key::O)),

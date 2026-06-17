@@ -84,14 +84,6 @@ impl Picker {
         self.cursor = 0;
     }
 
-    /// Close programmatically. Part of the reusable component API (a future
-    /// command palette closes itself after dispatching a command); the zone
-    /// picker closes via `Esc`/pick, so this is unused for now.
-    #[allow(dead_code)]
-    pub fn close(&mut self) {
-        self.open = false;
-    }
-
     /// Render the picker and report what happened. No-op returning `Pending`
     /// when closed. `subtitle` is a small dim line under the search field (e.g.
     /// the freeze-critical note, the current value).
@@ -249,12 +241,18 @@ impl Picker {
         ui.painter().galley(text_pos, galley, text_color);
 
         if let Some(detail) = row.item.detail {
+            // Key hints (and picker detail) read at a glance — dim, not invisible.
+            let detail_color = if on {
+                theme::SELECT_OUTLINE
+            } else {
+                theme::TEXT_DIM
+            };
             ui.painter().text(
                 egui::pos2(rect.right() - 6.0, rect.center().y),
                 Align2::RIGHT_CENTER,
                 detail,
                 FontId::monospace(11.0),
-                theme::HAIRLINE,
+                detail_color,
             );
         }
         resp.clicked()

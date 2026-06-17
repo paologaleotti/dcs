@@ -40,6 +40,7 @@ fn photo_at(
         orientation: Default::default(),
         fingerprint: ContentFingerprint::from_bytes([id as u8; 32]),
         captured_at: when,
+        captured_offset: None,
         meta: dcs_domain::photo::CaptureMeta::default(),
         missing: false,
     }

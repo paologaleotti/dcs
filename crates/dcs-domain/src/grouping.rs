@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use time::{Date, OffsetDateTime};
+use time::{Date, OffsetDateTime, PrimitiveDateTime, UtcOffset};
 use time_tz::Tz;
 
 use crate::photo::Photo;
@@ -58,19 +58,34 @@ pub struct DerivedGroup {
 /// members sorted by `sort`. Time groups order chronologically (reversed when
 /// the sort direction is `Desc`) regardless of the sort *key*; the `No date`
 /// group is always last.
-pub fn group(photos: &[Photo], axis: Axis, zone: &Tz, sort: Sort) -> Vec<DerivedGroup> {
+pub fn group(
+    photos: &[Photo],
+    axis: Axis,
+    camera_zone: &Tz,
+    display_zone: &Tz,
+    sort: Sort,
+) -> Vec<DerivedGroup> {
     match axis {
         Axis::None => stream(photos, sort),
-        Axis::Time(granularity) => {
-            time_groups(photos, resolve_auto(photos, zone, granularity), zone, sort)
-        }
+        Axis::Time(granularity) => time_groups(
+            photos,
+            resolve_auto(photos, camera_zone, display_zone, granularity),
+            camera_zone,
+            display_zone,
+            sort,
+        ),
     }
 }
 
 /// Resolve `Auto` against the data: one calendar day (in zone) → `SmartDay`,
 /// otherwise `Day`. Other granularities pass through unchanged. The UI shows
 /// the resolution, e.g. `groups: auto (day)`.
-pub fn resolve_auto(photos: &[Photo], zone: &Tz, granularity: TimeGranularity) -> TimeGranularity {
+pub fn resolve_auto(
+    photos: &[Photo],
+    camera_zone: &Tz,
+    display_zone: &Tz,
+    granularity: TimeGranularity,
+) -> TimeGranularity {
     if granularity != TimeGranularity::Auto {
         return granularity;
     }
@@ -78,7 +93,7 @@ pub fn resolve_auto(photos: &[Photo], zone: &Tz, granularity: TimeGranularity) -
     let mut single = true;
     for p in photos {
         let Some(naive) = p.captured_at else { continue };
-        let date = timezone::adjusted(naive, zone).date();
+        let date = attributed_instant(naive, p.captured_offset, camera_zone, display_zone).date();
         match first {
             None => first = Some(date),
             Some(d) if d != date => {
@@ -162,7 +177,8 @@ enum SubKey {
 fn time_groups(
     photos: &[Photo],
     granularity: TimeGranularity,
-    zone: &Tz,
+    camera_zone: &Tz,
+    display_zone: &Tz,
     sort: Sort,
 ) -> Vec<DerivedGroup> {
     // Pre-derive names once so member sorts don't re-allocate per comparison.
@@ -179,7 +195,8 @@ fn time_groups(
             undated.push(i);
             continue;
         };
-        let key = bucket_key(timezone::adjusted(naive, zone), granularity);
+        let at = attributed_instant(naive, p.captured_offset, camera_zone, display_zone);
+        let key = bucket_key(at, granularity);
         let slot = *index.entry(key).or_insert_with(|| {
             buckets.push((key, Vec::new()));
             buckets.len() - 1
@@ -218,6 +235,19 @@ fn time_groups(
         });
     }
     groups
+}
+
+/// The capture instant in display-zone wall-clock: anchor the naive EXIF time to
+/// its source (EXIF offset, else camera zone), then convert into the display zone.
+/// This is the time every time-group bucket and title is derived from.
+fn attributed_instant(
+    naive: PrimitiveDateTime,
+    captured_offset: Option<UtcOffset>,
+    camera_zone: &Tz,
+    display_zone: &Tz,
+) -> OffsetDateTime {
+    let instant = timezone::source_instant(naive, captured_offset, camera_zone);
+    timezone::adjusted(instant, display_zone)
 }
 
 fn bucket_key(at: OffsetDateTime, granularity: TimeGranularity) -> BucketKey {

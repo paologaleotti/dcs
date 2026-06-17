@@ -22,6 +22,7 @@ fn file(path: &str, kind: FileKind) -> ScannedFile {
         orientation: Orientation::Normal,
         fingerprint: fp(path),
         captured_at: None,
+        captured_offset: None,
         meta: CaptureMeta::default(),
     }
 }
@@ -157,6 +158,7 @@ fn seeded_builder_reclaims_id_by_fingerprint() {
         orientation: Orientation::Normal,
         fingerprint: fp("DSCF1"),
         captured_at: None,
+        captured_offset: None,
         meta: CaptureMeta::default(),
     });
     let pool = builder.to_pool();
@@ -214,6 +216,7 @@ fn duplicate_content_does_not_reuse_one_seeded_id_twice() {
         orientation: Orientation::Normal,
         fingerprint: fp("dup"),
         captured_at: None,
+        captured_offset: None,
         meta: CaptureMeta::default(),
     };
     builder.add(dup("a/one.JPG"));
@@ -246,6 +249,7 @@ fn add_missing_skips_files_already_present() {
         orientation: Orientation::Normal,
         fingerprint: fp("c"),
         captured_at: None,
+        captured_offset: None,
         meta: CaptureMeta::default(),
     });
     // Now the fingerprint is consumed → add_missing must refuse.
@@ -263,6 +267,7 @@ fn orientation_prefers_the_jpeg() {
             orientation: Orientation::Rotate90,
             fingerprint: fp("a/x.RAF"),
             captured_at: None,
+            captured_offset: None,
             meta: CaptureMeta::default(),
         },
         ScannedFile {
@@ -271,6 +276,7 @@ fn orientation_prefers_the_jpeg() {
             orientation: Orientation::Normal,
             fingerprint: fp("a/x.JPG"),
             captured_at: None,
+            captured_offset: None,
             meta: CaptureMeta::default(),
         },
     ]);

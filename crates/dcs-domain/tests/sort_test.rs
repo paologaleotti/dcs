@@ -17,6 +17,7 @@ fn at(path: &str, when: Option<time::PrimitiveDateTime>) -> ScannedFile {
         orientation: Default::default(),
         fingerprint: ContentFingerprint::from_bytes(bytes),
         captured_at: when,
+        captured_offset: None,
         meta: CaptureMeta::default(),
     }
 }

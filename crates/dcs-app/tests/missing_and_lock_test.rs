@@ -230,6 +230,19 @@ fn shoot_zone_persists_across_reopen() {
 }
 
 #[test]
+fn camera_zone_persists_across_reopen() {
+    let dir = temp_folder("camzone");
+    write_jpeg(&dir, "a.jpg", 14);
+    {
+        let mut s = open(&dir, 1);
+        s.set_camera_zone(Some("America/New_York".to_string()));
+        s.save().unwrap();
+    }
+    let s = open(&dir, 1);
+    assert_eq!(s.camera_zone(), Some("America/New_York"));
+}
+
+#[test]
 fn second_instance_is_read_only_and_can_take_over() {
     let dir = temp_folder("lock");
     write_jpeg(&dir, "a.jpg", 9);

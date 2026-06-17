@@ -41,6 +41,8 @@ pub enum AppAction {
     Undo,
     Redo,
     SetShootZone,
+    SetCameraZone,
+    ShowMetadata,
     OpenExport,
     RevealRejected,
     About,
@@ -95,6 +97,8 @@ impl AppAction {
             AppAction::Undo => "undo",
             AppAction::Redo => "redo",
             AppAction::SetShootZone => "set-shoot-zone",
+            AppAction::SetCameraZone => "set-camera-zone",
+            AppAction::ShowMetadata => "show-metadata",
             AppAction::OpenExport => "open-export",
             AppAction::RevealRejected => "reveal-rejected",
             AppAction::About => "about",
@@ -119,6 +123,8 @@ pub enum ActionEffect {
     ZoomOut,
     ToggleDiagnostics,
     OpenZonePicker,
+    OpenCameraZonePicker,
+    ShowMetadata,
     ShowAbout,
     CollapseAllGroups,
     ExpandAllGroups,
@@ -231,6 +237,14 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
             Category::Edit,
         );
     }
+    if session.focus().is_some() {
+        push(
+            &mut e,
+            AppAction::ShowMetadata,
+            "Photo Info / Metadata",
+            Category::View,
+        );
+    }
     if session.can_undo() {
         push(&mut e, AppAction::Undo, "Undo", Category::Edit);
     }
@@ -253,7 +267,13 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
     push(
         &mut e,
         AppAction::SetShootZone,
-        "Set Shoot Timezone…",
+        "Set Travel Timezone…",
+        Category::Zone,
+    );
+    push(
+        &mut e,
+        AppAction::SetCameraZone,
+        "Set Camera Timezone…",
         Category::Zone,
     );
 
@@ -330,6 +350,8 @@ impl Session {
                 ActionEffect::None
             }
             AppAction::SetShootZone => ActionEffect::OpenZonePicker,
+            AppAction::SetCameraZone => ActionEffect::OpenCameraZonePicker,
+            AppAction::ShowMetadata => ActionEffect::ShowMetadata,
             AppAction::OpenExport => ActionEffect::OpenExport,
             AppAction::RevealRejected => {
                 self.reveal_rejected();

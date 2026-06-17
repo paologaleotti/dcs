@@ -14,6 +14,7 @@ fn photo(jpeg: Option<&str>, raw: Option<&str>, photo_type: PhotoType) -> Photo 
         orientation: Orientation::Normal,
         fingerprint: ContentFingerprint::from_bytes([0u8; 32]),
         captured_at: None,
+        captured_offset: None,
         meta: CaptureMeta::default(),
         missing: false,
     }

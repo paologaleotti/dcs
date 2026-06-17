@@ -30,6 +30,7 @@ fn snapshot() -> ProjectSnapshot {
         views: vec![serde_json::json!({ "kind": "Grid", "settings": { "zoom": 4 } })],
         config: ProjectConfig {
             shoot_zone: Some("Europe/Rome".to_string()),
+            camera_zone: Some("Asia/Tokyo".to_string()),
             grid_zoom: Some(180.0),
         },
     }

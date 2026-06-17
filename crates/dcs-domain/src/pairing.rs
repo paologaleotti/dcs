@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 
-use time::PrimitiveDateTime;
+use time::{PrimitiveDateTime, UtcOffset};
 
 use crate::fingerprint::ContentFingerprint;
 use crate::photo::{AssociatedFiles, CaptureMeta, Orientation, Photo, PhotoId, PhotoType, Pool};
@@ -32,6 +32,7 @@ pub struct ScannedFile {
     pub orientation: Orientation,
     pub fingerprint: ContentFingerprint,
     pub captured_at: Option<PrimitiveDateTime>,
+    pub captured_offset: Option<UtcOffset>,
     pub meta: CaptureMeta,
 }
 
@@ -246,6 +247,7 @@ fn new_photo(id: PhotoId, file: ScannedFile) -> Photo {
         // The lone file is the display file, so it owns the photo's identity.
         fingerprint: file.fingerprint,
         captured_at: file.captured_at,
+        captured_offset: file.captured_offset,
         meta: file.meta,
         missing: false,
     }
@@ -267,6 +269,7 @@ fn merge_file(photo: &mut Photo, file: ScannedFile) -> bool {
                 photo.orientation = file.orientation;
                 photo.fingerprint = file.fingerprint;
                 photo.captured_at = file.captured_at;
+                photo.captured_offset = file.captured_offset;
                 photo.meta = file.meta;
                 display_changed = true;
             }

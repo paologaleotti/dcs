@@ -282,7 +282,7 @@ fn decode_scaled(path: &Path, edge: u32) -> Option<DynamicImage> {
         if slot.is_none() {
             *slot = Some(Decompressor::new().ok()?);
         }
-        let decompressor = slot.as_mut().expect("just initialized");
+        let decompressor = slot.as_mut()?;
 
         let header = decompressor.read_header(&data).ok()?;
         let factor = pick_scaling(header.width, header.height, edge as usize);

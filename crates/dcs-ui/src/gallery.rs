@@ -159,12 +159,13 @@ struct FrameInfo {
     detail: String,
     /// Derived group title, or empty for the headerless stream.
     group: String,
-    /// Adjusted capture time, or empty when undated.
+    /// Capture time in the travel (display) zone, or empty when undated.
     time: String,
 }
 
 /// Gather the info-bar facts for display index `focus`.
 fn frame_info(session: &Session, focus: usize) -> FrameInfo {
+    let caption = session.caption_time(focus);
     let mut info = FrameInfo {
         filename: String::new(),
         kind: "JPEG",
@@ -174,7 +175,12 @@ fn frame_info(session: &Session, focus: usize) -> FrameInfo {
             .group_title_at(focus)
             .unwrap_or_default()
             .to_string(),
-        time: session.caption_time(focus).unwrap_or_default(),
+        // Mark the time as travel-zone-adjusted by tagging its offset, so the
+        // displayed wall-clock is never mistaken for the raw camera time.
+        time: caption
+            .as_ref()
+            .map(|c| format!("{}  (UTC{})", c.adjusted, c.offset))
+            .unwrap_or_default(),
     };
     let Some(photo) = session.photo_at(focus) else {
         return info;
@@ -191,6 +197,8 @@ fn frame_info(session: &Session, focus: usize) -> FrameInfo {
     // already told by the type chip, so a second filename only adds noise.
     info.filename = photo.file_name();
 
+    // Metadata line: gear only — full capture-time context (shot time, EXIF
+    // offset, both zones) lives in the metadata window (`I`).
     let detail: Vec<String> = [photo.meta.camera.clone(), photo.meta.lens.clone()]
         .into_iter()
         .flatten()
@@ -266,11 +274,12 @@ fn paint_kind_chip(p: &egui::Painter, info: &FrameInfo, anchor: Pos2) {
     } else {
         theme::TEXT_DIM
     };
-    let galley = p.layout_no_wrap(info.kind.to_string(), FontId::monospace(11.0), fg);
-    let (px, py) = (6.0, 3.0);
+    // Compact chip so its box clears the metadata row below on the short bar.
+    let galley = p.layout_no_wrap(info.kind.to_string(), FontId::monospace(9.0), fg);
+    let (px, py) = (5.0, 1.5);
     let size = Vec2::new(galley.size().x + px * 2.0, galley.size().y + py * 2.0);
     let chip = Rect::from_min_size(Pos2::new(anchor.x, anchor.y - size.y / 2.0), size);
-    p.rect_stroke(chip, 0.0, Stroke::new(1.0, fg), StrokeKind::Inside);
+    p.rect_stroke(chip, 2.0, Stroke::new(1.0, fg), StrokeKind::Inside);
     p.galley(Pos2::new(chip.left() + px, chip.top() + py), galley, fg);
 }
 

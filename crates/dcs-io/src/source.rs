@@ -17,8 +17,8 @@ use dcs_domain::fingerprint::ContentFingerprint;
 use dcs_domain::pairing::{FileKind, ScannedFile, classify};
 use dcs_domain::photo::{CaptureMeta, Orientation};
 use rayon::prelude::*;
-use time::PrimitiveDateTime;
 use time::macros::format_description;
+use time::{PrimitiveDateTime, UtcOffset};
 use walkdir::WalkDir;
 
 use crate::cache::{FingerprintCache, SharedCache};
@@ -80,7 +80,7 @@ fn walk(root: &Path, tx: &Sender<ScannedFile>, cache: Option<&SharedCache>) {
         .for_each_with(tx.clone(), |tx, (path, kind)| {
             let scanned = match kind {
                 FileKind::Jpeg => {
-                    let (orientation, captured_at, meta) = read_meta(&path);
+                    let (orientation, captured_at, captured_offset, meta) = read_meta(&path);
                     let fingerprint = fingerprint_of(&path, root, cache);
                     ScannedFile {
                         path,
@@ -88,6 +88,7 @@ fn walk(root: &Path, tx: &Sender<ScannedFile>, cache: Option<&SharedCache>) {
                         orientation,
                         fingerprint,
                         captured_at,
+                        captured_offset,
                         meta,
                     }
                 }
@@ -101,6 +102,7 @@ fn walk(root: &Path, tx: &Sender<ScannedFile>, cache: Option<&SharedCache>) {
                     kind,
                     orientation: Default::default(),
                     captured_at: None,
+                    captured_offset: None,
                     meta: CaptureMeta::default(),
                 },
             };
@@ -220,9 +222,16 @@ fn is_hidden(path: &Path) -> bool {
 /// One EXIF pass for orientation, capture time, and the gallery caption facts.
 /// Missing or unreadable EXIF degrades to defaults rather than failing the scan;
 /// each field is read independently so one bad tag never loses the rest.
-fn read_meta(path: &Path) -> (Orientation, Option<PrimitiveDateTime>, CaptureMeta) {
+fn read_meta(
+    path: &Path,
+) -> (
+    Orientation,
+    Option<PrimitiveDateTime>,
+    Option<UtcOffset>,
+    CaptureMeta,
+) {
     let Some(exif) = read_exif(path) else {
-        return (Orientation::default(), None, CaptureMeta::default());
+        return (Orientation::default(), None, None, CaptureMeta::default());
     };
     let orientation = exif
         .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
@@ -233,6 +242,10 @@ fn read_meta(path: &Path) -> (Orientation, Option<PrimitiveDateTime>, CaptureMet
         .get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)
         .and_then(ascii_value)
         .and_then(parse_exif_datetime);
+    let captured_offset = exif
+        .get_field(exif::Tag::OffsetTimeOriginal, exif::In::PRIMARY)
+        .and_then(ascii_value)
+        .and_then(parse_exif_offset);
     let meta = CaptureMeta {
         camera: camera_label(&exif),
         lens: ascii_field(&exif, exif::Tag::LensModel),
@@ -243,7 +256,7 @@ fn read_meta(path: &Path) -> (Orientation, Option<PrimitiveDateTime>, CaptureMet
             .get_field(exif::Tag::PhotographicSensitivity, exif::In::PRIMARY)
             .and_then(|f| f.value.get_uint(0)),
     };
-    (orientation, captured_at, meta)
+    (orientation, captured_at, captured_offset, meta)
 }
 
 /// Camera make + model joined into one label, avoiding the common case where the
@@ -309,10 +322,17 @@ fn parse_exif_datetime(value: &str) -> Option<PrimitiveDateTime> {
     PrimitiveDateTime::parse(value, fmt).ok()
 }
 
+fn parse_exif_offset(value: &str) -> Option<UtcOffset> {
+    // EXIF `OffsetTimeOriginal` is ASCII `"±HH:MM"` (e.g. `"+09:00"`), NUL-padded.
+    let value = value.trim_matches(|c: char| c.is_whitespace() || c == '\0');
+    let fmt = format_description!("[offset_hour sign:mandatory]:[offset_minute]");
+    UtcOffset::parse(value, fmt).ok()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_exif_datetime;
-    use time::macros::datetime;
+    use super::{parse_exif_datetime, parse_exif_offset};
+    use time::macros::{datetime, offset};
 
     #[test]
     fn parses_standard_exif_datetime() {
@@ -340,5 +360,14 @@ mod tests {
         assert_eq!(parse_exif_datetime("not a date"), None);
         assert_eq!(parse_exif_datetime("0000:00:00 00:00:00"), None);
         assert_eq!(parse_exif_datetime(""), None);
+    }
+
+    #[test]
+    fn parses_exif_offset_signs_and_nul() {
+        assert_eq!(parse_exif_offset("+09:00"), Some(offset!(+09:00)));
+        assert_eq!(parse_exif_offset("-05:30"), Some(offset!(-05:30)));
+        assert_eq!(parse_exif_offset("+00:00\0"), Some(offset!(+00:00)));
+        assert_eq!(parse_exif_offset("09:00"), None, "sign is mandatory");
+        assert_eq!(parse_exif_offset(""), None);
     }
 }

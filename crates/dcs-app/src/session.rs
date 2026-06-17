@@ -120,6 +120,17 @@ pub struct CellInfo {
     pub missing: bool,
 }
 
+/// Capture time for the gallery caption. `adjusted` is the time in the travel
+/// (display) zone; `offset` is that zone's `±HH:MM` offset for the instant (so
+/// the caption can mark the time as zone-adjusted); `shot` is the raw EXIF shot
+/// time, present only when it differs from `adjusted`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptionTime {
+    pub adjusted: String,
+    pub offset: String,
+    pub shot: Option<String>,
+}
+
 /// Verdict view toggle (§2.9, #11) — a session display setting, not the full
 /// chip filter system. `Unreviewed` is the working filter while culling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -448,20 +459,126 @@ impl Session {
             .filter(|t| !t.is_empty())
     }
 
-    /// The capture time adjusted to the shoot zone, formatted for the gallery
-    /// caption. `None` when the photo is undated.
-    pub fn caption_time(&self, display_index: usize) -> Option<String> {
-        let naive = self.photo_at(display_index)?.captured_at?;
-        let dt = timezone::adjusted(naive, self.resolve_zone());
-        Some(format!(
+    /// The capture time for the gallery caption: the time in the display (shoot)
+    /// zone always, plus the raw EXIF shot time when it differs (so a timezone
+    /// shift is visible). `None` when the photo is undated.
+    pub fn caption_time(&self, display_index: usize) -> Option<CaptionTime> {
+        let photo = self.photo_at(display_index)?;
+        let naive = photo.captured_at?;
+        let instant =
+            timezone::source_instant(naive, photo.captured_offset, self.resolve_camera_zone());
+        let adjusted = timezone::adjusted(instant, self.resolve_display_zone());
+        let adjusted_str = format!(
             "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-            dt.year(),
-            u8::from(dt.month()),
-            dt.day(),
-            dt.hour(),
-            dt.minute(),
-            dt.second()
-        ))
+            adjusted.year(),
+            u8::from(adjusted.month()),
+            adjusted.day(),
+            adjusted.hour(),
+            adjusted.minute(),
+            adjusted.second()
+        );
+        let shot_str = format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            naive.year(),
+            u8::from(naive.month()),
+            naive.day(),
+            naive.hour(),
+            naive.minute(),
+            naive.second()
+        );
+        let (oh, om, _) = adjusted.offset().as_hms();
+        let offset = format!("{oh:+03}:{:02}", om.unsigned_abs());
+        let shot = (shot_str != adjusted_str).then_some(shot_str);
+        Some(CaptionTime {
+            adjusted: adjusted_str,
+            offset,
+            shot,
+        })
+    }
+
+    /// The photo's EXIF capture offset as a `UTC±HH:MM` label. `None` when the
+    /// photo carries no `OffsetTimeOriginal`.
+    pub fn exif_offset(&self, display_index: usize) -> Option<String> {
+        let offset = self.photo_at(display_index)?.captured_offset?;
+        let (h, m, _) = offset.as_hms();
+        Some(format!("UTC{h:+03}:{:02}", m.unsigned_abs()))
+    }
+
+    /// Every known fact about the photo at `display_index`, as ordered
+    /// `(label, value)` rows for the metadata dialog. Only present fields appear.
+    pub fn photo_metadata(&self, display_index: usize) -> Option<Vec<(&'static str, String)>> {
+        let photo = self.photo_at(display_index)?;
+        let mut rows: Vec<(&'static str, String)> = Vec::new();
+        rows.push(("File", photo.file_name()));
+        let kind = match (photo.files.jpeg.is_some(), photo.files.raw.is_some()) {
+            (true, true) => "RAW + JPEG",
+            (false, true) => "RAW",
+            _ => "JPEG",
+        };
+        rows.push(("Type", kind.to_string()));
+        rows.push((
+            "Verdict",
+            match self.verdict(photo.id) {
+                AcceptState::Accepted => "accepted",
+                AcceptState::Rejected => "rejected",
+                AcceptState::Unreviewed => "unreviewed",
+            }
+            .to_string(),
+        ));
+        if photo.missing {
+            rows.push(("Status", "missing on disk".to_string()));
+        }
+
+        if let Some(camera) = &photo.meta.camera {
+            rows.push(("Camera", camera.clone()));
+        }
+        if let Some(lens) = &photo.meta.lens {
+            rows.push(("Lens", lens.clone()));
+        }
+        if let Some(focal) = photo.meta.focal_label() {
+            rows.push(("Focal length", focal));
+        }
+        if let Some(aperture) = photo.meta.aperture_label() {
+            rows.push(("Aperture", aperture));
+        }
+        if let Some(shutter) = photo.meta.shutter_label() {
+            rows.push(("Shutter", shutter));
+        }
+        if let Some(iso) = photo.meta.iso_label() {
+            rows.push(("ISO", iso));
+        }
+
+        if let Some(caption) = self.caption_time(display_index) {
+            rows.push((
+                "Time (travel)",
+                format!("{} (UTC{})", caption.adjusted, caption.offset),
+            ));
+            if let Some(shot) = caption.shot {
+                rows.push(("Shot (camera)", shot));
+            }
+        }
+        if let Some(exif) = self.exif_offset(display_index) {
+            rows.push(("EXIF offset", exif));
+        }
+        rows.push((
+            "Travel zone",
+            self.shoot_zone().unwrap_or("system default").to_string(),
+        ));
+        rows.push((
+            "Camera zone",
+            self.camera_zone().unwrap_or("system default").to_string(),
+        ));
+        if let Some(group) = self.group_title_at(display_index) {
+            rows.push(("Group", group.to_string()));
+        }
+
+        if let Some(jpeg) = photo.files.jpeg.as_deref() {
+            rows.push(("JPEG path", jpeg.display().to_string()));
+        }
+        if let Some(raw) = photo.files.raw.as_deref() {
+            rows.push(("RAW path", raw.display().to_string()));
+        }
+        Some(rows)
     }
 
     /// Cheap `Copy` descriptor for painting a cell — no allocation, so the grid
@@ -1028,6 +1145,23 @@ impl Session {
         self.regroup();
     }
 
+    /// The persisted IANA camera timezone — the zone the camera clock was set to,
+    /// used to anchor a naive EXIF time that carries no offset (freeze-critical).
+    pub fn camera_zone(&self) -> Option<&str> {
+        self.config.camera_zone.as_deref()
+    }
+
+    /// Set the camera timezone; marks the project dirty and regroups, since the
+    /// derived absolute instant (and thus grouping) depends on it.
+    pub fn set_camera_zone(&mut self, zone: Option<String>) {
+        if self.read_only || self.config.camera_zone == zone {
+            return;
+        }
+        self.config.camera_zone = zone;
+        self.dirty = true;
+        self.regroup();
+    }
+
     fn remember_recent(&mut self, root: &Path) {
         self.recents.record(root.to_path_buf());
         self.persist_recents();
@@ -1387,12 +1521,18 @@ impl Session {
     /// Recompute the grouping over the whole pool, then the visible order.
     /// Called when the pool, axis, sort, or shoot zone changes (§2.2 derived).
     fn regroup(&mut self) {
-        let zone = self.resolve_zone();
+        let camera = self.resolve_camera_zone();
+        let display = self.resolve_display_zone();
         self.resolved_gran = match self.axis {
-            Axis::Time(g) => Some(grouping::resolve_auto(self.builder.photos(), zone, g)),
+            Axis::Time(g) => Some(grouping::resolve_auto(
+                self.builder.photos(),
+                camera,
+                display,
+                g,
+            )),
             Axis::None => None,
         };
-        let groups = grouping::group(self.builder.photos(), self.axis, zone, self.sort);
+        let groups = grouping::group(self.builder.photos(), self.axis, camera, display, self.sort);
         self.order = groups
             .iter()
             .flat_map(|g| g.members.iter().copied())
@@ -1402,14 +1542,21 @@ impl Session {
         self.rebuild_visible();
     }
 
-    /// Resolve the shoot zone for derivation: the configured IANA zone, else the
-    /// system zone, else UTC. Domain stays pure — it only ever sees a concrete
-    /// `Tz`; the system lookup (an environment read) lives here.
-    fn resolve_zone(&self) -> &'static Tz {
-        self.config
-            .shoot_zone
-            .as_deref()
-            .and_then(timezone::zone)
+    /// Resolve the display (shoot) zone for derivation: the configured IANA zone,
+    /// else the system zone, else UTC. Domain stays pure — it only ever sees a
+    /// concrete `Tz`; the system lookup (an environment read) lives here.
+    fn resolve_display_zone(&self) -> &'static Tz {
+        Self::resolve_zone_or_system(self.config.shoot_zone.as_deref())
+    }
+
+    /// Resolve the camera zone used to anchor a naive EXIF time lacking an offset:
+    /// the configured IANA zone, else the system zone, else UTC.
+    fn resolve_camera_zone(&self) -> &'static Tz {
+        Self::resolve_zone_or_system(self.config.camera_zone.as_deref())
+    }
+
+    fn resolve_zone_or_system(name: Option<&str>) -> &'static Tz {
+        name.and_then(timezone::zone)
             .or_else(|| time_tz::system::get_timezone().ok())
             .unwrap_or_else(|| timezone::zone("UTC").expect("UTC is always present"))
     }

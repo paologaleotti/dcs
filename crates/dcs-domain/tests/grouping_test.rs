@@ -30,6 +30,7 @@ fn at(path: &str, when: Option<PrimitiveDateTime>) -> ScannedFile {
         orientation: Default::default(),
         fingerprint: ContentFingerprint::from_bytes(bytes),
         captured_at: when,
+        captured_offset: None,
         meta: CaptureMeta::default(),
     }
 }
@@ -48,7 +49,7 @@ fn axis_none_is_one_stream_in_sort_order() {
         at("a/a.JPG", Some(datetime!(2025-05-11 09:00:00))),
         at("a/b.JPG", Some(datetime!(2025-05-11 12:00:00))),
     ]);
-    let groups = group(pool.photos(), Axis::None, utc(), Sort::default());
+    let groups = group(pool.photos(), Axis::None, utc(), utc(), Sort::default());
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].kind, GroupKind::Stream);
     assert_eq!(
@@ -60,11 +61,12 @@ fn axis_none_is_one_stream_in_sort_order() {
 #[test]
 fn empty_pool_yields_no_groups() {
     let pool = pair(std::iter::empty());
-    assert!(group(pool.photos(), Axis::None, utc(), Sort::default()).is_empty());
+    assert!(group(pool.photos(), Axis::None, utc(), utc(), Sort::default()).is_empty());
     assert!(
         group(
             pool.photos(),
             Axis::Time(TimeGranularity::Day),
+            utc(),
             utc(),
             Sort::default()
         )
@@ -81,6 +83,7 @@ fn day_groups_are_dated_titled_and_numbered() {
     let groups = group(
         pool.photos(),
         Axis::Time(TimeGranularity::Day),
+        utc(),
         utc(),
         Sort::default(),
     );
@@ -99,6 +102,7 @@ fn undated_photos_fall_into_no_date_tail_last() {
     let groups = group(
         pool.photos(),
         Axis::Time(TimeGranularity::Day),
+        utc(),
         utc(),
         Sort::default(),
     );
@@ -119,7 +123,13 @@ fn no_date_tail_stays_last_even_when_sorted_descending() {
         key: SortKey::Time,
         dir: SortDir::Desc,
     };
-    let groups = group(pool.photos(), Axis::Time(TimeGranularity::Day), utc(), desc);
+    let groups = group(
+        pool.photos(),
+        Axis::Time(TimeGranularity::Day),
+        utc(),
+        utc(),
+        desc,
+    );
     // Descending puts the later day first, but the leftover stays pinned last.
     assert_eq!(groups[0].title, "Day 2 · 12/05/25");
     assert_eq!(groups[1].title, "Day 1 · 11/05/25");
@@ -143,6 +153,7 @@ fn members_within_a_group_follow_the_active_sort_key() {
         pool.photos(),
         Axis::Time(TimeGranularity::Day),
         utc(),
+        utc(),
         name_desc,
     );
     assert_eq!(groups.len(), 1);
@@ -162,6 +173,7 @@ fn smart_day_splits_a_single_day_into_time_of_day_buckets() {
     let groups = group(
         pool.photos(),
         Axis::Time(TimeGranularity::SmartDay),
+        utc(),
         utc(),
         Sort::default(),
     );
@@ -187,6 +199,7 @@ fn smart_day_night_spans_midnight_into_one_group() {
         pool.photos(),
         Axis::Time(TimeGranularity::SmartDay),
         utc(),
+        utc(),
         Sort::default(),
     );
     assert_eq!(groups.len(), 1, "both belong to the same night");
@@ -209,6 +222,7 @@ fn hour_groups_split_by_clock_hour() {
         pool.photos(),
         Axis::Time(TimeGranularity::Hour),
         utc(),
+        utc(),
         Sort::default(),
     );
     assert_eq!(groups.len(), 2);
@@ -229,6 +243,7 @@ fn week_groups_collapse_days_in_the_same_iso_week() {
         pool.photos(),
         Axis::Time(TimeGranularity::Week),
         utc(),
+        utc(),
         Sort::default(),
     );
     assert_eq!(groups.len(), 2, "Sunday is its own week; Mon+Wed share one");
@@ -244,7 +259,7 @@ fn auto_resolves_single_day_to_smart_day_and_multi_day_to_day() {
         at("a/b.JPG", Some(datetime!(2025-05-11 14:00:00))),
     ]);
     assert_eq!(
-        resolve_auto(single.photos(), utc(), TimeGranularity::Auto),
+        resolve_auto(single.photos(), utc(), utc(), TimeGranularity::Auto),
         TimeGranularity::SmartDay
     );
 
@@ -253,7 +268,7 @@ fn auto_resolves_single_day_to_smart_day_and_multi_day_to_day() {
         at("a/b.JPG", Some(datetime!(2025-05-12 09:00:00))),
     ]);
     assert_eq!(
-        resolve_auto(multi.photos(), utc(), TimeGranularity::Auto),
+        resolve_auto(multi.photos(), utc(), utc(), TimeGranularity::Auto),
         TimeGranularity::Day
     );
 }
@@ -262,7 +277,7 @@ fn auto_resolves_single_day_to_smart_day_and_multi_day_to_day() {
 fn auto_passes_through_an_explicit_granularity() {
     let pool = pair([at("a/a.JPG", Some(datetime!(2025-05-11 09:00:00)))]);
     assert_eq!(
-        resolve_auto(pool.photos(), utc(), TimeGranularity::Week),
+        resolve_auto(pool.photos(), utc(), utc(), TimeGranularity::Week),
         TimeGranularity::Week
     );
 }
@@ -278,6 +293,7 @@ fn group_order_follows_earliest_member() {
         pool.photos(),
         Axis::Time(TimeGranularity::Day),
         utc(),
+        utc(),
         Sort::default(),
     );
     assert_eq!(names(&pool, &groups[0].members), ["earlier.JPG"]);
@@ -285,32 +301,75 @@ fn group_order_follows_earliest_member() {
 }
 
 #[test]
-fn adjusted_derives_per_instant_offset_across_dst() {
+fn source_instant_derives_per_instant_offset_across_dst() {
+    // Anchoring a naive time to a zone derives the correct offset for that
+    // instant, so a trip spanning a DST change stays correct (#7).
     let rome = timezone::zone("Europe/Rome").expect("Rome exists");
-    let winter = adjusted(datetime!(2025-01-15 12:00:00), rome);
-    let summer = adjusted(datetime!(2025-07-15 12:00:00), rome);
+    let winter = timezone::source_instant(datetime!(2025-01-15 12:00:00), None, rome);
+    let summer = timezone::source_instant(datetime!(2025-07-15 12:00:00), None, rome);
     assert_eq!(winter.offset().whole_hours(), 1, "CET = UTC+1");
     assert_eq!(summer.offset().whole_hours(), 2, "CEST = UTC+2");
 }
 
 #[test]
-fn grouping_uses_wall_clock_date_and_stamps_the_zone_offset() {
-    // The naive EXIF time is the camera's wall clock; the shoot zone stamps the
-    // offset for that instant but does not move the wall-clock date. So a
-    // 22:00 frame groups on its own date, with the zone's offset applied.
+fn adjusted_converts_instant_into_display_zone() {
+    // A fixed UTC instant lands at the display zone's wall clock, with the offset
+    // derived for that instant (DST-aware).
+    let rome = timezone::zone("Europe/Rome").expect("Rome exists");
+    let winter = adjusted(datetime!(2025-01-15 11:00:00 +00:00:00), rome);
+    let summer = adjusted(datetime!(2025-07-15 11:00:00 +00:00:00), rome);
+    assert_eq!((winter.hour(), winter.offset().whole_hours()), (12, 1));
+    assert_eq!((summer.hour(), summer.offset().whole_hours()), (13, 2));
+}
+
+#[test]
+fn matching_camera_and_display_zone_preserves_wall_clock() {
+    // When the camera zone equals the display zone (and there's no EXIF offset),
+    // the wall clock is untouched: a 22:00 frame groups on its own date.
     let tokyo = timezone::zone("Asia/Tokyo").expect("Tokyo exists");
-    assert_eq!(
-        adjusted(datetime!(2025-05-11 22:00:00), tokyo)
-            .offset()
-            .whole_hours(),
-        9
-    );
     let pool = pair([at("a/a.JPG", Some(datetime!(2025-05-11 22:00:00)))]);
     let groups = group(
         pool.photos(),
         Axis::Time(TimeGranularity::Day),
         tokyo,
+        tokyo,
         Sort::default(),
     );
     assert_eq!(groups[0].title, "Day 1 · 11/05/25");
+}
+
+#[test]
+fn display_zone_shifts_grouping_across_the_date_line() {
+    // The bug fix: a 22:00 frame whose camera was on UTC, viewed in Tokyo (+9),
+    // rolls to 07:00 the next day and groups on that later date.
+    let utc = utc();
+    let tokyo = timezone::zone("Asia/Tokyo").expect("Tokyo exists");
+    let pool = pair([at("a/a.JPG", Some(datetime!(2025-05-11 22:00:00)))]);
+    let groups = group(
+        pool.photos(),
+        Axis::Time(TimeGranularity::Day),
+        utc,
+        tokyo,
+        Sort::default(),
+    );
+    assert_eq!(groups[0].title, "Day 1 · 12/05/25");
+}
+
+#[test]
+fn exif_offset_overrides_camera_zone() {
+    // A photo carrying its own EXIF offset ignores the camera-zone setting: a
+    // 22:00 +09:00 capture is 13:00 UTC, grouping on the same date in UTC.
+    let utc = utc();
+    let mut scanned = at("a/a.JPG", Some(datetime!(2025-05-11 22:00:00)));
+    scanned.captured_offset = Some(time::macros::offset!(+09:00));
+    let pool = pair([scanned]);
+    let groups = group(
+        pool.photos(),
+        Axis::Time(TimeGranularity::Day),
+        timezone::zone("Asia/Tokyo").expect("Tokyo exists"),
+        utc,
+        Sort::default(),
+    );
+    assert_eq!(groups[0].title, "Day 1 · 11/05/25");
+    // 22:00 +09:00 → 13:00 UTC same day.
 }

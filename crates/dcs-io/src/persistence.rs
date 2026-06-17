@@ -65,9 +65,15 @@ pub struct PhotoRecord {
 /// crystallized tag made under the wrong zone is wrong forever, open Q#5).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProjectConfig {
-    /// IANA shoot timezone (e.g. `"Europe/Rome"`). `None` until the user picks.
+    /// IANA shoot (display) timezone (e.g. `"Europe/Rome"`). Times are shown and
+    /// grouped in this zone. `None` until the user picks (falls back to system).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shoot_zone: Option<String>,
+    /// IANA camera timezone: the zone the camera clock was set to, used to anchor
+    /// a naive EXIF time when the photo carries no `OffsetTimeOriginal`. `None`
+    /// falls back to system. Freeze-critical alongside `shoot_zone`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_zone: Option<String>,
     /// Grid cell size in logical pixels — the Grid view's zoom (§9b).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grid_zoom: Option<f32>,

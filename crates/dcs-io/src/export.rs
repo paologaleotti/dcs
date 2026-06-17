@@ -145,7 +145,15 @@ fn copy_atomic(source: &Path, dest: &Path) -> Result<(), CopyError> {
     fs::rename(&tmp, dest).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         CopyError::Io(format!("rename into {}: {e}", dest.display()))
-    })
+    })?;
+    // Directory fsync makes the rename itself durable, the same atomic contract
+    // as saves (§10b); not all platforms permit it, so failure is non-fatal.
+    if let Some(parent) = dest.parent()
+        && let Ok(handle) = File::open(parent)
+    {
+        let _ = handle.sync_all();
+    }
+    Ok(())
 }
 
 fn part_path(dest: &Path) -> std::path::PathBuf {
