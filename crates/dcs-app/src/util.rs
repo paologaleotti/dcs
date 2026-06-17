@@ -52,20 +52,32 @@ pub(crate) fn decode_key(key: u64) -> (u64, PhotoId, DecodeTier) {
 }
 
 /// Least-recently-used map bounded by a total weight budget (bytes, for the
-/// thumbnail caches). Entries carry a per-item weight; inserting past the
-/// budget evicts the least-recently-used entries until it fits. Recency is a
-/// monotonic access counter; insertion and access both count as a use.
+/// thumbnail caches). Entries carry a per-item weight; inserting past the budget
+/// evicts least-recently-used entries until it fits.
+///
+/// Recency is an intrusive doubly-linked list over a slot slab: `head` is the
+/// most-recently-used, `tail` the least. `get`/`insert` splice a node to the
+/// head and eviction pops the tail — all O(1), so a full cache churning on a
+/// large folder never pays an O(n) victim scan.
 pub struct LruMap<K, V> {
     budget: u64,
     used: u64,
-    tick: u64,
-    map: HashMap<K, Entry<V>>,
+    index: HashMap<K, usize>,
+    slots: Vec<Slot<K, V>>,
+    free: Vec<usize>,
+    head: Option<usize>,
+    tail: Option<usize>,
 }
 
-struct Entry<V> {
-    tick: u64,
+struct Slot<K, V> {
+    key: K,
+    /// `Some` while the slot is live; set to `None` the instant the slot is
+    /// recycled so the (potentially large) value's memory is freed at eviction
+    /// time, not deferred until a later insert reuses the slot.
+    value: Option<V>,
     weight: u64,
-    value: V,
+    prev: Option<usize>,
+    next: Option<usize>,
 }
 
 impl<K: Eq + Hash + Copy, V> LruMap<K, V> {
@@ -73,13 +85,16 @@ impl<K: Eq + Hash + Copy, V> LruMap<K, V> {
         LruMap {
             budget: budget.max(1),
             used: 0,
-            tick: 0,
-            map: HashMap::new(),
+            index: HashMap::new(),
+            slots: Vec::new(),
+            free: Vec::new(),
+            head: None,
+            tail: None,
         }
     }
 
     pub fn len(&self) -> usize {
-        self.map.len()
+        self.index.len()
     }
 
     /// Total resident weight (bytes).
@@ -87,48 +102,101 @@ impl<K: Eq + Hash + Copy, V> LruMap<K, V> {
         self.used
     }
 
+    /// The value for `key`, promoted to most-recently-used.
     pub fn get(&mut self, key: &K) -> Option<&V> {
-        self.tick += 1;
-        let tick = self.tick;
-        let entry = self.map.get_mut(key)?;
-        entry.tick = tick;
-        Some(&entry.value)
+        let slot = *self.index.get(key)?;
+        self.detach(slot);
+        self.push_front(slot);
+        self.slots[slot].value.as_ref()
     }
 
     /// Insert with the given weight, evicting least-recently-used entries until
     /// the total fits the budget. Returns every key evicted.
     pub fn insert(&mut self, key: K, value: V, weight: u64) -> Vec<K> {
-        self.tick += 1;
-        let entry = Entry {
-            tick: self.tick,
-            weight,
-            value,
-        };
-        if let Some(old) = self.map.insert(key, entry) {
-            self.used -= old.weight;
+        if let Some(&slot) = self.index.get(&key) {
+            // Replace in place: swap value/weight, promote, then trim to budget.
+            self.used -= self.slots[slot].weight;
+            self.slots[slot].value = Some(value);
+            self.slots[slot].weight = weight;
+            self.used += weight;
+            self.detach(slot);
+            self.push_front(slot);
+        } else {
+            let slot = self.alloc(key, value, weight);
+            self.index.insert(key, slot);
+            self.push_front(slot);
+            self.used += weight;
         }
-        self.used += weight;
+        self.evict_to_budget()
+    }
 
+    /// Evict from the tail until within budget (keeping at least one entry).
+    /// Returns the evicted keys.
+    fn evict_to_budget(&mut self) -> Vec<K> {
         let mut evicted = Vec::new();
-        // FIXME(perf): O(n) scan to find the LRU victim, per eviction. Only runs
-        // when a cache exceeds its budget (never for folders within it), so it's
-        // free at current sizes. For 10k+ folders, replace with an intrusive
-        // LRU list or a min-heap on `tick` for O(1)/O(log n) eviction.
-        while self.used > self.budget && self.map.len() > 1 {
-            let Some(victim) = self
-                .map
-                .iter()
-                .min_by_key(|(_, entry)| entry.tick)
-                .map(|(k, _)| *k)
-            else {
-                break;
-            };
-            if let Some(removed) = self.map.remove(&victim) {
-                self.used -= removed.weight;
-                evicted.push(victim);
-            }
+        while self.used > self.budget && self.index.len() > 1 {
+            let Some(tail) = self.tail else { break };
+            self.detach(tail);
+            let key = self.slots[tail].key;
+            self.index.remove(&key);
+            self.used -= self.slots[tail].weight;
+            self.recycle(tail);
+            evicted.push(key);
         }
         evicted
+    }
+
+    /// Claim a slot (reusing a freed one when possible) holding the entry.
+    fn alloc(&mut self, key: K, value: V, weight: u64) -> usize {
+        let slot = Slot {
+            key,
+            value: Some(value),
+            weight,
+            prev: None,
+            next: None,
+        };
+        if let Some(idx) = self.free.pop() {
+            self.slots[idx] = slot;
+            idx
+        } else {
+            self.slots.push(slot);
+            self.slots.len() - 1
+        }
+    }
+
+    /// Return a detached slot to the free list, dropping its value now so its
+    /// memory is reclaimed at eviction rather than lingering until reuse.
+    fn recycle(&mut self, slot: usize) {
+        self.slots[slot].value = None;
+        self.free.push(slot);
+    }
+
+    /// Unlink a slot from the recency list (its neighbours close over it).
+    fn detach(&mut self, slot: usize) {
+        let (prev, next) = (self.slots[slot].prev, self.slots[slot].next);
+        match prev {
+            Some(p) => self.slots[p].next = next,
+            None => self.head = next,
+        }
+        match next {
+            Some(n) => self.slots[n].prev = prev,
+            None => self.tail = prev,
+        }
+        self.slots[slot].prev = None;
+        self.slots[slot].next = None;
+    }
+
+    /// Splice a detached slot in as the most-recently-used head.
+    fn push_front(&mut self, slot: usize) {
+        self.slots[slot].prev = None;
+        self.slots[slot].next = self.head;
+        if let Some(h) = self.head {
+            self.slots[h].prev = Some(slot);
+        }
+        self.head = Some(slot);
+        if self.tail.is_none() {
+            self.tail = Some(slot);
+        }
     }
 }
 
@@ -182,6 +250,64 @@ mod tests {
         lru.insert(1, 10, 1);
         lru.insert(2, 20, 1);
         assert_eq!(lru.len(), 1);
+    }
+
+    #[test]
+    fn access_promotes_so_eviction_follows_true_recency() {
+        // Budget for 3 unit entries; insert 1,2,3 then touch in a custom order.
+        let mut lru: LruMap<u32, u32> = LruMap::new(3);
+        for k in 1..=3 {
+            lru.insert(k, k * 10, 1);
+        }
+        // Touch 1 then 2; recency (LRU→MRU) is now 3, 1, 2.
+        assert_eq!(lru.get(&1), Some(&10));
+        assert_eq!(lru.get(&2), Some(&20));
+        // Inserting 4 evicts the least-recent (3), then 5 evicts the next (1).
+        assert_eq!(lru.insert(4, 40, 1), vec![3]);
+        assert_eq!(lru.insert(5, 50, 1), vec![1]);
+        assert_eq!(lru.get(&3), None);
+        assert_eq!(lru.get(&1), None);
+        // 2, 4, 5 remain.
+        assert!(lru.get(&2).is_some() && lru.get(&4).is_some() && lru.get(&5).is_some());
+        assert_eq!(lru.len(), 3);
+    }
+
+    #[test]
+    fn eviction_frees_the_value_immediately_not_on_reuse() {
+        use std::rc::Rc;
+        let mut lru: LruMap<u32, Rc<()>> = LruMap::new(2);
+        let one = Rc::new(());
+        lru.insert(1, one.clone(), 1);
+        lru.insert(2, Rc::new(()), 1);
+        assert_eq!(Rc::strong_count(&one), 2, "the cache holds value 1");
+        // Inserting 3 evicts the least-recently-used (1). Its value must drop at
+        // eviction — not linger in a recycled slot until a later insert reuses it.
+        lru.insert(3, Rc::new(()), 1);
+        assert_eq!(lru.get(&1), None);
+        assert_eq!(
+            Rc::strong_count(&one),
+            1,
+            "evicted value freed at eviction, not deferred to slot reuse"
+        );
+    }
+
+    #[test]
+    fn churn_keeps_weight_and_len_consistent_with_slot_reuse() {
+        // Far more inserts than the budget holds, forcing constant eviction and
+        // slot recycling; the slab must never leak weight or grow unbounded.
+        let mut lru: LruMap<u32, u32> = LruMap::new(5);
+        for k in 0..1000 {
+            lru.insert(k, k, 1);
+        }
+        assert_eq!(lru.len(), 5);
+        assert_eq!(lru.weight(), 5);
+        // Only the last five keys survive.
+        for k in 995..1000 {
+            assert!(lru.get(&k).is_some(), "recent key {k} resident");
+        }
+        for k in 0..995 {
+            assert!(lru.get(&k).is_none(), "old key {k} evicted");
+        }
     }
 
     #[test]

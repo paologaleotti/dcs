@@ -37,7 +37,7 @@ const ZOOM_STEP: f32 = 1.15;
 
 /// VRAM budget for the gallery's texture cache. Enough for one full-resolution
 /// 1:1 frame plus a few fit-sized neighbours, far below the grid's budget.
-const GALLERY_TEXTURE_BYTES: u64 = 512_000_000;
+const GALLERY_TEXTURE_BYTES: u64 = 256_000_000;
 
 /// Primary-modifier glyph for key hints — ⌘ on macOS, `Ctrl+` elsewhere.
 #[cfg(target_os = "macos")]
@@ -875,16 +875,16 @@ impl DcsApp {
             " · saved"
         };
         let text = format!(
-            "{} shown · {} sel · acc {} · rej {} · unrev {} · {} loaded{}{}",
+            "{} shown · {} sel · acc {} · rej {} · unrev {}{}{}",
             self.session.photo_count(),
             self.session.selection_count(),
             acc,
             rej,
             unrev,
-            self.session.loaded_count(),
             scanning,
             save_state
         );
+        let import = self.session.import_progress();
         egui::Panel::bottom("status").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(text).font(FontId::monospace(12.0)));
@@ -895,6 +895,16 @@ impl DcsApp {
                             .font(FontId::monospace(12.0))
                             .color(theme::TEXT_DIM),
                     );
+                    if let Some(p) = import {
+                        ui.add_space(12.0);
+                        let frac = p.done as f32 / p.total as f32;
+                        ui.add(
+                            egui::ProgressBar::new(frac).desired_width(140.0).text(
+                                RichText::new(format!("importing {}/{}", p.done, p.total))
+                                    .font(FontId::monospace(11.0)),
+                            ),
+                        );
+                    }
                 });
             });
         });
@@ -910,6 +920,14 @@ impl DcsApp {
                     .inner_margin(egui::Margin::symmetric(8, 6)),
             )
             .show_inside(ui, |ui| {
+                // Hold the grid back until the scan has counted and grouped the
+                // whole folder, so cells appear in their final places and don't
+                // reflow as photos stream in. Thumbnails keep decoding in the
+                // background meanwhile, so the settled grid fills in at once.
+                if self.session.is_scanning() {
+                    self.scanning_state(ui);
+                    return;
+                }
                 if self.session.photo_count() == 0 {
                     self.empty_state(ui);
                     return;
@@ -955,9 +973,30 @@ impl DcsApp {
             });
     }
 
+    /// Shown while a folder is being scanned: the grid waits for the full count
+    /// and grouping, so this reports progress instead of a reflowing grid.
+    fn scanning_state(&mut self, ui: &mut Ui) {
+        let found = self.session.pool_len();
+        ui.vertical_centered(|ui| {
+            ui.add_space((ui.available_height() * 0.5 - 20.0).max(0.0));
+            ui.label(
+                RichText::new("scanning…")
+                    .monospace()
+                    .strong()
+                    .color(theme::TEXT_DIM),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(format!("{found} found"))
+                    .font(FontId::monospace(12.0))
+                    .color(theme::HAIRLINE),
+            );
+        });
+    }
+
     fn empty_state(&mut self, ui: &mut Ui) {
-        // `photo_count` is post-filter, so an empty grid is one of three cases.
-        let scanning = self.session.is_scanning();
+        // Reached only once scanning is done (central gates that), so the empty
+        // grid is either no folder open or the filter hid everything.
         let no_folder = self.session.pool_len() == 0;
         let mut open_clicked = false;
         // A top spacer of ~half the leftover height centers the fixed-size block.
@@ -966,14 +1005,7 @@ impl DcsApp {
             let pad = |ui: &mut Ui, content_h: f32| {
                 ui.add_space(((avail - content_h) * 0.5).max(0.0));
             };
-            if scanning && no_folder {
-                pad(ui, 20.0);
-                ui.label(
-                    RichText::new("scanning…")
-                        .monospace()
-                        .color(theme::TEXT_DIM),
-                );
-            } else if no_folder {
+            if no_folder {
                 pad(ui, 120.0);
                 ui.label(RichText::new("dcs").monospace().strong().size(22.0));
                 ui.label(

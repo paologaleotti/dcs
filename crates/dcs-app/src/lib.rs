@@ -15,7 +15,7 @@ mod util;
 
 pub use export::{ExportScope, ExportStatus};
 pub use registry::{ActionEffect, ActionEntry, AppAction, Category, catalog};
-pub use session::{CellInfo, SaveError, Session, VerdictFilter, VisibleGroup};
+pub use session::{CellInfo, ImportProgress, SaveError, Session, VerdictFilter, VisibleGroup};
 pub use thumb_cache::ThumbView;
 
 // Domain types surfaced through `AppAction`/`Session`, so the UI names them via

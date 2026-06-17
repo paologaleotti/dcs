@@ -87,6 +87,35 @@ fn lru_evicts_oldest_when_over_cap() {
 }
 
 #[test]
+fn cached_keys_lists_only_the_requested_tier() {
+    let cache = SqliteCache::in_memory(DEFAULT_THUMB_CAP_BYTES).unwrap();
+    cache.put(&fp(1), ThumbTier::Grid, b"a");
+    cache.put(&fp(2), ThumbTier::Grid, b"b");
+    cache.put(&fp(2), ThumbTier::Gallery, b"c"); // same key, other tier
+    cache.put(&fp(9), ThumbTier::Gallery, b"d");
+
+    let grid = cache.cached_keys(ThumbTier::Grid);
+    assert_eq!(grid.len(), 2);
+    assert!(grid.contains(fp(1).as_bytes()));
+    assert!(grid.contains(fp(2).as_bytes()));
+    assert!(
+        !grid.contains(fp(9).as_bytes()),
+        "gallery-only key excluded"
+    );
+
+    let gallery = cache.cached_keys(ThumbTier::Gallery);
+    assert_eq!(gallery.len(), 2);
+    assert!(gallery.contains(fp(2).as_bytes()));
+    assert!(gallery.contains(fp(9).as_bytes()));
+}
+
+#[test]
+fn cached_keys_empty_on_fresh_cache() {
+    let cache = SqliteCache::in_memory(DEFAULT_THUMB_CAP_BYTES).unwrap();
+    assert!(cache.cached_keys(ThumbTier::Grid).is_empty());
+}
+
+#[test]
 fn cache_persists_across_reopen() {
     let dir = tempdir();
     let path = dir.join("cache.sqlite3");

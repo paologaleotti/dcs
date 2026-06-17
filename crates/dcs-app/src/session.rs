@@ -28,7 +28,7 @@ use dcs_domain::thumb::ThumbImage;
 use dcs_domain::timezone;
 use dcs_io::cache::{SharedCache, SqliteCache, ThumbTier};
 use dcs_io::export::{ExportEvent, ExportHandle, run_export};
-use dcs_io::imaging::{DecodePriority, DecodeRequest, RayonThumbDecoder, ThumbDecoder};
+use dcs_io::imaging::{DecodePriority, DecodeRequest, ThumbDecoder, ThumbDecoderPool};
 use dcs_io::lock::{self, LockOutcome, ProjectLock};
 use dcs_io::persistence::{
     JsonProjectStore, PersistError, PhotoRecord, ProjectConfig, ProjectSnapshot, ProjectStore,
@@ -65,19 +65,29 @@ pub enum SaveError {
 /// Pixel edge the base (default-zoom) tier decodes to.
 const BASE_EDGE: u32 = 256;
 
-/// RAM budget for the base cache. At ~175 KB per thumbnail this holds well over
-/// a 5–6k folder; decode is on demand so it never exceeds this regardless of
-/// folder size — the LRU recycles the oldest off-screen pixels.
-const BASE_CACHE_BYTES: u64 = 1_200_000_000;
+/// RAM budget for the base pixel cache (~256 MB ≈ 1,300 thumbnails). It holds
+/// the working set, not the whole folder: every decode also writes the thumbnail
+/// to the on-disk cache, so an evicted off-screen thumbnail reloads with a fast
+/// cached-blob decode rather than living in RAM. O(1) LRU eviction makes this
+/// tight budget cheap to churn on a large folder.
+const BASE_CACHE_BYTES: u64 = 256_000_000;
 
 /// RAM budget for the hi-res cache. Small on purpose: only viewport cells while
 /// zoomed live here, and it is dropped entirely on zoom-out.
 const HIRES_CACHE_BYTES: u64 = 384_000_000;
 
-/// RAM budget for the gallery cache. Holds the current full-size frame
-/// plus a couple of preloaded neighbours; large enough for one 1:1 decode of a
-/// big sensor (~100 MB) and a few fit-sized neighbours.
-const GALLERY_CACHE_BYTES: u64 = 512_000_000;
+/// RAM budget for the gallery cache. Holds the current preview frame plus its
+/// preloaded neighbours and a little history; large enough for one full 1:1
+/// decode of a big sensor (~180 MB) without starving on its own insert.
+const GALLERY_CACHE_BYTES: u64 = 256_000_000;
+
+/// Longest-side cap for the default (non-zoom) gallery preview. Judging a photo
+/// never needs the full sensor resolution — like Lightroom or Photo Mechanic we
+/// decode a screen-class preview and defer the 1:1 read to an explicit zoom.
+/// This keeps a navigation session's RAM bounded to a handful of small frames
+/// instead of accumulating full-window decodes. 3200 px is near-sharp on a 4K
+/// panel at ~27 MB per RGBA frame.
+const GALLERY_PREVIEW_EDGE: u32 = 3200;
 
 /// Longest-side pixel cap for a 1:1 gallery decode. Bounds both RAM and the GPU
 /// texture size (most backends cap a single texture near 8–16k); images larger
@@ -88,6 +98,14 @@ const GALLERY_FULL_EDGE: u32 = 8192;
 /// the decode pool fed, low enough that viewport requests (issued first each
 /// frame) aren't stuck behind a long backlog.
 const BG_FILL_INFLIGHT: usize = 16;
+
+/// Background import progress: grid thumbnails warmed into the disk cache out
+/// of the displayable total. Drives the status-bar progress bar.
+#[derive(Debug, Clone, Copy)]
+pub struct ImportProgress {
+    pub done: usize,
+    pub total: usize,
+}
 
 /// Minimal per-cell facts the grid needs to paint, without cloning a `Photo`.
 #[derive(Debug, Clone, Copy)]
@@ -157,7 +175,7 @@ pub struct Session {
     sel: Selection,
     filter: VerdictFilter,
     scan: Option<ScanHandle>,
-    decoder: RayonThumbDecoder,
+    decoder: ThumbDecoderPool,
     /// Cheap 256 px grid thumbnails (disk-cached).
     base: ThumbCache,
     /// Sharp viewport decodes while zoomed; dropped on zoom-out.
@@ -171,6 +189,15 @@ pub struct Session {
     gallery_edge: HashMap<PhotoId, u32>,
     /// Display index the background base-fill has walked to.
     bg_cursor: usize,
+    /// Displayable photos whose grid thumbnail has been warmed into the disk
+    /// cache — the import-progress numerator. Seeded from the disk cache when a
+    /// scan settles so a reopened folder resumes its warm-up instead of
+    /// restarting it, then grown as background decodes land. Monotonic within a
+    /// folder session: it isn't pruned if the disk cache later evicts a blob,
+    /// which only happens for a folder larger than the cache can hold — a regime
+    /// where re-warming would just thrash, so "imported once" is the right
+    /// meaning and the fill correctly leaves those photos alone.
+    imported: HashSet<PhotoId>,
     /// Monotonic stamp handed out to thumbnails so the UI can detect changes.
     next_version: u64,
     /// Bumped on every `open_folder`. `PhotoId`s restart at 0 per folder, so a
@@ -229,12 +256,13 @@ impl Session {
             sel: Selection::new(),
             filter: VerdictFilter::All,
             scan: None,
-            decoder: RayonThumbDecoder::new(),
+            decoder: ThumbDecoderPool::new(),
             base: ThumbCache::new(BASE_CACHE_BYTES),
             hires: ThumbCache::new(HIRES_CACHE_BYTES),
             gallery: ThumbCache::new(GALLERY_CACHE_BYTES),
             gallery_edge: HashMap::new(),
             bg_cursor: 0,
+            imported: HashSet::new(),
             next_version: 0,
             epoch: 0,
             sidecar: None,
@@ -281,6 +309,7 @@ impl Session {
         self.gallery.reset(GALLERY_CACHE_BYTES);
         self.gallery_edge.clear();
         self.bg_cursor = 0;
+        self.imported.clear();
         self.epoch += 1;
         self.dirty = false;
 
@@ -341,6 +370,13 @@ impl Session {
             // Persisted photos whose files weren't found become placeholders so
             // their state is preserved and they reanimate if the file returns (§4).
             self.reconcile_missing();
+            // Baseline the import from whatever the disk cache already holds, so
+            // a reopened folder resumes its warm-up instead of starting over.
+            self.seed_imported();
+            // The grid reveals now that the order is settled; rewind the fill so
+            // it walks that final order from the top — already-imported thumbs
+            // skip instantly, the rest fill in display order.
+            self.bg_cursor = 0;
         }
         if self.builder.revision() != self.pool_revision {
             self.regroup();
@@ -576,11 +612,15 @@ impl Session {
     /// the same size so `←`/`→` lands on a ready image. Called each frame
     /// while the gallery is open.
     pub fn request_gallery(&mut self, display_index: usize, fit_edge: u32) {
-        self.request_gallery_at(display_index, fit_edge);
+        // Cap to the preview tier: a fit decode never needs more than a
+        // screen-class image, and bounding it keeps a long navigation session
+        // from accumulating full-window frames in RAM.
+        let edge = fit_edge.min(GALLERY_PREVIEW_EDGE);
+        self.request_gallery_at(display_index, edge);
         if display_index > 0 {
-            self.request_gallery_at(display_index - 1, fit_edge);
+            self.request_gallery_at(display_index - 1, edge);
         }
-        self.request_gallery_at(display_index + 1, fit_edge);
+        self.request_gallery_at(display_index + 1, edge);
     }
 
     /// Request a 1:1 (native-resolution) decode of one photo, capped at the GPU
@@ -649,27 +689,88 @@ impl Session {
         });
     }
 
-    /// Whether the background fill still has folder left to walk and cache room
-    /// for it — so the UI keeps repainting to drive it even when fully idle.
+    /// Whether the background fill still has folder left to walk — so the UI
+    /// keeps repainting to drive it even when fully idle.
     pub fn has_background_work(&self) -> bool {
-        self.bg_cursor < self.visible.len() && self.base.weight() < BASE_CACHE_BYTES
+        self.bg_cursor < self.visible.len()
     }
 
-    /// Keep base thumbnails decoding for the whole folder in the background,
-    /// independent of the viewport — so zooming in (a small visible band) never
-    /// stalls the rest of the folder, and scrolling later finds it ready. Walks
-    /// the folder once via a cursor, throttled to a small in-flight count so
-    /// viewport requests keep priority. Stops once the base cache is full.
+    /// Walk the whole folder once in the background, decoding each thumbnail so
+    /// it lands in the on-disk cache — then scrolling anywhere is a fast cached
+    /// decode, never a cold full-resolution read. The RAM cache is LRU-bounded,
+    /// so this warms the disk for the whole folder without holding it all in
+    /// memory. Throttled to a small in-flight count and run at low decode
+    /// priority so viewport and gallery decodes always win.
     pub fn fill_base_background(&mut self) {
-        if self.base.weight() >= BASE_CACHE_BYTES {
-            return;
-        }
         while self.base.inflight_len() < BG_FILL_INFLIGHT && self.bg_cursor < self.visible.len() {
             let index = self.bg_cursor;
             self.bg_cursor += 1;
-            // Low priority: the whole-folder fill must never delay a viewport or
-            // gallery decode, which run on the high-priority pool.
+            // Already warm on disk — re-decoding it would waste work. The
+            // viewport still loads it into RAM on demand when scrolled to.
+            if self
+                .visible_photo_id(index)
+                .is_some_and(|id| self.imported.contains(&id))
+            {
+                continue;
+            }
             self.request_base_at(index, DecodePriority::Low);
+        }
+    }
+
+    /// Background import progress — displayable thumbnails warmed into the disk
+    /// cache out of the displayable total. `None` while scanning or once every
+    /// displayable photo is warm, so the UI hides the bar then.
+    pub fn import_progress(&self) -> Option<ImportProgress> {
+        if self.is_scanning() {
+            return None;
+        }
+        let photos = self.builder.photos();
+        let mut total = 0;
+        let mut done = 0;
+        for &pool_index in &self.visible {
+            let photo = &photos[pool_index];
+            if photo.missing {
+                continue; // a placeholder has no pixels to import
+            }
+            total += 1;
+            if self.imported.contains(&photo.id) {
+                done += 1;
+            }
+        }
+        if total == 0 || done >= total {
+            return None;
+        }
+        Some(ImportProgress { done, total })
+    }
+
+    /// Stable id at a display position, without the per-cell verdict/selection
+    /// lookups `cell_info` does — cheap enough for the background-fill loop.
+    fn visible_photo_id(&self, display_index: usize) -> Option<PhotoId> {
+        let &pool_index = self.visible.get(display_index)?;
+        Some(self.builder.photos()[pool_index].id)
+    }
+
+    /// Seed the import baseline from the disk cache: every displayable photo
+    /// whose grid thumbnail is already stored counts as imported, so reopening a
+    /// folder resumes the warm-up rather than restarting it. A cache read
+    /// failure leaves the set empty — the import simply re-warms, never wrong.
+    fn seed_imported(&mut self) {
+        self.imported.clear();
+        let Some(cache) = self.cache.as_ref() else {
+            return;
+        };
+        let Ok(guard) = cache.lock() else {
+            return;
+        };
+        let cached = guard.cached_keys(ThumbTier::Grid);
+        drop(guard);
+        for photo in self.builder.photos() {
+            if photo.missing || photo.is_raw_only() {
+                continue;
+            }
+            if cached.contains(photo.fingerprint.as_bytes()) {
+                self.imported.insert(photo.id);
+            }
         }
     }
 
@@ -1381,7 +1482,12 @@ impl Session {
         self.next_version += 1;
         let version = self.next_version;
         let evicted = match tier {
-            DecodeTier::Base => self.base.store(id, image, version),
+            DecodeTier::Base => {
+                // A successful base decode is also written to the disk cache, so
+                // it now counts toward the import — even after RAM eviction.
+                self.imported.insert(id);
+                self.base.store(id, image, version)
+            }
             DecodeTier::Hires => self.hires.store(id, image, version),
             DecodeTier::Gallery => self.gallery.store(id, image, version),
         };

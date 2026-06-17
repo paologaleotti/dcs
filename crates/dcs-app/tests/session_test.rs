@@ -99,6 +99,62 @@ fn rescan_keeps_raw_jpeg_pairs_present_with_no_phantoms() {
 }
 
 #[test]
+fn import_progress_reaches_full_then_disappears() {
+    let dir = temp_folder("import_progress");
+    for i in 0..4 {
+        write_jpeg(&dir, &format!("p{i}.jpg"), 40, 40);
+    }
+    let mut session = Session::new();
+    session.open_folder(dir.clone());
+    drain_until(&mut session, 4);
+
+    // A fresh folder reports progress out of the four displayable photos.
+    let start = session
+        .import_progress()
+        .expect("import in progress on a cold open");
+    assert_eq!(start.total, 4);
+
+    // Drive the background fill until every thumbnail is warm; the bar is then
+    // dropped (None) so the status bar hides it.
+    pump_until(
+        &mut session,
+        |s| s.fill_base_background(),
+        |s| s.import_progress().is_none(),
+    );
+    assert!(session.import_progress().is_none(), "all imported → no bar");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reopen_resumes_import_from_disk_cache() {
+    let dir = temp_folder("import_resume");
+    for i in 0..4 {
+        write_jpeg(&dir, &format!("p{i}.jpg"), 40, 40);
+    }
+    // A first session warms every thumbnail into the on-disk cache.
+    let mut first = Session::new();
+    first.open_folder(dir.clone());
+    drain_until(&mut first, 4);
+    pump_until(
+        &mut first,
+        |s| s.fill_base_background(),
+        |s| s.import_progress().is_none(),
+    );
+    drop(first);
+
+    // Reopening the same folder recognizes the warm cache the moment the scan
+    // settles: the import is already complete, no re-decode needed.
+    let mut second = Session::new();
+    second.open_folder(dir.clone());
+    drain_until(&mut second, 4);
+    assert!(
+        second.import_progress().is_none(),
+        "warm disk cache resumes a finished import without re-warming"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn pairs_raw_with_jpeg_and_hides_raw_only_photos() {
     let dir = temp_folder("scan");
     touch(&dir, "a.jpg"); // JPEG-only

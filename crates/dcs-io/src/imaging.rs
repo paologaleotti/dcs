@@ -1,19 +1,20 @@
-//! Thumbnail decoding. A rayon pool decodes JPEGs off the UI thread with
-//! libjpeg-turbo (SIMD), scaled down on decode so a 24 MP frame costs a few
-//! milliseconds, bakes in EXIF orientation, and contain-fits to a square box
-//! (§10). Decoding the JPEG itself — not the camera's letterboxed EXIF
+//! Thumbnail decoding. A fixed pool of worker threads decodes JPEGs off the UI
+//! thread with libjpeg-turbo (SIMD), scaled down on decode so a 24 MP frame
+//! costs a few milliseconds, bakes in EXIF orientation, and contain-fits to a
+//! square box. Decoding the JPEG itself — not the camera's letterboxed EXIF
 //! thumbnail — means the result is the real image: correct aspect, no bars.
 //!
 //! The `ThumbDecoder` trait is the seam: each request decodes at a target pixel
-//! edge (the caller sizes it to the cell) and echoes back an opaque key.
+//! edge (the caller sizes it to the cell) and echoes back an opaque key. Two
+//! priority queues feed the workers (see [`ThumbDecoderPool`]).
 
 use std::cell::RefCell;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::thread::available_parallelism;
+use std::thread::{self, JoinHandle, available_parallelism};
 
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{Receiver, Select, Sender, unbounded};
 use dcs_domain::fingerprint::ContentFingerprint;
 use dcs_domain::photo::Orientation;
 use dcs_domain::thumb::ThumbImage;
@@ -70,61 +71,117 @@ pub trait ThumbDecoder: Send + Sync {
     fn poll(&self) -> Vec<(u64, Option<ThumbImage>)>;
 }
 
-/// rayon-backed decoder with two pools: a `high` pool sized to the machine's
-/// parallelism for foreground work, and a small `low` pool for the background
-/// prefetch. Keeping the prefetch on its own few threads means a foreground
-/// decode (gallery frame, viewport) starts immediately instead of queueing
-/// behind thousands of background thumbnails.
-pub struct RayonThumbDecoder {
-    high: rayon::ThreadPool,
-    low: rayon::ThreadPool,
-    tx: Sender<(u64, Option<ThumbImage>)>,
-    rx: Receiver<(u64, Option<ThumbImage>)>,
+/// A fixed set of worker threads (one per core) draining two queues: every
+/// worker takes from the high queue first and only falls back to the low queue
+/// when high is empty. So the whole machine chews through a first-load backlog
+/// (all of it low priority) at full width, yet the moment a foreground decode
+/// (gallery frame, zoomed cell) is queued, the next free worker picks it ahead
+/// of the remaining background thumbnails. No queue is starved; none is
+/// pre-allocated a fraction of the cores.
+pub struct ThumbDecoderPool {
+    high_tx: Sender<DecodeRequest>,
+    low_tx: Sender<DecodeRequest>,
+    result_rx: Receiver<(u64, Option<ThumbImage>)>,
+    // Held so the worker threads are joined-or-detached with the pool; dropping
+    // the senders disconnects the queues and the workers exit on their own.
+    _workers: Vec<JoinHandle<()>>,
 }
 
-impl RayonThumbDecoder {
+impl ThumbDecoderPool {
     pub fn new() -> Self {
         let cores = available_parallelism().map(|n| n.get()).unwrap_or(4);
-        // The background pool gets a quarter of the cores (at least one): enough
-        // to fill the folder steadily, few enough that foreground decodes on the
-        // high pool win the CPU.
-        let low_threads = (cores / 4).max(1);
-        let high = build_pool(cores, "dcs-decode");
-        let low = build_pool(low_threads, "dcs-decode-bg");
-        let (tx, rx) = unbounded();
-        RayonThumbDecoder { high, low, tx, rx }
+        let (high_tx, high_rx) = unbounded::<DecodeRequest>();
+        let (low_tx, low_rx) = unbounded::<DecodeRequest>();
+        let (result_tx, result_rx) = unbounded();
+        let workers = (0..cores)
+            .map(|i| {
+                let high_rx = high_rx.clone();
+                let low_rx = low_rx.clone();
+                let result_tx = result_tx.clone();
+                thread::Builder::new()
+                    .name(format!("dcs-decode-{i}"))
+                    .spawn(move || decode_worker(high_rx, low_rx, result_tx))
+                    .expect("spawning a decode worker thread")
+            })
+            .collect();
+        ThumbDecoderPool {
+            high_tx,
+            low_tx,
+            result_rx,
+            _workers: workers,
+        }
     }
 }
 
-fn build_pool(threads: usize, name: &'static str) -> rayon::ThreadPool {
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .thread_name(move |i| format!("{name}-{i}"))
-        .build()
-        .expect("rayon pool with a valid thread count always builds")
+/// One worker: prefer the high queue, fall back to low, otherwise block until
+/// either delivers. Exits when both queues disconnect (the pool was dropped).
+fn decode_worker(
+    high_rx: Receiver<DecodeRequest>,
+    low_rx: Receiver<DecodeRequest>,
+    result_tx: Sender<(u64, Option<ThumbImage>)>,
+) {
+    loop {
+        let req = match next_request(&high_rx, &low_rx) {
+            Some(req) => req,
+            None => return, // both queues closed — pool dropped
+        };
+        let key = req.key;
+        if result_tx.send((key, decode_with_cache(req))).is_err() {
+            return; // results no longer wanted
+        }
+    }
 }
 
-impl Default for RayonThumbDecoder {
+/// The next request to run, high queue first, blocking when both are empty.
+fn next_request(
+    high_rx: &Receiver<DecodeRequest>,
+    low_rx: &Receiver<DecodeRequest>,
+) -> Option<DecodeRequest> {
+    use crossbeam_channel::TryRecvError;
+    match high_rx.try_recv() {
+        Ok(req) => return Some(req),
+        Err(TryRecvError::Disconnected) => {
+            // High closed: low alone until it closes too.
+            return low_rx.recv().ok();
+        }
+        Err(TryRecvError::Empty) => {}
+    }
+    match low_rx.try_recv() {
+        Ok(req) => return Some(req),
+        Err(TryRecvError::Disconnected) => return high_rx.recv().ok(),
+        Err(TryRecvError::Empty) => {}
+    }
+    // Both empty: block until either is ready, biased to re-check high first.
+    let mut sel = Select::new();
+    let high_op = sel.recv(high_rx);
+    let low_op = sel.recv(low_rx);
+    let op = sel.select();
+    if op.index() == high_op {
+        op.recv(high_rx).ok().or_else(|| low_rx.recv().ok())
+    } else {
+        debug_assert_eq!(op.index(), low_op);
+        op.recv(low_rx).ok().or_else(|| high_rx.recv().ok())
+    }
+}
+
+impl Default for ThumbDecoderPool {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ThumbDecoder for RayonThumbDecoder {
+impl ThumbDecoder for ThumbDecoderPool {
     fn request(&self, req: DecodeRequest) {
-        let tx = self.tx.clone();
-        let pool = match req.priority {
-            DecodePriority::High => &self.high,
-            DecodePriority::Low => &self.low,
+        let queue = match req.priority {
+            DecodePriority::High => &self.high_tx,
+            DecodePriority::Low => &self.low_tx,
         };
-        pool.spawn(move || {
-            let key = req.key;
-            let _ = tx.send((key, decode_with_cache(req)));
-        });
+        // A closed receiver only happens after the workers are gone (shutdown).
+        let _ = queue.send(req);
     }
 
     fn poll(&self) -> Vec<(u64, Option<ThumbImage>)> {
-        self.rx.try_iter().collect()
+        self.result_rx.try_iter().collect()
     }
 }
 

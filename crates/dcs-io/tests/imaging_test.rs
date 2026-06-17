@@ -1,7 +1,7 @@
 use dcs_domain::photo::Orientation;
 use dcs_io::cache::ThumbTier;
 use dcs_io::imaging::{
-    DecodePriority, DecodeRequest, RayonThumbDecoder, ThumbDecoder, decode_thumbnail,
+    DecodePriority, DecodeRequest, ThumbDecoder, ThumbDecoderPool, decode_thumbnail,
 };
 use image::{Rgb, RgbImage};
 
@@ -82,7 +82,7 @@ fn decoder_runs_both_priority_lanes() {
     // and neither is dropped. (The point of the split — that a high request isn't
     // delayed behind a low backlog — is a scheduling property, not asserted here.)
     let path = write_jpeg("dcs_thumb_lanes.jpg", 800, 600);
-    let decoder = RayonThumbDecoder::new();
+    let decoder = ThumbDecoderPool::new();
     let req = |key: u64, priority| DecodeRequest {
         key,
         path: path.clone(),

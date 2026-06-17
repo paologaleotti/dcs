@@ -9,6 +9,7 @@
 //! never cost owned state, so reads degrade to a miss rather than an error.
 //! `rusqlite` is hidden here and never leaks above `dcs-io` (CLAUDE.md).
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -143,6 +144,25 @@ impl SqliteCache {
             thumb_cap_bytes,
             tick: AtomicU64::new(1),
         })
+    }
+
+    /// Every content key with a stored blob at `tier`. The caller intersects
+    /// this with its photos to learn which thumbnails are already warm — the
+    /// import-progress baseline. A read failure yields an empty set (the import
+    /// just re-warms), since the cache is disposable and never authoritative.
+    pub fn cached_keys(&self, tier: ThumbTier) -> HashSet<[u8; 32]> {
+        let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT content_key FROM thumbs WHERE tier = ?1")
+        else {
+            return HashSet::new();
+        };
+        let Ok(rows) = stmt.query_map(params![tier_code(tier)], |r| r.get::<_, Vec<u8>>(0)) else {
+            return HashSet::new();
+        };
+        rows.flatten()
+            .filter_map(|bytes| <[u8; 32]>::try_from(bytes).ok())
+            .collect()
     }
 
     /// Total bytes currently held by thumb blobs (diagnostics + eviction).

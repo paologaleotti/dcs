@@ -78,18 +78,47 @@ fn walk(root: &Path, tx: &Sender<ScannedFile>, cache: Option<&SharedCache>) {
     files
         .into_par_iter()
         .for_each_with(tx.clone(), |tx, (path, kind)| {
-            let (orientation, captured_at, meta) = read_meta(&path);
-            let fingerprint = fingerprint_of(&path, root, cache);
+            let scanned = match kind {
+                FileKind::Jpeg => {
+                    let (orientation, captured_at, meta) = read_meta(&path);
+                    let fingerprint = fingerprint_of(&path, root, cache);
+                    ScannedFile {
+                        path,
+                        kind,
+                        orientation,
+                        fingerprint,
+                        captured_at,
+                        meta,
+                    }
+                }
+                // v1 never decodes a RAW and a pair takes the JPEG's metadata, so
+                // reading the RAW's EXIF and hashing its (often huge) contents is
+                // pure waste. Identify it cheaply by path+size — enough to pair by
+                // name and to know the RAW exists.
+                FileKind::Raw => ScannedFile {
+                    fingerprint: cheap_fingerprint(&path),
+                    path,
+                    kind,
+                    orientation: Default::default(),
+                    captured_at: None,
+                    meta: CaptureMeta::default(),
+                },
+            };
             // A closed receiver means the session moved on; the send simply fails.
-            let _ = tx.send(ScannedFile {
-                path,
-                kind,
-                orientation,
-                fingerprint,
-                captured_at,
-                meta,
-            });
+            let _ = tx.send(scanned);
         });
+}
+
+/// A cheap, content-free identity for a RAW: blake3 over its (absolute) path and
+/// size, reading no file content. RAW identity isn't stable across renames or a
+/// moved folder (a future concern when RAW-only photos decode), but a pair's
+/// identity is its JPEG's, so this never touches the photo the user sees.
+fn cheap_fingerprint(path: &Path) -> ContentFingerprint {
+    let (_, size) = file_stat(path);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(path.to_string_lossy().as_bytes());
+    hasher.update(&size.to_le_bytes());
+    ContentFingerprint::from_bytes(*hasher.finalize().as_bytes())
 }
 
 /// The content fingerprint for a file, reusing the cache when `(mtime, size)`
