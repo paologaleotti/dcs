@@ -193,6 +193,8 @@ const HEADER_H: f32 = 30.0;
 pub struct GridResponse {
     pub visible: usize,
     pub cols: usize,
+    /// Display index of a double-clicked cell — the app opens it in the gallery.
+    pub double_clicked: Option<usize>,
 }
 
 /// Paint the grouped, virtualized grid. `cell` is the square cell edge; the grid
@@ -214,6 +216,7 @@ pub fn show(
         return GridResponse {
             visible: 0,
             cols: 1,
+            double_clicked: None,
         };
     }
     textures.begin_frame();
@@ -239,89 +242,97 @@ pub fn show(
     let layout = Layout::build(group_inputs(session, collapsed), cols, stride);
     let mut visible = 0usize;
     let mut clicked: Option<usize> = None;
+    let mut double_clicked: Option<usize> = None;
     // Header title to flip collapse on, applied after the paint borrow ends.
     let mut toggle: Option<String> = None;
 
-    ui.spacing_mut().item_spacing = Vec2::ZERO;
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show_viewport(ui, |ui, viewport| {
-            let (rect, _) =
-                ui.allocate_exact_size(Vec2::new(view_width, layout.total), Sense::hover());
-            let origin = rect.min;
-
-            if scroll_to_focus
-                && let Some(f) = focus
-                && let Some(r) = layout.cell_rect(f, origin, cell, stride)
-            {
-                // Jump straight to the focus cell — the animated glide across a
-                // long list reads as jank, not feedback.
-                ui.scroll_to_rect_animation(
-                    r,
-                    Some(egui::Align::Center),
-                    egui::style::ScrollAnimation::none(),
-                );
-            }
-
-            let resp = ui.interact(rect, Id::new("dcs_grid"), Sense::click());
-            let hover_pos = ui.input(|i| i.pointer.hover_pos());
-            let click_pos = resp
-                .clicked()
-                .then(|| resp.interact_pointer_pos())
-                .flatten();
-
-            let (first, last) = layout.visible_rows(viewport.min.y, viewport.max.y);
-            for r in first..last {
-                let y = origin.y + layout.offsets[r];
-                match &layout.rows[r] {
-                    Row::Header(h) => {
-                        let info = &layout.headers[*h];
-                        let hrect = Rect::from_min_size(
-                            Pos2::new(origin.x, y),
-                            Vec2::new(view_width, HEADER_H),
-                        );
-                        if click_pos.is_some_and(|p| hrect.contains(p)) {
-                            toggle = Some(info.title.clone());
-                        }
-                        let hovered = hover_pos.is_some_and(|p| hrect.contains(p));
-                        paint_header(ui, info, hrect, hovered);
-                    }
-                    Row::Cells { start, len } => {
-                        for c in 0..*len {
-                            let idx = start + c;
-                            let Some(info) = session.cell_info(idx) else {
-                                continue;
-                            };
-                            if zoomed {
-                                session.request_hires(idx, hires_edge);
-                            }
-                            let cell_rect = Rect::from_min_size(
-                                Pos2::new(origin.x + c as f32 * stride, y),
-                                Vec2::splat(cell),
-                            );
-                            if click_pos.is_some_and(|p| cell_rect.contains(p)) {
-                                clicked = Some(idx);
-                            }
-                            paint_cell(ui, session, textures, info, focus == Some(idx), cell_rect);
-                            visible += 1;
-                        }
-                    }
-                }
-            }
-            // Prefetch the rows around the viewport so scrolling stays smooth.
-            // Walking rows (not a min/max index span) keeps collapsed groups
-            // cheap: a collapsed group contributes only its single cover cell,
-            // never the hidden run between covers.
-            let pf_first = first.saturating_sub(PREFETCH_ROWS);
-            let pf_last = (last + PREFETCH_ROWS).min(layout.rows.len());
-            for r in pf_first..pf_last {
-                if let Row::Cells { start, len } = layout.rows[r] {
-                    for idx in start..start + len {
-                        session.request_base(idx);
-                    }
-                }
-            }
+    // Centre the focus cell by forcing the scroll offset this frame. A deferred
+    // `scroll_to_rect` lands a frame late, showing the new focus at the old
+    // scroll position for one frame — that mismatch reads as jank on nav.
+    let avail_h = ui.available_height();
+    let scroll_target = scroll_to_focus
+        .then_some(focus)
+        .flatten()
+        .and_then(|f| layout.cell_row_top(f))
+        .map(|top| {
+            (top + cell / 2.0 - avail_h / 2.0).clamp(0.0, (layout.total - avail_h).max(0.0))
         });
+
+    ui.spacing_mut().item_spacing = Vec2::ZERO;
+    let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
+    if let Some(target) = scroll_target {
+        area = area.vertical_scroll_offset(target);
+    }
+    area.show_viewport(ui, |ui, viewport| {
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(view_width, layout.total), Sense::hover());
+        let origin = rect.min;
+
+        let resp = ui.interact(rect, Id::new("dcs_grid"), Sense::click());
+        let hover_pos = ui.input(|i| i.pointer.hover_pos());
+        let click_pos = resp
+            .clicked()
+            .then(|| resp.interact_pointer_pos())
+            .flatten();
+        let dbl_pos = resp
+            .double_clicked()
+            .then(|| resp.interact_pointer_pos())
+            .flatten();
+
+        let (first, last) = layout.visible_rows(viewport.min.y, viewport.max.y);
+        for r in first..last {
+            let y = origin.y + layout.offsets[r];
+            match &layout.rows[r] {
+                Row::Header(h) => {
+                    let info = &layout.headers[*h];
+                    let hrect = Rect::from_min_size(
+                        Pos2::new(origin.x, y),
+                        Vec2::new(view_width, HEADER_H),
+                    );
+                    if click_pos.is_some_and(|p| hrect.contains(p)) {
+                        toggle = Some(info.title.clone());
+                    }
+                    let hovered = hover_pos.is_some_and(|p| hrect.contains(p));
+                    paint_header(ui, info, hrect, hovered);
+                }
+                Row::Cells { start, len } => {
+                    for c in 0..*len {
+                        let idx = start + c;
+                        let Some(info) = session.cell_info(idx) else {
+                            continue;
+                        };
+                        if zoomed {
+                            session.request_hires(idx, hires_edge);
+                        }
+                        let cell_rect = Rect::from_min_size(
+                            Pos2::new(origin.x + c as f32 * stride, y),
+                            Vec2::splat(cell),
+                        );
+                        if click_pos.is_some_and(|p| cell_rect.contains(p)) {
+                            clicked = Some(idx);
+                        }
+                        if dbl_pos.is_some_and(|p| cell_rect.contains(p)) {
+                            double_clicked = Some(idx);
+                        }
+                        paint_cell(ui, session, textures, info, focus == Some(idx), cell_rect);
+                        visible += 1;
+                    }
+                }
+            }
+        }
+        // Prefetch the rows around the viewport so scrolling stays smooth.
+        // Walking rows (not a min/max index span) keeps collapsed groups
+        // cheap: a collapsed group contributes only its single cover cell,
+        // never the hidden run between covers.
+        let pf_first = first.saturating_sub(PREFETCH_ROWS);
+        let pf_last = (last + PREFETCH_ROWS).min(layout.rows.len());
+        for r in pf_first..pf_last {
+            if let Row::Cells { start, len } = layout.rows[r] {
+                for idx in start..start + len {
+                    session.request_base(idx);
+                }
+            }
+        }
+    });
 
     // The UI only reports the raw click + modifiers; the app owns the policy.
     if let Some(idx) = clicked {
@@ -336,7 +347,11 @@ pub fn show(
     }
 
     textures.evict_over_budget();
-    GridResponse { visible, cols }
+    GridResponse {
+        visible,
+        cols,
+        double_clicked,
+    }
 }
 
 /// Pre-computed visual layout: the ordered header/cell rows with their vertical
@@ -466,17 +481,15 @@ impl Layout {
     }
 
     /// Screen rect of the cell at display index `idx`, for auto-scroll.
-    fn cell_rect(&self, idx: usize, origin: Pos2, cell: f32, stride: f32) -> Option<Rect> {
+    /// Content-space top `y` of the row holding cell `idx` (independent of the
+    /// scroll offset), used to centre the focus cell the same frame.
+    fn cell_row_top(&self, idx: usize) -> Option<f32> {
         for (r, row) in self.rows.iter().enumerate() {
             if let Row::Cells { start, len } = row
                 && idx >= *start
                 && idx < start + len
             {
-                let col = idx - start;
-                return Some(Rect::from_min_size(
-                    Pos2::new(origin.x + col as f32 * stride, origin.y + self.offsets[r]),
-                    Vec2::splat(cell),
-                ));
+                return Some(self.offsets[r]);
             }
         }
         None

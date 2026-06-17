@@ -91,6 +91,11 @@ impl DcsApp {
                         );
                         self.visible = resp.visible;
                         self.cols = resp.cols;
+                        // Double-click opens the photo in the gallery, like Space.
+                        if let Some(idx) = resp.double_clicked {
+                            self.session.set_focus(idx, false);
+                            self.enter_gallery();
+                        }
                     }
                     ViewMode::Gallery => {
                         let count = self.session.photo_count();

@@ -318,74 +318,70 @@ fn paint_filmstrip(
     // A horizontal scroll area carved into the band: virtualized to the thumbs
     // intersecting the viewport, click-to-jump like the grid, and centred on the
     // current frame only when the focus changed (so manual scrolling sticks).
-    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-        egui::ScrollArea::horizontal()
-            .id_salt("dcs_filmstrip")
-            .show_viewport(ui, |ui, viewport| {
-                let (alloc, resp) =
-                    ui.allocate_exact_size(Vec2::new(content_w, STRIP_THUMB), Sense::click());
-                let origin = alloc.min;
-                let cy = alloc.center().y;
-                let slot_x = |idx: usize| origin.x + pad + idx as f32 * pitch;
+    // The scroll content is a thumb-tall band centred in the dock so the thumbs
+    // sit vertically centred rather than hugging the top edge.
+    let strip_band = Rect::from_center_size(rect.center(), Vec2::new(rect.width(), STRIP_THUMB));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(strip_band), |ui| {
+        let mut area = egui::ScrollArea::horizontal().id_salt("dcs_filmstrip");
+        // Centre the focus this frame by forcing the offset directly, rather than
+        // a deferred `scroll_to_rect` that lands a frame late — the lag shows the
+        // new highlight at the old position for one frame, which reads as jank.
+        // `offset = focus * pitch` centres the focus given the half-width pads.
+        if center_focus {
+            let max = (content_w - strip_band.width()).max(0.0);
+            let target = (focus as f32 * pitch).clamp(0.0, max);
+            area = area.horizontal_scroll_offset(target);
+        }
+        area.show_viewport(ui, |ui, viewport| {
+            let (alloc, resp) =
+                ui.allocate_exact_size(Vec2::new(content_w, STRIP_THUMB), Sense::click());
+            let origin = alloc.min;
+            let cy = alloc.center().y;
+            let slot_x = |idx: usize| origin.x + pad + idx as f32 * pitch;
 
-                // Only the thumbs whose column meets the viewport are painted.
-                let first = (((viewport.min.x - pad) / pitch).floor() as isize).max(0) as usize;
-                let last = (((viewport.max.x - pad) / pitch).ceil() as usize + 1).min(count);
-                for idx in first..last {
-                    let slot = Rect::from_min_size(
-                        Pos2::new(slot_x(idx), cy - STRIP_THUMB / 2.0),
-                        Vec2::splat(STRIP_THUMB),
-                    );
-                    let Some(info) = session.cell_info(idx) else {
-                        continue;
-                    };
-                    ui.painter().rect_filled(slot, 0.0, theme::CELL_EMPTY);
-                    session.request_base(idx);
-                    let view = session.thumb(info.id);
-                    if let Some(tex) = textures.view_texture(ui, info.id, view) {
-                        let fit = contain_fit(slot, tex.size);
-                        ui.painter().image(tex.id, fit, full_uv(), Color32::WHITE);
-                    }
-                    if info.state == AcceptState::Rejected {
-                        ui.painter().rect_filled(slot, 0.0, theme::REJECT_DIM);
-                    }
-                    paint_strip_glyph(ui, slot, info.state);
-                    if idx == focus {
-                        ui.painter().rect_stroke(
-                            slot,
-                            0.0,
-                            Stroke::new(2.0, theme::FOCUS_OUTLINE),
-                            StrokeKind::Inside,
-                        );
-                    }
+            // Only the thumbs whose column meets the viewport are painted.
+            let first = (((viewport.min.x - pad) / pitch).floor() as isize).max(0) as usize;
+            let last = (((viewport.max.x - pad) / pitch).ceil() as usize + 1).min(count);
+            for idx in first..last {
+                let slot = Rect::from_min_size(
+                    Pos2::new(slot_x(idx), cy - STRIP_THUMB / 2.0),
+                    Vec2::splat(STRIP_THUMB),
+                );
+                let Some(info) = session.cell_info(idx) else {
+                    continue;
+                };
+                ui.painter().rect_filled(slot, 0.0, theme::CELL_EMPTY);
+                session.request_base(idx);
+                let view = session.thumb(info.id);
+                if let Some(tex) = textures.view_texture(ui, info.id, view) {
+                    let fit = contain_fit(slot, tex.size);
+                    ui.painter().image(tex.id, fit, full_uv(), Color32::WHITE);
                 }
-
-                // Map a click to the thumb under it (ignoring the inter-thumb gap).
-                if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.clicked()) {
-                    let rel = pos.x - origin.x - pad;
-                    if rel >= 0.0 {
-                        let idx = (rel / pitch) as usize;
-                        if idx < count && rel - idx as f32 * pitch <= STRIP_THUMB {
-                            hit = Some(idx);
-                        }
-                    }
+                if info.state == AcceptState::Rejected {
+                    ui.painter().rect_filled(slot, 0.0, theme::REJECT_DIM);
                 }
-
-                // Recentre on the current frame when the focus just moved.
-                if center_focus {
-                    let frame = Rect::from_min_size(
-                        Pos2::new(slot_x(focus), cy - STRIP_THUMB / 2.0),
-                        Vec2::splat(STRIP_THUMB),
-                    );
-                    // Jump, don't glide — the fast auto-scroll across the strip
-                    // reads as jank.
-                    ui.scroll_to_rect_animation(
-                        frame,
-                        Some(egui::Align::Center),
-                        egui::style::ScrollAnimation::none(),
+                paint_strip_glyph(ui, slot, info.state);
+                if idx == focus {
+                    ui.painter().rect_stroke(
+                        slot,
+                        0.0,
+                        Stroke::new(2.0, theme::FOCUS_OUTLINE),
+                        StrokeKind::Inside,
                     );
                 }
-            });
+            }
+
+            // Map a click to the thumb under it (ignoring the inter-thumb gap).
+            if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.clicked()) {
+                let rel = pos.x - origin.x - pad;
+                if rel >= 0.0 {
+                    let idx = (rel / pitch) as usize;
+                    if idx < count && rel - idx as f32 * pitch <= STRIP_THUMB {
+                        hit = Some(idx);
+                    }
+                }
+            }
+        });
     });
     textures.evict_over_budget();
     hit
