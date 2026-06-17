@@ -1,4 +1,4 @@
-//! `project.json` — the precious store (§5, §10b). Verdicts, the id counter,
+//! `project.json` — the precious store. Verdicts, the id counter,
 //! and the views array, behind a versioned DTO so the on-disk shape can evolve
 //! without breaking old files. Owned state only; nothing derived is persisted.
 //!
@@ -8,8 +8,7 @@
 //! the main file is ever missing or unreadable, load falls back to the backup.
 //!
 //! Forward-compat: unknown `ViewKind`s round-trip untouched because `views` is
-//! stored as raw JSON values and only parsed by name where a kind is known
-//! (spec §9b, open Q#6).
+//! stored as raw JSON values and only parsed by name where a kind is known.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -31,7 +30,7 @@ const BACKUP_FILE: &str = "project.json.bak";
 const TEMP_FILE: &str = "project.json.tmp";
 
 /// Errors reading or writing the project file. The domain never sees these;
-/// they carry their own context, never a bare `io::Error` (CLAUDE.md).
+/// they carry their own context, never a bare `io::Error`.
 #[derive(Debug, Error)]
 pub enum PersistError {
     #[error("project i/o error: {0}")]
@@ -47,8 +46,8 @@ pub enum PersistError {
 /// One persisted photo: stable id, content identity, owned verdict, and the
 /// last-known relative paths. Every known photo is recorded (not just culled
 /// ones) so a rename-in-place reclaims its id even when unreviewed, and so a
-/// file that goes missing keeps its state and can be shown as a placeholder
-/// (§4, §10b). Paths are relative to the project root — the folder is portable.
+/// file that goes missing keeps its state and can be shown as a placeholder.
+/// Paths are relative to the project root — the folder is portable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhotoRecord {
     pub id: PhotoId,
@@ -60,9 +59,9 @@ pub struct PhotoRecord {
     pub raw: Option<PathBuf>,
 }
 
-/// Owned project settings (§4). Reserved fields are persisted now even when
+/// Owned project settings. Reserved fields are persisted now even when
 /// unset so the schema is stable: the shoot timezone is freeze-critical (a
-/// crystallized tag made under the wrong zone is wrong forever, open Q#5).
+/// crystallized tag made under the wrong zone is wrong forever).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProjectConfig {
     /// IANA shoot (display) timezone (e.g. `"Europe/Rome"`). Times are shown and
@@ -74,7 +73,7 @@ pub struct ProjectConfig {
     /// falls back to system. Freeze-critical alongside `shoot_zone`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera_zone: Option<String>,
-    /// Grid cell size in logical pixels — the Grid view's zoom (§9b).
+    /// Grid cell size in logical pixels — the Grid view's zoom.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grid_zoom: Option<f32>,
 }
@@ -85,11 +84,11 @@ pub struct ProjectConfig {
 pub struct ProjectSnapshot {
     pub photos: Vec<PhotoRecord>,
     /// The monotonic id counter to persist (max assigned id + 1), so fresh
-    /// photos never collide with reclaimed ones after reopen (§10b).
+    /// photos never collide with reclaimed ones after reopen.
     pub next_id: u32,
     /// Views as raw JSON values; unknown kinds survive a round-trip verbatim.
     pub views: Vec<serde_json::Value>,
-    /// Owned project settings (§4).
+    /// Owned project settings.
     pub config: ProjectConfig,
 }
 

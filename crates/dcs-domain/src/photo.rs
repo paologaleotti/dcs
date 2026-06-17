@@ -1,4 +1,4 @@
-//! Core photo identity and types. A photo is the logical unit (§2.1): a
+//! Core photo identity and types. A photo is the logical unit: a
 //! JPEG, a RAW, or both paired under one id. Cull/tag photos; export files.
 
 use std::path::{Path, PathBuf};
@@ -8,13 +8,13 @@ use time::{PrimitiveDateTime, UtcOffset};
 use crate::fingerprint::ContentFingerprint;
 
 /// Stable per-photo identifier. Assigned on import, never reused. Serializable
-/// because commands carrying `PhotoId`s are persisted to `undo.log` (§5).
+/// because commands carrying `PhotoId`s are persisted to `undo.log`.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub struct PhotoId(pub u32);
 
-/// Which files back a photo (§2.1). Display prefers the JPEG.
+/// Which files back a photo. Display prefers the JPEG.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhotoType {
     Jpeg,
@@ -145,12 +145,12 @@ pub struct Photo {
     pub files: AssociatedFiles,
     pub photo_type: PhotoType,
     pub orientation: Orientation,
-    /// Content identity (§10b, #33): the fingerprint of the *display* file
+    /// Content identity: the fingerprint of the *display* file
     /// (JPEG when present, else RAW). Keyed from import so a rename-in-place
     /// reclaims this photo's id, verdicts, and tags instead of returning blank.
     pub fingerprint: ContentFingerprint,
     /// Raw EXIF `DateTimeOriginal`, naive (no zone). Timezone adjustment to an
-    /// `OffsetDateTime` is derived later (§2.4); `None` means undated.
+    /// `OffsetDateTime` is derived later; `None` means undated.
     pub captured_at: Option<PrimitiveDateTime>,
     /// EXIF `OffsetTimeOriginal`, the camera's UTC offset at capture when the tag
     /// is present. Lets the absolute instant be derived per-photo without guessing
@@ -159,7 +159,7 @@ pub struct Photo {
     /// EXIF capture facts for the gallery caption. Derived, not persisted —
     /// empty for missing photos until the file returns.
     pub meta: CaptureMeta,
-    /// The backing file is known (from `project.json`) but absent on disk (§4).
+    /// The backing file is known (from `project.json`) but absent on disk.
     /// State is preserved and the cell renders as a placeholder; it reanimates
     /// when the file returns, matched by fingerprint.
     pub missing: bool,
@@ -199,7 +199,7 @@ impl Photo {
     }
 
     /// The JPEG path to decode for a thumbnail, if one exists. RAW-only photos
-    /// return `None` (no raw decode in v1, §2.1).
+    /// return `None` (no raw decode in v1).
     pub fn decodable_path(&self) -> Option<&Path> {
         self.files.jpeg.as_deref()
     }
@@ -218,7 +218,7 @@ impl Photo {
 }
 
 impl Photo {
-    /// Build a placeholder for a known photo whose file is absent on disk (§4).
+    /// Build a placeholder for a known photo whose file is absent on disk.
     /// Carries its last-known paths and identity; `captured_at` is unknown until
     /// the file returns, so it sorts undated.
     pub fn missing(

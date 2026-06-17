@@ -1,4 +1,4 @@
-//! IANA timezone helpers (open Q#5). The shoot zone is owned, freeze-critical
+//! IANA timezone helpers. The shoot zone is owned, freeze-critical
 //! state: a crystallized tag made under the wrong zone is wrong forever. This
 //! module is the pure source of the zone list (for a picker), zone lookup, and
 //! the per-instant `OffsetDateTime` adjustment that grouping derives from.
@@ -27,7 +27,7 @@ pub fn zone(name: &str) -> Option<&'static Tz> {
 /// Resolve the absolute capture instant from the naive EXIF time. The naive time
 /// is wall-clock with no zone, so it must be anchored before it means an instant:
 /// a per-photo EXIF offset (`OffsetTimeOriginal`) wins when present, otherwise the
-/// camera zone supplies the offset *for that instant* (DST mid-trip safe, #7).
+/// camera zone supplies the offset *for that instant* (DST mid-trip safe).
 ///
 /// On the rare impossible local time (the spring-forward gap) we fall back to UTC
 /// rather than panic — a real capture never lands there, and derivation must stay
@@ -50,7 +50,7 @@ pub fn source_instant(
 }
 
 /// Convert an absolute capture instant into the display (shoot) zone, deriving the
-/// offset for that instant so a trip spanning a DST change stays correct (#7). The
+/// offset for that instant so a trip spanning a DST change stays correct. The
 /// returned wall-clock is what grouping and the caption read; it only differs from
 /// the shot time when the display zone differs from the photo's source offset.
 pub fn adjusted(instant: OffsetDateTime, display_zone: &Tz) -> OffsetDateTime {

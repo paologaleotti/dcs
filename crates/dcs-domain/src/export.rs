@@ -1,12 +1,12 @@
-//! Pure export planner (§6.9, decision #36). Takes the resolved dialog settings
+//! Pure export planner. Takes the resolved dialog settings
 //! (`ExportRequest`) plus the in-scope photos (`ExportItem`s the conductor builds
 //! from the current selection/filter) and decides *everything*: which file of
 //! each photo to copy, where it lands, how name collisions resolve, and the
 //! dry-run sentence. No disk access — it only decides. `dcs-io` executes the
 //! resulting `ExportPlan` verbatim and makes no choices of its own, so the
-//! dialog's live preview and the real run are the same artifact (§6.1).
+//! dialog's live preview and the real run are the same artifact.
 //!
-//! Copy-only in v1; never overwrites (§6.6). Tag-keyed scope, the `{tag}` token,
+//! Copy-only in v1; never overwrites. Tag-keyed scope, the `{tag}` token,
 //! and multi-tag flatten/duplicate land with the Tags slice — exclusive time
 //! groups need none of that here.
 
@@ -17,7 +17,7 @@ use thiserror::Error;
 
 use crate::photo::{Photo, PhotoId};
 
-/// Which files of each photo to copy (§6.3). `Jpeg`/`Raw` copy only that role
+/// Which files of each photo to copy. `Jpeg`/`Raw` copy only that role
 /// and skip photos lacking it. `Both` copies the JPEG **and** the RAW, skipping
 /// any photo that doesn't have both. `Any` copies whatever files the photo has,
 /// never skipping (the as-shot superset) — the default.
@@ -29,7 +29,7 @@ pub enum FileSelection {
     Any,
 }
 
-/// Destination folder layout (§6.4). `GroupAsFolders` reuses the active grouping
+/// Destination folder layout. `GroupAsFolders` reuses the active grouping
 /// (one folder per group title), the export-side payoff of the grouping model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
@@ -39,7 +39,7 @@ pub enum Layout {
     GroupAsFolders,
 }
 
-/// Name-collision policy (§6.6). Never overwrite: `Skip` drops the colliding
+/// Name-collision policy. Never overwrite: `Skip` drops the colliding
 /// file, `Rename` appends `-1`, `-2`, … before the extension. Default `Rename`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Collision {
@@ -55,13 +55,13 @@ pub enum FileRole {
     Raw,
 }
 
-/// An opt-in rename template (§6.6): a token string over `{name}`, `{date}`,
+/// An opt-in rename template: a token string over `{name}`, `{date}`,
 /// `{time}`, `{group}`, `{seq}`. Off by default (originals keep their names).
 /// The extension always comes from the source file, never the template.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NameTemplate(pub String);
 
-/// The resolved §6 stages as a plain request. The conductor builds this from the
+/// The resolved export stages as a plain request. The conductor builds this from the
 /// dialog; the planner consumes it. Scope lives in the `ExportItem` list, not
 /// here — the app resolves selection/filter into the in-scope photos.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,7 +91,7 @@ pub struct ExportOp {
     pub role: FileRole,
 }
 
-/// Why a photo contributed no file under the chosen selection (§6.3) — surfaced
+/// Why a photo contributed no file under the chosen selection — surfaced
 /// in the dialog's "(show)" affordance, selectable back into the grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkipReason {
@@ -109,7 +109,7 @@ pub struct SkippedPhoto {
     pub reason: SkipReason,
 }
 
-/// The fully-decided plan (§6.9): the ordered ops, the skip report, the
+/// The fully-decided plan: the ordered ops, the skip report, the
 /// collision count, and the dry-run sentence. Everything the dialog shows and
 /// the executor runs comes from this one artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,15 +122,15 @@ pub struct ExportPlan {
     /// policy) because the name was already taken — the "projected collisions".
     pub collisions: usize,
     pub dest: PathBuf,
-    /// The one-sentence dry-run restatement (§6.7), e.g.
+    /// The one-sentence dry-run restatement, e.g.
     /// `Copy 91 files (47 JPEG + 44 RAW) into "…", split JPEG/RAW, rename on collision.`
     pub summary: String,
 }
 
-/// Why a plan could not be produced. Domain-owned (§9); no I/O concepts.
+/// Why a plan could not be produced. Domain-owned; no I/O concepts.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ExportError {
-    /// No photos in scope (§13 step 1).
+    /// No photos in scope.
     #[error("nothing in scope to export")]
     EmptyScope,
     /// Scope was non-empty but the file selection matched no files at all.
@@ -433,7 +433,7 @@ fn tokens(template: &str) -> Vec<String> {
 /// Make a string safe as a single path component on every platform: replace the
 /// separators and Windows-reserved characters with `-`, collapse to a fallback
 /// when the result is empty. Group titles carry `/` (dates) and `·`, so folder
-/// layouts must sanitize (also satisfies the cross-platform rule, spec §1 #5).
+/// layouts must sanitize (also satisfies the cross-platform rule).
 fn sanitize(name: &str) -> String {
     let cleaned: String = name
         .chars()
@@ -451,7 +451,7 @@ fn sanitize(name: &str) -> String {
     }
 }
 
-/// The dry-run sentence (§6.7): verb, count, role breakdown, destination, layout,
+/// The dry-run sentence: verb, count, role breakdown, destination, layout,
 /// and collision policy — the same text the button and preview show.
 fn summarize(total: usize, jpeg: usize, raw: usize, request: &ExportRequest) -> String {
     let dest = request.dest.display();

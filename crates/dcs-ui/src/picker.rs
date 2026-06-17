@@ -1,8 +1,8 @@
 //! A keyboard-first quick-pick overlay — a fuzzy search field over a scrollable
 //! result list, driven by `↑`/`↓`/`Enter`/`Esc`, mouse optional. This is the
 //! reusable foundation for every searchable select in dcs: the shoot-timezone
-//! picker today, the command palette (`Cmd+P`, §2.10) and the tag palette
-//! (§2.7) next — one component so they all share nav, fuzzy highlighting, and
+//! picker today, the command palette (`Cmd+P`) and the tag palette
+//! next — one component so they all share nav, fuzzy highlighting, and
 //! feel. Pure presentation: it owns only ephemeral UI state (query, cursor) and
 //! reports the chosen item back by index; the caller maps that to its domain.
 //!

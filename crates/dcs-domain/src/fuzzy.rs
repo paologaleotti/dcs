@@ -1,6 +1,6 @@
 //! Fuzzy subsequence matching — the scorer behind every searchable surface in
-//! dcs: the shoot-timezone picker today, the command palette (`Cmd+P`, §2.10)
-//! and the tag palette (§2.7) next. A thin wrapper over the `fuzzy-matcher`
+//! dcs: the shoot-timezone picker today, the command palette (`Cmd+P`)
+//! and the tag palette next. A thin wrapper over the `fuzzy-matcher`
 //! crate's Skim v2 algorithm (the same matcher skim/fzf-style tools use), so we
 //! don't hand-roll scoring; we own only the small result type and the
 //! empty-query contract the UI relies on.

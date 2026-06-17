@@ -1,4 +1,4 @@
-//! Derived display ordering (§2.2, §2.3). Sort is a display setting computed
+//! Derived display ordering. Sort is a display setting computed
 //! from metadata, never persisted. Returns indices into the pool so the pool
 //! itself keeps its stable id order.
 
@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 
 use crate::photo::Photo;
 
-/// What to sort by (§2.3). Always paired with a direction.
+/// What to sort by. Always paired with a direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortKey {
     Time,
@@ -14,7 +14,7 @@ pub enum SortKey {
 }
 
 /// The sort direction. Pairs with a [`SortKey`]; together they are the active
-/// [`Sort`] (§2.3).
+/// [`Sort`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortDir {
     Asc,
@@ -22,7 +22,7 @@ pub enum SortDir {
 }
 
 /// The active sort: an explicit key + direction, always visible in the UI
-/// (§2.3). Default is `time ↑`.
+/// Default is `time ↑`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sort {
     pub key: SortKey,
@@ -39,7 +39,7 @@ impl Default for Sort {
 }
 
 impl Sort {
-    /// The default sort (§2.3), also the seed for the grouped display order.
+    /// The default sort, also the seed for the grouped display order.
     pub const TIME_ASC: Sort = Sort {
         key: SortKey::Time,
         dir: SortDir::Asc,
@@ -47,7 +47,7 @@ impl Sort {
 }
 
 /// Order pool indices by the given sort. Undated photos always sort last under
-/// `Time` (the `No date` tail, §2.3) regardless of direction; name breaks ties
+/// `Time` (the `No date` tail) regardless of direction; name breaks ties
 /// so the order is stable and deterministic.
 pub fn order(photos: &[Photo], sort: Sort) -> Vec<usize> {
     let mut keyed: Vec<(usize, &Photo, String)> = photos
@@ -59,7 +59,7 @@ pub fn order(photos: &[Photo], sort: Sort) -> Vec<usize> {
     keyed.into_iter().map(|(i, _, _)| i).collect()
 }
 
-/// Order pool indices by capture time ascending — the default sort (§2.3).
+/// Order pool indices by capture time ascending — the default sort.
 pub fn by_time_asc(photos: &[Photo]) -> Vec<usize> {
     order(photos, Sort::TIME_ASC)
 }

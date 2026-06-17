@@ -2,7 +2,7 @@
 //!
 //! Current slice: photo identity + pairing, time grouping + sort, the shared
 //! thumbnail pixel type, and the pure export planner. Bursts, filters, and tags
-//! land in later slices (§9, §11).
+//! land in later slices.
 //!
 //! Bottom of the dependency tree — depends on no internal crate.
 

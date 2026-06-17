@@ -1,10 +1,10 @@
-//! Owned verdict store plus the in-memory undo/redo stacks (§2.2, §2.9, #18).
+//! Owned verdict store plus the in-memory undo/redo stacks.
 //!
 //! Verdict is owned, not derived: every change is a `Command`, every change is
 //! reversible. Dispatch dedups the `PhotoId` set to unique photos, captures
 //! each photo's prior verdict, applies the change, and pushes one reversible
-//! `UndoEntry` (#10). This phase keeps the stacks in RAM; the durable,
-//! compacted `undo.log` is the next phase (§5).
+//! `UndoEntry`. This phase keeps the stacks in RAM; the durable,
+//! compacted `undo.log` is the next phase.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -13,10 +13,10 @@ use dcs_domain::cull::AcceptState;
 use dcs_domain::photo::PhotoId;
 
 /// Undo entries retained in memory before the oldest is dropped. Only bounds
-/// RAM this phase; the durable log is capped and compacted separately (§5).
+/// RAM this phase; the durable log is capped and compacted separately.
 const UNDO_CAP: usize = 1000;
 
-/// Accepted/rejected tallies for the status bar (§2.9). Unreviewed is derived
+/// Accepted/rejected tallies for the status bar. Unreviewed is derived
 /// by the caller from the pool size — absent photos are `Unreviewed`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VerdictCounts {
@@ -55,7 +55,7 @@ impl UndoEntry {
 
 /// The owned verdict store and its undo/redo history.
 ///
-/// Keyed by `PhotoId` (decision #33): identity is reconciled to the content
+/// Keyed by `PhotoId`: identity is reconciled to the content
 /// fingerprint by the persistence layer at load/save, not here, so commands and
 /// the durable `undo.log` keep a stable key while verdicts still survive a
 /// rename-in-place.
@@ -77,7 +77,7 @@ impl Cull {
     /// Rebuild the store from persisted state on reopen: `verdicts` from
     /// `project.json` (the authoritative state) and the undo/redo stacks folded
     /// from `undo.log`. The stacks are *not* replayed onto state — state already
-    /// reflects them (open Q#9). Absent/`Unreviewed` verdicts are not stored, so
+    /// reflects them. Absent/`Unreviewed` verdicts are not stored, so
     /// the map stays small.
     pub fn from_state(
         verdicts: impl IntoIterator<Item = (PhotoId, AcceptState)>,
@@ -102,7 +102,7 @@ impl Cull {
         self.verdicts.get(&id).copied().unwrap_or_default()
     }
 
-    /// Accepted/rejected tallies (§2.9).
+    /// Accepted/rejected tallies.
     pub fn counts(&self) -> VerdictCounts {
         let mut c = VerdictCounts::default();
         for state in self.verdicts.values() {
@@ -143,7 +143,7 @@ impl Cull {
     }
 
     /// Apply a command, recording one reversible entry. Duplicate `PhotoId`s
-    /// collapse to unique photos first (#10); a change that moves nothing
+    /// collapse to unique photos first; a change that moves nothing
     /// records no entry (and so cannot be "undone" into a surprise). Returns the
     /// recorded deltas so the caller can mirror them into the durable log, or
     /// `None` when nothing moved.
@@ -189,7 +189,7 @@ impl Cull {
 
     /// Forget photos entirely: drop their verdicts and scrub them from the
     /// undo/redo stacks, removing any entry left empty. Used when the user
-    /// removes missing files (§4); a maintenance op, not itself undoable.
+    /// removes missing files; a maintenance op, not itself undoable.
     pub fn forget(&mut self, ids: &HashSet<PhotoId>) {
         if ids.is_empty() {
             return;
@@ -214,7 +214,7 @@ impl Cull {
         let mut changes = Vec::new();
         for &id in ids {
             if !seen.insert(id) {
-                continue; // dedup to unique photos before the undo entry (#10)
+                continue; // dedup to unique photos before the undo entry
             }
             let before = self.state(id);
             if before == target {

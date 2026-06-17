@@ -1,4 +1,4 @@
-//! The keyboard half of the command registry (§2.10). One table maps key
+//! The keyboard half of the command registry. One table maps key
 //! chords to [`AppAction`]s; it drives both directions — resolving pressed keys
 //! into actions, and rendering the key hint shown beside each palette row — so
 //! the two can never drift. Adding a binding is one row here.

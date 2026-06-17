@@ -13,7 +13,7 @@ pub(crate) enum DecodeTier {
     Base,
     /// Sharp viewport decode while the grid is zoomed in.
     Hires,
-    /// Large fit/1:1 decode for the gallery view (§2.13).
+    /// Large fit/1:1 decode for the gallery view.
     Gallery,
 }
 

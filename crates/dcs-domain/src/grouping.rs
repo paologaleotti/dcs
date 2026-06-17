@@ -1,9 +1,9 @@
-//! Derived grouping (§2.2–2.4, §2.8). The grid is one pool segmented into an
+//! Derived grouping. The grid is one pool segmented into an
 //! ordered list of groups by an axis + granularity, in the shoot zone. Pure and
 //! derived: nothing here is persisted — change a knob and it re-derives.
 //!
 //! A photo belongs to exactly one group. Members carry pool indices in sort
-//! order; the leftover (`No date`) group is always last (#8). Counts are *not*
+//! order; the leftover (`No date`) group is always last. Counts are *not*
 //! stored — they're derived after filtering, by the caller.
 
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ use crate::photo::Photo;
 use crate::sort::{self, Sort, SortDir};
 use crate::timezone;
 
-/// The grouping axis (§2.8). `Gps`/`Tag` are deferred to later slices; the enum
+/// The grouping axis. `Gps`/`Tag` are deferred to later slices; the enum
 /// stays small so the active set is exactly what's wired.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Axis {
@@ -23,7 +23,7 @@ pub enum Axis {
     None,
 }
 
-/// Time bucket size (§2.4). `Auto` resolves from the data (single day →
+/// Time bucket size. `Auto` resolves from the data (single day →
 /// `SmartDay`, multi-day → `Day`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeGranularity {
@@ -34,12 +34,12 @@ pub enum TimeGranularity {
     Week,
 }
 
-/// What produced a group — drives header styling and ordering (§2.8, §3).
+/// What produced a group — drives header styling and ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GroupKind {
     /// A derived time bucket.
     Time,
-    /// The `No date` tail — undated photos, always last (#8).
+    /// The `No date` tail — undated photos, always last.
     Leftover,
     /// The single group when the axis is `None`.
     Stream,
@@ -110,7 +110,7 @@ pub fn resolve_auto(
     }
 }
 
-/// Neutral time-of-day buckets for smart-day grouping (§2.4). Evocative labels
+/// Neutral time-of-day buckets for smart-day grouping. Evocative labels
 /// ("golden hour") are a future opt-in; these are the always-on defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum DayPart {
@@ -204,7 +204,7 @@ fn time_groups(
         buckets[slot].1.push(i);
     }
 
-    // Day numbers are chronological (#6): assigned before any direction reversal.
+    // Day numbers are chronological: assigned before any direction reversal.
     let mut day_numbers: Vec<Date> = buckets.iter().map(|(k, _)| k.date).collect();
     day_numbers.sort_unstable();
     day_numbers.dedup();
@@ -273,7 +273,7 @@ fn bucket_key(at: OffsetDateTime, granularity: TimeGranularity) -> BucketKey {
         }
         TimeGranularity::SmartDay => {
             let part = day_part(hour);
-            // Night spans midnight: pre-5am attributes to the previous day (§2.4).
+            // Night spans midnight: pre-5am attributes to the previous day.
             let attributed = if part == DayPart::Night && hour < 5 {
                 date.previous_day().unwrap_or(date)
             } else {
@@ -316,7 +316,7 @@ fn title_for(key: BucketKey, days: &[Date]) -> String {
     }
 }
 
-/// `DD/MM/YY`, the date anchor carried in every time-group title (§2.4).
+/// `DD/MM/YY`, the date anchor carried in every time-group title.
 fn fmt_date(date: Date) -> String {
     format!(
         "{:02}/{:02}/{:02}",

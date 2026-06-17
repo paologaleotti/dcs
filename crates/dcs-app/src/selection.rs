@@ -1,8 +1,8 @@
-//! Ephemeral grid selection + focus cursor (§2.12, §2.13, #31).
+//! Ephemeral grid selection + focus cursor.
 //!
 //! `focus` is a position in the current *visible display order*; `selected`
 //! holds stable `PhotoId`s, so a selection survives re-sort and filtering and
-//! naturally honors the visible-only batch rule (#14): operations resolve
+//! naturally honors the visible-only batch rule: operations resolve
 //! against the visible order, so off-screen ids never sneak in.
 //!
 //! `anchor` is the range origin. A plain arrow drops the anchor on the new
@@ -126,7 +126,7 @@ impl Selection {
         self.anchor = Some(idx);
     }
 
-    /// `Ctrl+A`: select every visible photo (#14). Focus parks on the first
+    /// `Ctrl+A`: select every visible photo. Focus parks on the first
     /// cell if it had none.
     pub fn select_all_visible(&mut self, order: &[PhotoId]) {
         self.selected = order.iter().copied().collect();
@@ -136,7 +136,7 @@ impl Selection {
         }
     }
 
-    /// `Esc`: clear the selection (the only Esc-chain member this phase, §2.12).
+    /// `Esc`: clear the selection (the only Esc-chain member this phase).
     /// Focus stays put; the anchor collapses onto it.
     pub fn clear(&mut self) {
         self.selected.clear();
@@ -145,7 +145,7 @@ impl Selection {
 
     /// Photos a command should target: the selection if non-empty, else the
     /// focused photo. Returned in display order, deduped (a set), and filtered
-    /// to the visible order so the visible-only rule holds (#14).
+    /// to the visible order so the visible-only rule holds.
     pub fn selected_or_focused(&self, order: &[PhotoId]) -> Vec<PhotoId> {
         if !self.selected.is_empty() {
             return order

@@ -1,8 +1,8 @@
 //! App-global recent-projects list, persisted to `~/.dcs/recents.json`. This is
 //! the one store that is NOT per-project — the spec's three stores all live in
 //! a project's `.dcs/`; this tracks folders across projects so the menu can
-//! offer "Open Recent" (spec §4 deferred the UI; storage is intentionally
-//! minimal and disposable — a corrupt file just resets the list).
+//! offer "Open Recent". Storage is intentionally minimal and disposable — a
+//! corrupt file just resets the list.
 
 use std::io;
 use std::path::{Path, PathBuf};

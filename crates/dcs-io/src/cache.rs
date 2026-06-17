@@ -1,13 +1,13 @@
-//! `cache.sqlite3` — the disposable store (§5, §10b). Two contracts, one file:
+//! `cache.sqlite3` — the disposable store. Two contracts, one file:
 //!
 //! - **Fingerprint pre-filter:** `(path, mtime, size) → ContentFingerprint`, so
-//!   a re-scan skips re-hashing files that haven't changed (open Q#8).
+//!   a re-scan skips re-hashing files that haven't changed.
 //! - **Thumb blobs:** `(content_key, tier) → encoded JPEG`, LRU-evicted under a
 //!   byte cap, keyed by content so a renamed file keeps its thumbnails.
 //!
 //! Disposable by contract: delete the file and it rebuilds; corruption can
 //! never cost owned state, so reads degrade to a miss rather than an error.
-//! `rusqlite` is hidden here and never leaks above `dcs-io` (CLAUDE.md).
+//! `rusqlite` is hidden here and never leaks above `dcs-io`.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -21,14 +21,14 @@ use thiserror::Error;
 /// A cache shared across the scan worker and the decode pool, behind a `Mutex`
 /// so the single SQLite connection is reachable from any thread. Locks are held
 /// only for fast keyed queries — never across a file read, hash, or image
-/// encode/decode (CLAUDE.md threading rules).
+/// encode/decode.
 pub type SharedCache = Arc<Mutex<SqliteCache>>;
 
 /// Default thumb-blob budget (~512 MB). The cache never exceeds it; the LRU
 /// recycles the least-recently-used blobs. Tunable per open.
 pub const DEFAULT_THUMB_CAP_BYTES: u64 = 512 * 1024 * 1024;
 
-/// Which decode tier a thumb blob belongs to (§10b). Distinct cache rows so the
+/// Which decode tier a thumb blob belongs to. Distinct cache rows so the
 /// grid and gallery sizes coexist for one photo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThumbTier {
@@ -87,7 +87,7 @@ impl SqliteCache {
     ///
     /// The cache is disposable: if the file is corrupt and won't open, it is
     /// deleted and rebuilt from scratch once, rather than failing the caller.
-    /// A corrupt disposable store must never cost owned state (§10b).
+    /// A corrupt disposable store must never cost owned state.
     pub fn open_with_cap(path: &Path, thumb_cap_bytes: u64) -> Result<Self, CacheError> {
         match Self::try_open(path, thumb_cap_bytes) {
             Ok(cache) => Ok(cache),

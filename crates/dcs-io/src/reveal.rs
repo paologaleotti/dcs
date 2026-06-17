@@ -1,4 +1,4 @@
-//! Open the OS file manager at a path (§6.5) — the affordance that keeps "dcs
+//! Open the OS file manager at a path — the affordance that keeps "dcs
 //! never deletes" from being a dead end: reveal the rejected originals so the
 //! user can act on them outside the app. Best-effort; a spawn failure is ignored.
 

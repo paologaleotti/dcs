@@ -2,7 +2,7 @@
 //!
 //! Open-and-view slice: a folder of images rendered as a smooth, virtualized
 //! contact-sheet grid over the conductor in dcs-app. Top of the dependency
-//! tree. (§9)
+//! tree.
 
 mod app;
 mod export;

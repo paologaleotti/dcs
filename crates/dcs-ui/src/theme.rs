@@ -1,4 +1,4 @@
-//! The analog contact-sheet look (§3): dark neutral grays, square corners
+//! The analog contact-sheet look: dark neutral grays, square corners
 //! everywhere, hairline separation, monospace for data. No blue-tinted darks,
 //! no rounding, no shadows.
 
@@ -17,14 +17,14 @@ pub const TEXT_DIM: Color32 = Color32::from_gray(150);
 /// RAW badge background, and the chip behind a verdict glyph.
 pub const BADGE_BG: Color32 = Color32::from_gray(8);
 
-/// Selection — a light grease-pencil outline (§3, #29).
+/// Selection — a light grease-pencil outline.
 pub const SELECT_OUTLINE: Color32 = Color32::from_gray(180);
-/// Focus cursor — a brighter outline than the selection (§2.13, #31).
+/// Focus cursor — a brighter outline than the selection.
 pub const FOCUS_OUTLINE: Color32 = Color32::from_gray(240);
-/// Rejected cells are dimmed by this translucent black overlay (§2.9).
+/// Rejected cells are dimmed by this translucent black overlay.
 pub const REJECT_DIM: Color32 = Color32::from_black_alpha(130);
 /// Accepted verdict mark. Green/red verdict marks are the only non-gray colors
-/// so far (§3, color = meaning only).
+/// so far (color = meaning only).
 pub const VERDICT_ACCEPT: Color32 = Color32::from_rgb(90, 190, 110);
 /// Rejected verdict mark.
 pub const VERDICT_REJECT: Color32 = Color32::from_rgb(210, 90, 90);

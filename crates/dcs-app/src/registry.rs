@@ -1,4 +1,4 @@
-//! The command registry (§2.10): one catalog of invocable actions shared by
+//! The command registry: one catalog of invocable actions shared by
 //! every surface — keyboard, the `Cmd/Ctrl+P` palette, and menus. The UI never
 //! decides what an action *does*; it asks [`catalog`] for the available actions,
 //! calls [`Session::run_action`] with one, and performs whatever shell-level
@@ -380,7 +380,7 @@ fn push_filter(
     });
 }
 
-/// Grouping + sort entries (§2.3, §2.8). The axis switch is always offered; the
+/// Grouping + sort entries. The axis switch is always offered; the
 /// granularity sub-options appear only while grouping by time. The active
 /// choice is omitted so the palette only ever offers a change.
 fn push_group_actions(e: &mut Vec<ActionEntry>, session: &Session) {

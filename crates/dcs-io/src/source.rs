@@ -1,6 +1,6 @@
 //! Folder scanning. Walks a root recursively on a worker thread, classifies
 //! image files, reads EXIF orientation and capture time, and streams
-//! `ScannedFile`s back over a channel so the grid can fill progressively (§4).
+//! `ScannedFile`s back over a channel so the grid can fill progressively.
 //! The UI thread never blocks: it drains the handle each frame.
 
 use std::fs::File;
@@ -36,7 +36,7 @@ pub struct ScanHandle {
 
 /// Start scanning `root` on a worker thread. Returns immediately. When a
 /// `cache` is supplied, unchanged files (matching `(mtime, size)`) skip
-/// re-hashing — the import-budget pre-filter (open Q#8).
+/// re-hashing — the import-budget pre-filter.
 pub fn scan(root: PathBuf, cache: Option<SharedCache>) -> ScanHandle {
     let (tx, rx) = unbounded();
     let done = Arc::new(AtomicBool::new(false));
@@ -63,7 +63,7 @@ impl ScanHandle {
 fn walk(root: &Path, tx: &Sender<ScannedFile>, cache: Option<&SharedCache>) {
     // Enumerate first (a fast stat-only walk), then read EXIF + fingerprint in
     // parallel: file reads are the scan's real cost and embarrassingly
-    // parallel. Sort order is derived, so arrival order doesn't matter (§2.2).
+    // parallel. Sort order is derived, so arrival order doesn't matter.
     let files: Vec<(PathBuf, FileKind)> = WalkDir::new(root)
         .into_iter()
         .filter_entry(|e| !is_hidden(e.path()))
@@ -125,7 +125,7 @@ fn cheap_fingerprint(path: &Path) -> ContentFingerprint {
 
 /// The content fingerprint for a file, reusing the cache when `(mtime, size)`
 /// are unchanged, else hashing and caching the result. Cache keys are paths
-/// relative to the scan root so the project folder stays portable (§5).
+/// relative to the scan root so the project folder stays portable.
 fn fingerprint_of(path: &Path, root: &Path, cache: Option<&SharedCache>) -> ContentFingerprint {
     let (mtime, size) = file_stat(path);
     let rel = path
@@ -152,7 +152,7 @@ fn fingerprint_of(path: &Path, root: &Path, cache: Option<&SharedCache>) -> Cont
 }
 
 /// `(mtime_secs, size)` for the pre-filter. Missing metadata degrades to
-/// `(0, 0)` so a stat failure never aborts the scan (§4).
+/// `(0, 0)` so a stat failure never aborts the scan.
 fn file_stat(path: &Path) -> (i64, u64) {
     let Ok(meta) = std::fs::metadata(path) else {
         return (0, 0);
@@ -166,9 +166,9 @@ fn file_stat(path: &Path) -> (i64, u64) {
     (mtime, meta.len())
 }
 
-/// blake3 over `head[64K] ‖ tail[64K] ‖ size` (decision #33, open Q#8). Files at
+/// blake3 over `head[64K] ‖ tail[64K] ‖ size`. Files at
 /// or below `2 * FP_CHUNK` are hashed whole. An unreadable file still gets a
-/// stable fingerprint from its path + size, so the scan never aborts (§4).
+/// stable fingerprint from its path + size, so the scan never aborts.
 fn hash_file(path: &Path, size: u64) -> ContentFingerprint {
     let mut hasher = blake3::Hasher::new();
     match File::open(path) {

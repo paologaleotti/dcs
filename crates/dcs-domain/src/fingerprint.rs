@@ -1,4 +1,4 @@
-//! Content fingerprint — the file-identity value (§10b, decision #33). A photo
+//! Content fingerprint — the file-identity value. A photo
 //! renamed in place keeps its verdicts and tags because identity is keyed on
 //! *content*, not path. This is the pure value type only; computing it from
 //! bytes is `dcs-io`'s job (the head+tail+size blake3 hash lives behind the

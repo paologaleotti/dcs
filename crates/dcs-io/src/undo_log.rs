@@ -1,9 +1,9 @@
-//! `undo.log` — the durable command log (§5, decision #18). Undo/redo survive
+//! `undo.log` — the durable command log. Undo/redo survive
 //! quit and reopen; the promptless design leans on this. Append-only and cheap
 //! per keystroke; compacted to the canonical stacks at save and bounded by an
 //! entry cap. Corruption costs only history, never owned state.
 //!
-//! **Loaded, never replayed (open Q#9).** `project.json` is authoritative for
+//! **Loaded, never replayed.** `project.json` is authoritative for
 //! verdict state. On open the log is *folded* only to reconstruct the undo and
 //! redo stacks — its records are never re-applied to state, so the two stores
 //! can't double-count.

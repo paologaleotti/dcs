@@ -1,4 +1,4 @@
-//! Single-writer lock for a project (§10b, decision #34). One file in `.dcs/`
+//! Single-writer lock for a project. One file in `.dcs/`
 //! carries a **timestamp refreshed by the live instance**. A second instance
 //! that finds a fresh timestamp opens read-only (the UI offers "Take over"); a
 //! timestamp older than the stale window is reclaimed automatically, so a crash
@@ -32,8 +32,8 @@ pub enum LockOutcome {
 /// written then read back to settle the acquire race: if two instances both
 /// find a stale lock and write at nearly the same moment, the file ends up with
 /// one token, and the instance whose token didn't survive demotes itself to
-/// read-only. This closes the check-then-write TOCTOU without OS file locks
-/// (spec §10b keeps the timestamp as the liveness signal, no PID liveness).
+/// read-only. This closes the check-then-write TOCTOU without OS file locks,
+/// keeping the timestamp as the liveness signal, no PID liveness.
 pub struct ProjectLock {
     path: PathBuf,
     token: u64,

@@ -1,4 +1,4 @@
-//! Pure file pairing (§2.1, open decision #1). Groups scanned files into
+//! Pure file pairing. Groups scanned files into
 //! photos by `(parent directory, case-insensitive stem)`: `DSCF1234.JPG` +
 //! `DSCF1234.RAF` in the same folder become one `Both` photo.
 //!
@@ -24,7 +24,7 @@ pub const RAW_EXTENSIONS: &[&str] = &[
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg"];
 
 /// A file discovered during a scan, classified, with its orientation read and
-/// its content fingerprint computed (§10b, #33).
+/// its content fingerprint computed.
 #[derive(Debug, Clone)]
 pub struct ScannedFile {
     pub path: PathBuf,
@@ -45,7 +45,7 @@ pub enum FileKind {
 /// Incremental pairer with stable ids. Feeding the same file twice is a no-op
 /// for identity (the existing photo absorbs it).
 ///
-/// **Seeding (§10b, #33):** when reopened on a folder with saved state, the app
+/// **Seeding:** when reopened on a folder with saved state, the app
 /// seeds the builder with the persisted `fingerprint → PhotoId` map and the
 /// saved `next_id`. A file whose display fingerprint is known reclaims its old
 /// id (so verdicts survive a rename-in-place); a genuinely new fingerprint gets
@@ -84,7 +84,7 @@ pub fn pair(files: impl IntoIterator<Item = ScannedFile>) -> Pool {
 impl PoolBuilder {
     /// A builder seeded from saved state. `known` reclaims ids by fingerprint;
     /// `next_id` is the persisted monotonic counter (max assigned id + 1) so
-    /// fresh photos never collide with reclaimed ones (§10b).
+    /// fresh photos never collide with reclaimed ones.
     pub fn seeded(known: HashMap<ContentFingerprint, PhotoId>, next_id: u32) -> Self {
         PoolBuilder {
             index: HashMap::new(),
@@ -148,13 +148,13 @@ impl PoolBuilder {
         id
     }
 
-    /// The next id the builder would assign — the counter to persist (§10b).
+    /// The next id the builder would assign — the counter to persist.
     pub fn next_id(&self) -> u32 {
         self.next_id
     }
 
     /// Add a placeholder for a persisted photo whose file wasn't found in the
-    /// scan (§4). The id comes from the seed (its persisted id) and the seed
+    /// scan. The id comes from the seed (its persisted id) and the seed
     /// entry is consumed, so this is idempotent and a returned file — scanned
     /// normally — reclaims the same id instead. Returns `false` when the
     /// fingerprint was already seen this scan (the file is present, not
@@ -180,7 +180,7 @@ impl PoolBuilder {
     }
 
     /// Drop the given photos from the pool and rebuild the pairing index.
-    /// Used to forget missing files the user no longer wants tracked (§4). Ids
+    /// Used to forget missing files the user no longer wants tracked. Ids
     /// are never reused, so `next_id` is left untouched.
     pub fn forget(&mut self, ids: &std::collections::HashSet<PhotoId>) {
         if ids.is_empty() {

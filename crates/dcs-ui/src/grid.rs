@@ -1,5 +1,5 @@
 //! Virtualized contact-sheet grid. Uniform square cells, contain-fit
-//! thumbnails, EXIF orientation already baked by the decoder (§2.6). Only the
+//! thumbnails, EXIF orientation already baked by the decoder. Only the
 //! rows in view are laid out (egui `show_rows`); thumbnails for the visible
 //! band plus a prefetch margin are requested from the session.
 //!
@@ -24,7 +24,7 @@ use crate::theme;
 
 /// Rows above and below the viewport to decode ahead of the scroll.
 const PREFETCH_ROWS: usize = 5;
-/// Below this cell size the RAW badge is hidden (§2.1, zoom-gated).
+/// Below this cell size the RAW badge is hidden (zoom-gated).
 const BADGE_MIN_CELL: f32 = 96.0;
 /// At or above this cell size (logical points) the grid is "zoomed in" and
 /// requests sharp hi-res decodes for visible cells. Below it everything uses
@@ -178,14 +178,14 @@ impl TexRef {
     }
 }
 
-/// Row pitch in points: the cell edge plus the inter-cell gap (§2.6). The one
+/// Row pitch in points: the cell edge plus the inter-cell gap. The one
 /// source of this formula — both the painter and the app's auto-scroll math use
 /// it, so the grid geometry can never drift between them.
 pub fn row_stride(cell: f32) -> f32 {
     cell + (cell * 0.1).max(4.0)
 }
 
-/// Header band height in points — a quiet edge annotation (§3), not a cell row.
+/// Header band height in points — a quiet edge annotation, not a cell row.
 const HEADER_H: f32 = 30.0;
 
 /// What the grid reports back: cells drawn (diagnostics) and the column count
@@ -196,7 +196,7 @@ pub struct GridResponse {
 }
 
 /// Paint the grouped, virtualized grid. `cell` is the square cell edge; the grid
-/// is segmented by the session's derived groups (§2.8), each with a header band
+/// is segmented by the session's derived groups, each with a header band
 /// then its cells flowing in rows of `cols`. Only the rows intersecting the
 /// viewport are painted. When `scroll_to_focus` is set, the focus cell is
 /// scrolled into view (after a keyboard nav move).
@@ -365,7 +365,7 @@ struct HeaderInfo {
 }
 
 /// A group prepared for layout: its span plus whether it's collapsed and, if so,
-/// the cover cell to stand in for it (first accepted, else first — #16).
+/// the cover cell to stand in for it (first accepted, else first).
 struct GroupInput {
     title: String,
     kind: GroupKind,
@@ -408,7 +408,7 @@ impl Layout {
         let mut rows = Vec::new();
         let mut headers = Vec::new();
         for g in groups {
-            // The single `none`-axis stream has no header (§2.8).
+            // The single `none`-axis stream has no header.
             if g.kind != GroupKind::Stream {
                 headers.push(HeaderInfo {
                     title: g.title,
@@ -507,7 +507,7 @@ fn paint_caret(p: &egui::Painter, center: Pos2, collapsed: bool) {
     ));
 }
 
-/// A group header (§2.8, §3): a charcoal band distinct from the sheet, a
+/// A group header: a charcoal band distinct from the sheet, a
 /// collapse caret, the title in sans, and a mono `shown of total` count — an
 /// edge annotation that's also the click target for collapsing.
 fn paint_header(ui: &Ui, info: &HeaderInfo, rect: Rect, hovered: bool) {
@@ -578,7 +578,7 @@ fn paint_cell(
         ui.painter().image(tex.id, fit, full_uv(), Color32::WHITE);
     }
 
-    // A missing file (§4) has no pixels — show a placeholder so its preserved
+    // A missing file has no pixels — show a placeholder so its preserved
     // verdict still reads, rather than a blank or a stale thumbnail.
     if info.missing {
         paint_missing(ui, cell_rect);
@@ -596,7 +596,7 @@ fn paint_cell(
     paint_verdict_glyph(ui, cell_rect, info.state);
 
     // Selection first, focus on top and brighter — a focused cell that is also
-    // selected reads as the focus (§2.13, #31).
+    // selected reads as the focus.
     if info.selected {
         ui.painter().rect_stroke(
             cell_rect,
@@ -615,7 +615,7 @@ fn paint_cell(
     }
 }
 
-/// Bottom-right verdict glyph (§2.11): a green check (accepted) or red cross
+/// Bottom-right verdict glyph: a green check (accepted) or red cross
 /// (rejected); nothing for unreviewed. Drawn as line segments rather than font
 /// glyphs so it renders identically regardless of the loaded font.
 fn paint_verdict_glyph(ui: &Ui, cell_rect: Rect, state: AcceptState) {
@@ -657,7 +657,7 @@ fn paint_verdict_glyph(ui: &Ui, cell_rect: Rect, state: AcceptState) {
     }
 }
 
-/// Placeholder for a missing file (§4): a hairline outline plus a `missing`
+/// Placeholder for a missing file: a hairline outline plus a `missing`
 /// label when the cell is large enough, else a small corner badge.
 fn paint_missing(ui: &Ui, cell_rect: Rect) {
     ui.painter().rect_stroke(

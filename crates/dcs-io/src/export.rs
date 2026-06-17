@@ -1,4 +1,4 @@
-//! The dumb export executor (§6.9). Walks a finished `ExportPlan` on a worker
+//! The dumb export executor. Walks a finished `ExportPlan` on a worker
 //! thread, copies each file with the atomic `.part` → fsync → rename contract,
 //! streams progress, and supports cancel between files. It makes no path,
 //! rename, or skip decisions — the planner settled all of those. It only ever
@@ -29,14 +29,14 @@ pub enum ExportEvent {
 /// Why an op was skipped without copying.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkipKind {
-    /// A file already exists at the dest — never overwritten (§6.6).
+    /// A file already exists at the dest — never overwritten.
     DestExists,
     /// The source file is gone since planning.
     SourceMissing,
 }
 
 /// Live handle to a running export. Poll it for events each frame; cancel stops
-/// the worker after the current file (a clean, reported partial state, §6.7).
+/// the worker after the current file (a clean, reported partial state).
 pub struct ExportHandle {
     rx: Receiver<ExportEvent>,
     cancel: Arc<AtomicBool>,
@@ -129,7 +129,7 @@ enum CopyError {
 }
 
 /// Copy `source` to `dest` via `dest.part` → fsync → rename, the same atomic
-/// contract as saves (§10b): a crash leaves either no dest or the whole file,
+/// contract as saves: a crash leaves either no dest or the whole file,
 /// never a torn one. Refuses to overwrite an existing dest.
 fn copy_atomic(source: &Path, dest: &Path) -> Result<(), CopyError> {
     let tmp = part_path(dest);
@@ -137,7 +137,7 @@ fn copy_atomic(source: &Path, dest: &Path) -> Result<(), CopyError> {
     if let Ok(file) = File::open(&tmp) {
         let _ = file.sync_all();
     }
-    // Re-check just before the rename: never overwrite (§6.6).
+    // Re-check just before the rename: never overwrite.
     if dest.exists() {
         let _ = fs::remove_file(&tmp);
         return Err(CopyError::DestExists);
@@ -147,7 +147,7 @@ fn copy_atomic(source: &Path, dest: &Path) -> Result<(), CopyError> {
         CopyError::Io(format!("rename into {}: {e}", dest.display()))
     })?;
     // Directory fsync makes the rename itself durable, the same atomic contract
-    // as saves (§10b); not all platforms permit it, so failure is non-fatal.
+    // as saves; not all platforms permit it, so failure is non-fatal.
     if let Some(parent) = dest.parent()
         && let Ok(handle) = File::open(parent)
     {
