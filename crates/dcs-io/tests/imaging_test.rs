@@ -1,5 +1,8 @@
 use dcs_domain::photo::Orientation;
-use dcs_io::imaging::decode_thumbnail;
+use dcs_io::cache::ThumbTier;
+use dcs_io::imaging::{
+    DecodePriority, DecodeRequest, RayonThumbDecoder, ThumbDecoder, decode_thumbnail,
+};
 use image::{Rgb, RgbImage};
 
 fn write_jpeg(name: &str, w: u32, h: u32) -> std::path::PathBuf {
@@ -70,6 +73,46 @@ fn non_image_file_yields_none() {
     let path = std::env::temp_dir().join("dcs_thumb_garbage.jpg");
     std::fs::write(&path, b"this is not a jpeg").unwrap();
     assert!(decode_thumbnail(&path, Orientation::Normal, 256).is_none());
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn decoder_runs_both_priority_lanes() {
+    // A request on each lane must complete: the high and low pools are separate,
+    // and neither is dropped. (The point of the split — that a high request isn't
+    // delayed behind a low backlog — is a scheduling property, not asserted here.)
+    let path = write_jpeg("dcs_thumb_lanes.jpg", 800, 600);
+    let decoder = RayonThumbDecoder::new();
+    let req = |key: u64, priority| DecodeRequest {
+        key,
+        path: path.clone(),
+        orientation: Orientation::Normal,
+        edge: 256,
+        cache_key: None,
+        tier: ThumbTier::Grid,
+        cache: None,
+        priority,
+    };
+    decoder.request(req(1, DecodePriority::Low));
+    decoder.request(req(2, DecodePriority::High));
+
+    let mut keys = std::collections::HashSet::new();
+    for _ in 0..2000 {
+        for (key, image) in decoder.poll() {
+            assert!(image.is_some(), "decode {key} produced an image");
+            keys.insert(key);
+        }
+        if keys.len() == 2 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(
+        keys.len(),
+        2,
+        "both the low and high lane returned a result"
+    );
+
     let _ = std::fs::remove_file(&path);
 }
 

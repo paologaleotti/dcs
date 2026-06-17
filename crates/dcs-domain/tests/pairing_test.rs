@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use dcs_domain::fingerprint::ContentFingerprint;
 use dcs_domain::pairing::{FileKind, PoolBuilder, ScannedFile, classify, pair};
-use dcs_domain::photo::{Orientation, PhotoId, PhotoType};
+use dcs_domain::photo::{CaptureMeta, Orientation, PhotoId, PhotoType};
 
 /// A distinct, deterministic fingerprint per string — lets tests assert id
 /// reclaim by content without computing real hashes.
@@ -22,6 +22,7 @@ fn file(path: &str, kind: FileKind) -> ScannedFile {
         orientation: Orientation::Normal,
         fingerprint: fp(path),
         captured_at: None,
+        meta: CaptureMeta::default(),
     }
 }
 
@@ -156,11 +157,41 @@ fn seeded_builder_reclaims_id_by_fingerprint() {
         orientation: Orientation::Normal,
         fingerprint: fp("DSCF1"),
         captured_at: None,
+        meta: CaptureMeta::default(),
     });
     let pool = builder.to_pool();
     assert_eq!(pool.photos()[0].id, PhotoId(42));
     // Reclaim must not advance the counter.
     assert_eq!(builder.next_id(), 100);
+}
+
+#[test]
+fn jpeg_joining_a_raw_first_photo_reclaims_the_seeded_id() {
+    // A JPEG+RAW pair was persisted under the JPEG's fingerprint as id 42. On
+    // re-scan the RAW is classified first (parallel scan, arbitrary order): it
+    // takes a tentative fresh id, then the JPEG merges and must reclaim id 42.
+    let jpeg_fp = fp("trip/DSCF1.JPG");
+    let mut builder = PoolBuilder::seeded(HashMap::from([(jpeg_fp, PhotoId(42))]), 100);
+
+    builder.add(file("trip/DSCF1.RAF", FileKind::Raw)); // RAW first → fresh id 100
+    builder.add(file("trip/DSCF1.JPG", FileKind::Jpeg)); // JPEG merges → reclaim 42
+
+    let pool = builder.to_pool();
+    assert_eq!(pool.len(), 1, "the pair is one photo, not two");
+    assert_eq!(
+        pool.photos()[0].id,
+        PhotoId(42),
+        "the JPEG's saved id is reclaimed despite the RAW arriving first"
+    );
+    assert_eq!(pool.photos()[0].photo_type, PhotoType::Both);
+    assert_eq!(pool.photos()[0].fingerprint, jpeg_fp);
+
+    // The seed entry was consumed by the reclaim, so the persisted photo can no
+    // longer be mistaken for a missing file — the phantom-placeholder bug.
+    assert!(
+        !builder.add_missing(jpeg_fp, Some(PathBuf::from("trip/DSCF1.JPG")), None),
+        "seed consumed → no phantom missing placeholder"
+    );
 }
 
 #[test]
@@ -183,6 +214,7 @@ fn duplicate_content_does_not_reuse_one_seeded_id_twice() {
         orientation: Orientation::Normal,
         fingerprint: fp("dup"),
         captured_at: None,
+        meta: CaptureMeta::default(),
     };
     builder.add(dup("a/one.JPG"));
     builder.add(dup("a/two.JPG"));
@@ -214,6 +246,7 @@ fn add_missing_skips_files_already_present() {
         orientation: Orientation::Normal,
         fingerprint: fp("c"),
         captured_at: None,
+        meta: CaptureMeta::default(),
     });
     // Now the fingerprint is consumed → add_missing must refuse.
     assert!(!builder.add_missing(fp("c"), Some(PathBuf::from("trip/here.jpg")), None));
@@ -230,6 +263,7 @@ fn orientation_prefers_the_jpeg() {
             orientation: Orientation::Rotate90,
             fingerprint: fp("a/x.RAF"),
             captured_at: None,
+            meta: CaptureMeta::default(),
         },
         ScannedFile {
             path: PathBuf::from("a/x.JPG"),
@@ -237,6 +271,7 @@ fn orientation_prefers_the_jpeg() {
             orientation: Orientation::Normal,
             fingerprint: fp("a/x.JPG"),
             captured_at: None,
+            meta: CaptureMeta::default(),
         },
     ]);
     assert_eq!(pool.photos()[0].orientation, Orientation::Normal);

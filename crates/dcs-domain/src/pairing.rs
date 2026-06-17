@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use time::PrimitiveDateTime;
 
 use crate::fingerprint::ContentFingerprint;
-use crate::photo::{AssociatedFiles, Orientation, Photo, PhotoId, PhotoType, Pool};
+use crate::photo::{AssociatedFiles, CaptureMeta, Orientation, Photo, PhotoId, PhotoType, Pool};
 
 /// RAW extensions recognized for pairing. Lowercase, no dot. Defaults chosen
 /// to cover common camera brands; easily extended.
@@ -32,6 +32,7 @@ pub struct ScannedFile {
     pub orientation: Orientation,
     pub fingerprint: ContentFingerprint,
     pub captured_at: Option<PrimitiveDateTime>,
+    pub meta: CaptureMeta,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +56,7 @@ pub struct PoolBuilder {
     photos: Vec<Photo>,
     next_id: u32,
     seed: HashMap<ContentFingerprint, PhotoId>,
+    revision: u64,
 }
 
 /// Classify a path by extension. Non-image files return `None`.
@@ -88,22 +90,49 @@ impl PoolBuilder {
             photos: Vec::new(),
             next_id,
             seed: known,
+            revision: 0,
         }
     }
 
     /// Fold one scanned file into the pool, creating or extending a photo.
+    /// Bumps the revision so callers re-derive grouping even when a merge (a RAW
+    /// joining its JPEG) leaves the photo count unchanged but alters a photo.
     pub fn add(&mut self, file: ScannedFile) {
         let Some(key) = pair_key(&file.path) else {
             return;
         };
         match self.index.get(&key) {
-            Some(&pos) => merge_file(&mut self.photos[pos], file),
+            Some(&pos) => {
+                if merge_file(&mut self.photos[pos], file) {
+                    self.reclaim_display_id(pos);
+                }
+            }
             None => {
                 let id = self.assign_id(&file.fingerprint);
                 self.index.insert(key, self.photos.len());
                 self.photos.push(new_photo(id, file));
             }
         }
+        self.revision += 1;
+    }
+
+    /// After a JPEG joins a RAW-first photo it becomes the display file, so the
+    /// photo's identity is now the JPEG's fingerprint. Reclaim the persisted id
+    /// seeded under that fingerprint (consuming the entry) so a pair whose RAW
+    /// was scanned first recovers the JPEG's saved id and verdicts instead of
+    /// keeping the tentative fresh id — and so the entry can't later be mistaken
+    /// for a missing file. No-op when the fingerprint wasn't seeded.
+    fn reclaim_display_id(&mut self, pos: usize) {
+        let fingerprint = self.photos[pos].fingerprint;
+        if let Some(id) = self.seed.remove(&fingerprint) {
+            self.photos[pos].id = id;
+        }
+    }
+
+    /// A monotonic counter bumped on every pool mutation. Lets a consumer detect
+    /// merges that don't change the photo count.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// The id for a brand-new photo: reclaim by fingerprint if seeded, else the
@@ -145,6 +174,7 @@ impl PoolBuilder {
         let photo_type = derive_type(&files);
         self.photos
             .push(Photo::missing(id, fingerprint, files, photo_type));
+        self.revision += 1;
         true
     }
 
@@ -162,6 +192,7 @@ impl PoolBuilder {
                 self.index.insert(key, pos);
             }
         }
+        self.revision += 1;
     }
 
     pub fn photos(&self) -> &[Photo] {
@@ -215,35 +246,39 @@ fn new_photo(id: PhotoId, file: ScannedFile) -> Photo {
         // The lone file is the display file, so it owns the photo's identity.
         fingerprint: file.fingerprint,
         captured_at: file.captured_at,
+        meta: file.meta,
         missing: false,
     }
 }
 
-fn merge_file(photo: &mut Photo, file: ScannedFile) {
+/// Fold a second file into an existing photo. Returns `true` when the joining
+/// file became the new display file (so its fingerprint is now the photo's
+/// identity) — the caller re-reclaims the id in that case.
+fn merge_file(photo: &mut Photo, file: ScannedFile) -> bool {
+    let mut display_changed = false;
     match file.kind {
         FileKind::Jpeg => {
             if photo.files.jpeg.is_none() {
                 // A JPEG joining a RAW-only photo becomes the display file, so
-                // identity moves to it (§10b: a photo's fingerprint is its
-                // display file's). v1 imports JPEG-only, so this is rare.
+                // identity moves to it (a photo's fingerprint is its display
+                // file's). Common now that RAW-first arrival happens during the
+                // parallel scan.
                 photo.files.jpeg = Some(file.path);
                 photo.orientation = file.orientation;
                 photo.fingerprint = file.fingerprint;
                 photo.captured_at = file.captured_at;
+                photo.meta = file.meta;
+                display_changed = true;
             }
         }
         FileKind::Raw => {
             if photo.files.raw.is_none() {
                 photo.files.raw = Some(file.path);
-                if photo.files.jpeg.is_none() {
-                    photo.orientation = file.orientation;
-                    photo.fingerprint = file.fingerprint;
-                    photo.captured_at = file.captured_at;
-                }
             }
         }
     }
     photo.photo_type = derive_type(&photo.files);
+    display_changed
 }
 
 fn derive_type(files: &AssociatedFiles) -> PhotoType {

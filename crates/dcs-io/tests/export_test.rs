@@ -176,6 +176,37 @@ fn creates_nested_destination_folders() {
 }
 
 #[test]
+fn reports_failed_when_the_destination_parent_cannot_be_created() {
+    let dir = temp_dir("fail_parent");
+    let src = dir.join("src");
+    let out = dir.join("out");
+    write(&src.join("a.jpg"), "X");
+    // A regular file sits exactly where the dest's parent directory would need to
+    // be, so `create_dir_all` can't make it: the op fails and is reported, with
+    // the source left untouched.
+    write(&out.join("blocker"), "i am a file, not a dir");
+    let dest = out.join("blocker").join("a.jpg");
+
+    let handle = run_export(plan(
+        vec![op(src.join("a.jpg"), dest.clone(), FileRole::Jpeg)],
+        out.clone(),
+    ));
+    let events = drain(&handle);
+
+    assert_eq!(events.len(), 1);
+    assert!(
+        matches!(events[0], ExportEvent::Failed { .. }),
+        "expected Failed, got {:?}",
+        events[0]
+    );
+    assert!(!dest.exists());
+    // The source original is sacred — never touched on failure.
+    assert_eq!(std::fs::read_to_string(src.join("a.jpg")).unwrap(), "X");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn cancel_stops_early_and_finishes_cleanly() {
     let dir = temp_dir("cancel");
     let src = dir.join("src");

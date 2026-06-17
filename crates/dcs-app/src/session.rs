@@ -28,7 +28,7 @@ use dcs_domain::thumb::ThumbImage;
 use dcs_domain::timezone;
 use dcs_io::cache::{SharedCache, SqliteCache, ThumbTier};
 use dcs_io::export::{ExportEvent, ExportHandle, run_export};
-use dcs_io::imaging::{DecodeRequest, RayonThumbDecoder, ThumbDecoder};
+use dcs_io::imaging::{DecodePriority, DecodeRequest, RayonThumbDecoder, ThumbDecoder};
 use dcs_io::lock::{self, LockOutcome, ProjectLock};
 use dcs_io::persistence::{
     JsonProjectStore, PersistError, PhotoRecord, ProjectConfig, ProjectSnapshot, ProjectStore,
@@ -43,7 +43,8 @@ use time_tz::Tz;
 use crate::cull::{Cull, UndoEntry};
 use crate::export::{ExportScope, ExportStatus};
 use crate::selection::Selection;
-use crate::util::{LruMap, decode_key, encode_key};
+use crate::thumb_cache::{ThumbCache, ThumbView};
+use crate::util::{DecodeTier, decode_key, encode_key};
 
 /// The `.dcs/` sidecar directory name (§5).
 const SIDECAR_DIR: &str = ".dcs";
@@ -73,24 +74,20 @@ const BASE_CACHE_BYTES: u64 = 1_200_000_000;
 /// zoomed live here, and it is dropped entirely on zoom-out.
 const HIRES_CACHE_BYTES: u64 = 384_000_000;
 
+/// RAM budget for the gallery cache. Holds the current full-size frame
+/// plus a couple of preloaded neighbours; large enough for one 1:1 decode of a
+/// big sensor (~100 MB) and a few fit-sized neighbours.
+const GALLERY_CACHE_BYTES: u64 = 512_000_000;
+
+/// Longest-side pixel cap for a 1:1 gallery decode. Bounds both RAM and the GPU
+/// texture size (most backends cap a single texture near 8–16k); images larger
+/// than this show at this resolution, which is still far past screen-sharp.
+const GALLERY_FULL_EDGE: u32 = 8192;
+
 /// Cap on base decodes kept in flight by the background fill. Enough to keep
 /// the decode pool fed, low enough that viewport requests (issued first each
 /// frame) aren't stuck behind a long backlog.
 const BG_FILL_INFLIGHT: usize = 16;
-
-/// A resident thumbnail. `version` bumps on every change so the UI knows when
-/// to re-upload its texture (base → hi-res on zoom, or back on zoom-out).
-struct CachedThumb {
-    image: ThumbImage,
-    version: u64,
-}
-
-/// Borrowed view of a resident thumbnail handed to the UI.
-#[derive(Clone, Copy)]
-pub struct ThumbView<'a> {
-    pub image: &'a ThumbImage,
-    pub version: u64,
-}
 
 /// Minimal per-cell facts the grid needs to paint, without cloning a `Photo`.
 #[derive(Debug, Clone, Copy)]
@@ -139,7 +136,10 @@ pub struct Session {
     /// The order after the verdict filter — what the grid actually paints and
     /// what every display index addresses. Equals `order` when filter = `All`.
     visible: Vec<usize>,
-    ordered_count: usize,
+    /// Pool revision the current grouping was derived from. Regroup when it
+    /// diverges, so a RAW merging into its JPEG (which doesn't change the photo
+    /// count) still re-derives the date buckets.
+    pool_revision: u64,
     /// Derived grouping over the whole pool (§2.4). Recomputed when the pool,
     /// axis, sort, or shoot zone changes; never persisted.
     groups: Vec<DerivedGroup>,
@@ -158,10 +158,17 @@ pub struct Session {
     filter: VerdictFilter,
     scan: Option<ScanHandle>,
     decoder: RayonThumbDecoder,
-    base: LruMap<PhotoId, CachedThumb>,
-    hires: LruMap<PhotoId, CachedThumb>,
-    base_inflight: HashSet<PhotoId>,
-    hires_inflight: HashSet<PhotoId>,
+    /// Cheap 256 px grid thumbnails (disk-cached).
+    base: ThumbCache,
+    /// Sharp viewport decodes while zoomed; dropped on zoom-out.
+    hires: ThumbCache,
+    /// Large fit/1:1 frames for the gallery view. Dropped on leaving gallery so
+    /// the big pixels stop costing RAM.
+    gallery: ThumbCache,
+    /// Best decode edge already requested per gallery photo, so a steady gallery
+    /// view doesn't re-request every frame and a smaller-than-target source (its
+    /// native size) isn't chased forever. Pruned alongside `gallery` eviction.
+    gallery_edge: HashMap<PhotoId, u32>,
     /// Display index the background base-fill has walked to.
     bg_cursor: usize,
     /// Monotonic stamp handed out to thumbnails so the UI can detect changes.
@@ -212,7 +219,7 @@ impl Session {
             builder: PoolBuilder::default(),
             order: Vec::new(),
             visible: Vec::new(),
-            ordered_count: 0,
+            pool_revision: 0,
             groups: Vec::new(),
             visible_groups: Vec::new(),
             axis: Axis::Time(TimeGranularity::Auto),
@@ -223,10 +230,10 @@ impl Session {
             filter: VerdictFilter::All,
             scan: None,
             decoder: RayonThumbDecoder::new(),
-            base: LruMap::new(BASE_CACHE_BYTES),
-            hires: LruMap::new(HIRES_CACHE_BYTES),
-            base_inflight: HashSet::new(),
-            hires_inflight: HashSet::new(),
+            base: ThumbCache::new(BASE_CACHE_BYTES),
+            hires: ThumbCache::new(HIRES_CACHE_BYTES),
+            gallery: ThumbCache::new(GALLERY_CACHE_BYTES),
+            gallery_edge: HashMap::new(),
             bg_cursor: 0,
             next_version: 0,
             epoch: 0,
@@ -260,7 +267,7 @@ impl Session {
     pub fn open_folder(&mut self, root: PathBuf) {
         self.order = Vec::new();
         self.visible = Vec::new();
-        self.ordered_count = 0;
+        self.pool_revision = 0;
         self.groups = Vec::new();
         self.visible_groups = Vec::new();
         self.resolved_gran = None;
@@ -269,10 +276,10 @@ impl Session {
         // Abandon any running export from the previous folder (its handle drops).
         self.export_handle = None;
         self.export_status = None;
-        self.base = LruMap::new(BASE_CACHE_BYTES);
-        self.hires = LruMap::new(HIRES_CACHE_BYTES);
-        self.base_inflight.clear();
-        self.hires_inflight.clear();
+        self.base.reset(BASE_CACHE_BYTES);
+        self.hires.reset(HIRES_CACHE_BYTES);
+        self.gallery.reset(GALLERY_CACHE_BYTES);
+        self.gallery_edge.clear();
         self.bg_cursor = 0;
         self.epoch += 1;
         self.dirty = false;
@@ -335,15 +342,15 @@ impl Session {
             // their state is preserved and they reanimate if the file returns (§4).
             self.reconcile_missing();
         }
-        if self.builder.len() != self.ordered_count {
+        if self.builder.revision() != self.pool_revision {
             self.regroup();
         }
         for (key, image) in self.decoder.poll() {
-            let (epoch, id, hires) = decode_key(key);
+            let (epoch, id, tier) = decode_key(key);
             if epoch != self.epoch {
                 continue; // stale decode from a previously opened folder
             }
-            self.absorb_thumb(id, hires, image);
+            self.absorb_thumb(id, tier, image);
         }
         self.poll_export();
     }
@@ -395,6 +402,32 @@ impl Session {
         self.builder.photos().get(pool_index)
     }
 
+    /// The derived group title a display position falls under, for the gallery
+    /// caption. `None` for the headerless `none`-axis stream.
+    pub fn group_title_at(&self, display_index: usize) -> Option<&str> {
+        self.visible_groups
+            .iter()
+            .find(|g| display_index >= g.start && display_index < g.start + g.count)
+            .map(|g| g.title.as_str())
+            .filter(|t| !t.is_empty())
+    }
+
+    /// The capture time adjusted to the shoot zone, formatted for the gallery
+    /// caption. `None` when the photo is undated.
+    pub fn caption_time(&self, display_index: usize) -> Option<String> {
+        let naive = self.photo_at(display_index)?.captured_at?;
+        let dt = timezone::adjusted(naive, self.resolve_zone());
+        Some(format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            dt.year(),
+            u8::from(dt.month()),
+            dt.day(),
+            dt.hour(),
+            dt.minute(),
+            dt.second()
+        ))
+    }
+
     /// Cheap `Copy` descriptor for painting a cell — no allocation, so the grid
     /// can call it for every visible cell each frame.
     pub fn cell_info(&self, display_index: usize) -> Option<CellInfo> {
@@ -411,7 +444,7 @@ impl Session {
 
     /// Decode jobs currently in flight, base + hi-res (diagnostics §10b).
     pub fn decode_queue_depth(&self) -> usize {
-        self.base_inflight.len() + self.hires_inflight.len()
+        self.base.inflight_len() + self.hires.inflight_len() + self.gallery.inflight_len()
     }
 
     /// Photos with a base thumbnail resident.
@@ -426,7 +459,8 @@ impl Session {
 
     /// Resident thumbnail pixel memory in MB across both tiers (§10b).
     pub fn thumb_memory_mb(&self) -> f32 {
-        (self.base.weight() + self.hires.weight()) as f32 / (1024.0 * 1024.0)
+        (self.base.weight() + self.hires.weight() + self.gallery.weight()) as f32
+            / (1024.0 * 1024.0)
     }
 
     pub fn is_scanning(&self) -> bool {
@@ -436,23 +470,30 @@ impl Session {
     /// True while there is decode work in flight — the UI uses this to keep
     /// repainting until the visible set settles.
     pub fn has_pending(&self) -> bool {
-        !self.base_inflight.is_empty() || !self.hires_inflight.is_empty()
+        self.base.pending() || self.hires.pending()
     }
 
     /// Ensure the cheap base (256 px) thumbnail for a display position is
     /// decoding or cached. Called for the whole visible + prefetch band every
-    /// frame. No-op if cached, already decoding, or RAW-only (§2.1).
+    /// frame at foreground priority. No-op if cached, already decoding, or
+    /// RAW-only.
     pub fn request_base(&mut self, display_index: usize) {
+        self.request_base_at(display_index, DecodePriority::High);
+    }
+
+    /// Core base request, parameterized by scheduling lane: the viewport/filmstrip
+    /// use `High`, the whole-folder background fill uses `Low`.
+    fn request_base_at(&mut self, display_index: usize, priority: DecodePriority) {
         let Some(&pool_index) = self.visible.get(display_index) else {
             return;
         };
         // A missing file has no pixels; its decode always fails and so never
-        // caches, which would re-request it every frame (§4). Skip it.
+        // caches, which would re-request it every frame. Skip it.
         if self.builder.photos()[pool_index].missing {
             return;
         }
         let id = self.builder.photos()[pool_index].id;
-        if self.base_inflight.contains(&id) || self.base.get(&id).is_some() {
+        if !self.base.idle(id) {
             return;
         }
         let photo = &self.builder.photos()[pool_index];
@@ -464,15 +505,16 @@ impl Session {
         // The grid (base) tier is disk-cached by content fingerprint, so a
         // reopened folder paints from cached blobs instead of re-decoding.
         let cache_key = Some(photo.fingerprint);
-        self.base_inflight.insert(id);
+        self.base.start(id);
         self.decoder.request(DecodeRequest {
-            key: encode_key(self.epoch, id, false),
+            key: encode_key(self.epoch, id, DecodeTier::Base),
             path,
             orientation,
             edge: BASE_EDGE,
             cache_key,
             tier: ThumbTier::Grid,
             cache: self.cache.clone(),
+            priority,
         });
     }
 
@@ -487,11 +529,14 @@ impl Session {
             return; // §4: nothing to decode for a missing file (see `request_base`)
         }
         let id = self.builder.photos()[pool_index].id;
-        if self.hires_inflight.contains(&id) {
+        if self.hires.is_inflight(id) {
             return;
         }
-        if let Some(cached) = self.hires.get(&id)
-            && cached.image.width.max(cached.image.height) >= target_edge
+        // Already resident at or above the wanted size → nothing to do.
+        if self
+            .hires
+            .view(id)
+            .is_some_and(|v| v.image.width.max(v.image.height) >= target_edge)
         {
             return;
         }
@@ -501,29 +546,113 @@ impl Session {
         };
         let path = path.to_path_buf();
         let orientation = photo.orientation;
-        self.hires_inflight.insert(id);
+        self.hires.start(id);
         // Hi-res is viewport-ephemeral and its size tracks the zoom, so it is
         // not disk-cached (no stable tier to key it on); it lives only in RAM
         // and is dropped on zoom-out.
         self.decoder.request(DecodeRequest {
-            key: encode_key(self.epoch, id, true),
+            key: encode_key(self.epoch, id, DecodeTier::Hires),
             path,
             orientation,
             edge: target_edge,
             cache_key: None,
             tier: ThumbTier::Gallery,
             cache: None,
+            priority: DecodePriority::High,
         });
     }
 
     /// Drop all hi-res thumbnails — called on zoom-out so the sharp pixels
     /// stop costing RAM. Base thumbnails (the display fallback) are untouched.
     pub fn clear_hires(&mut self) {
-        if self.hires.len() == 0 && self.hires_inflight.is_empty() {
+        if self.hires.len() == 0 && !self.hires.pending() {
             return;
         }
-        self.hires = LruMap::new(HIRES_CACHE_BYTES);
-        self.hires_inflight.clear();
+        self.hires.reset(HIRES_CACHE_BYTES);
+    }
+
+    /// Ensure the gallery frame for a display position is decoding or resident,
+    /// sized to cover `fit_edge` device pixels, and preload the two neighbours at
+    /// the same size so `←`/`→` lands on a ready image. Called each frame
+    /// while the gallery is open.
+    pub fn request_gallery(&mut self, display_index: usize, fit_edge: u32) {
+        self.request_gallery_at(display_index, fit_edge);
+        if display_index > 0 {
+            self.request_gallery_at(display_index - 1, fit_edge);
+        }
+        self.request_gallery_at(display_index + 1, fit_edge);
+    }
+
+    /// Request a 1:1 (native-resolution) decode of one photo, capped at the GPU
+    /// texture limit — the `Z` zoom-to-100% path.
+    pub fn request_gallery_full(&mut self, display_index: usize) {
+        self.request_gallery_at(display_index, GALLERY_FULL_EDGE);
+    }
+
+    /// The resident gallery frame for a photo, if decoded. Marks it recently used.
+    pub fn gallery_image(&mut self, id: PhotoId) -> Option<ThumbView<'_>> {
+        self.gallery.view(id)
+    }
+
+    /// Drop every gallery frame — called on leaving the gallery so the large
+    /// pixels stop costing RAM. Base/hi-res caches are untouched.
+    pub fn clear_gallery(&mut self) {
+        if self.gallery.len() == 0 && !self.gallery.pending() {
+            return;
+        }
+        self.gallery.reset(GALLERY_CACHE_BYTES);
+        self.gallery_edge.clear();
+    }
+
+    /// True while a gallery frame is still decoding — the UI keeps repainting
+    /// until the visible frame resolves.
+    pub fn has_gallery_pending(&self) -> bool {
+        self.gallery.pending()
+    }
+
+    /// Core gallery decode request: decode `display_index` at `edge` px on its
+    /// longest side unless an at-least-as-large frame is already resident or in
+    /// flight. Not disk-cached — gallery frames are large and ephemeral.
+    fn request_gallery_at(&mut self, display_index: usize, edge: u32) {
+        let Some(&pool_index) = self.visible.get(display_index) else {
+            return;
+        };
+        if self.builder.photos()[pool_index].missing {
+            return;
+        }
+        let id = self.builder.photos()[pool_index].id;
+        if self.gallery.is_inflight(id) {
+            return;
+        }
+        // `gallery_edge` is cleared on eviction, so a recorded edge ≥ target
+        // means the frame is still resident (or in flight) at that size.
+        if self.gallery_edge.get(&id).copied().unwrap_or(0) >= edge {
+            return;
+        }
+        let photo = &self.builder.photos()[pool_index];
+        let Some(path) = photo.decodable_path() else {
+            return;
+        };
+        let path = path.to_path_buf();
+        let orientation = photo.orientation;
+        self.gallery_edge.insert(id, edge);
+        self.gallery.start(id);
+        self.decoder.request(DecodeRequest {
+            key: encode_key(self.epoch, id, DecodeTier::Gallery),
+            path,
+            orientation,
+            edge,
+            cache_key: None,
+            tier: ThumbTier::Gallery,
+            cache: None,
+            priority: DecodePriority::High,
+        });
+    }
+
+    /// Whether the background fill still has folder left to walk and cache room
+    /// for it — so the UI keeps repainting to drive it even when fully idle.
+    pub fn has_background_work(&self) -> bool {
+        self.bg_cursor < self.visible.len() && self.base.weight() < BASE_CACHE_BYTES
     }
 
     /// Keep base thumbnails decoding for the whole folder in the background,
@@ -535,27 +664,22 @@ impl Session {
         if self.base.weight() >= BASE_CACHE_BYTES {
             return;
         }
-        while self.base_inflight.len() < BG_FILL_INFLIGHT && self.bg_cursor < self.visible.len() {
+        while self.base.inflight_len() < BG_FILL_INFLIGHT && self.bg_cursor < self.visible.len() {
             let index = self.bg_cursor;
             self.bg_cursor += 1;
-            self.request_base(index);
+            // Low priority: the whole-folder fill must never delay a viewport or
+            // gallery decode, which run on the high-priority pool.
+            self.request_base_at(index, DecodePriority::Low);
         }
     }
 
     /// The best resident thumbnail for a photo — hi-res if present, else base —
     /// with its version. Marks it recently used so it survives eviction.
     pub fn thumb(&mut self, id: PhotoId) -> Option<ThumbView<'_>> {
-        if let Some(cached) = self.hires.get(&id) {
-            return Some(ThumbView {
-                image: &cached.image,
-                version: cached.version,
-            });
+        if let Some(view) = self.hires.view(id) {
+            return Some(view);
         }
-        let cached = self.base.get(&id)?;
-        Some(ThumbView {
-            image: &cached.image,
-            version: cached.version,
-        })
+        self.base.view(id)
     }
 
     /// Display index of the focus cursor, if any (§2.13, #31).
@@ -576,11 +700,18 @@ impl Session {
         self.cull.state(id)
     }
 
-    /// `(accepted, rejected, unreviewed)` over the whole pool for the status bar
-    /// (§2.9). Unreviewed = pool size minus the two reviewed tallies.
+    /// `(accepted, rejected, unreviewed)` for the status bar. Totals only
+    /// displayable photos: hidden RAW-only photos aren't part of the cull
+    /// workflow, so counting them would make `unrev` exceed the shown count.
+    /// Unreviewed = displayable count minus the two reviewed tallies.
     pub fn verdict_counts(&self) -> (usize, usize, usize) {
         let c = self.cull.counts();
-        let total = self.builder.len();
+        let total = self
+            .builder
+            .photos()
+            .iter()
+            .filter(|p| !p.is_raw_only())
+            .count();
         let unreviewed = total.saturating_sub(c.accepted + c.rejected);
         (c.accepted, c.rejected, unreviewed)
     }
@@ -1166,7 +1297,7 @@ impl Session {
             .flat_map(|g| g.members.iter().copied())
             .collect();
         self.groups = groups;
-        self.ordered_count = self.builder.len();
+        self.pool_revision = self.builder.revision();
         self.rebuild_visible();
     }
 
@@ -1190,6 +1321,12 @@ impl Session {
         let photos = self.builder.photos();
         let cull = &self.cull;
         let passes = |i: usize| {
+            // v1 can't decode a RAW, so a RAW-only photo has nothing to show:
+            // keep it in the pool (paired, persisted, ready for RAW decode later)
+            // but out of the grid. A paired photo displays via its JPEG.
+            if photos[i].is_raw_only() {
+                return false;
+            }
             let state = cull.state(photos[i].id);
             match filter {
                 VerdictFilter::All => true,
@@ -1226,33 +1363,31 @@ impl Session {
         self.visible.iter().map(|&i| photos[i].id).collect()
     }
 
-    /// Fold a decode result into the right cache, retiring the in-flight entry
-    /// (even when the image is `None` after a failed decode).
-    fn absorb_thumb(&mut self, id: PhotoId, hires: bool, image: Option<ThumbImage>) {
-        if hires {
-            self.hires_inflight.remove(&id);
-        } else {
-            self.base_inflight.remove(&id);
-        }
+    /// Fold a decode result into its tier's cache, retiring the in-flight marker
+    /// (even on a failed decode). For the gallery tier, the per-photo edge record
+    /// is pruned in lockstep with eviction so a re-entered photo re-decodes.
+    fn absorb_thumb(&mut self, id: PhotoId, tier: DecodeTier, image: Option<ThumbImage>) {
         let Some(image) = image else {
+            match tier {
+                DecodeTier::Base => self.base.fail(id),
+                DecodeTier::Hires => self.hires.fail(id),
+                DecodeTier::Gallery => {
+                    self.gallery.fail(id);
+                    self.gallery_edge.remove(&id);
+                }
+            }
             return;
         };
-        let bytes = image.rgba.len() as u64;
         self.next_version += 1;
-        let entry = CachedThumb {
-            image,
-            version: self.next_version,
+        let version = self.next_version;
+        let evicted = match tier {
+            DecodeTier::Base => self.base.store(id, image, version),
+            DecodeTier::Hires => self.hires.store(id, image, version),
+            DecodeTier::Gallery => self.gallery.store(id, image, version),
         };
-        let evicted = if hires {
-            self.hires.insert(id, entry, bytes)
-        } else {
-            self.base.insert(id, entry, bytes)
-        };
-        for id in evicted {
-            if hires {
-                self.hires_inflight.remove(&id);
-            } else {
-                self.base_inflight.remove(&id);
+        if tier == DecodeTier::Gallery {
+            for id in evicted {
+                self.gallery_edge.remove(&id);
             }
         }
     }

@@ -40,6 +40,7 @@ fn photo_at(
         orientation: Default::default(),
         fingerprint: ContentFingerprint::from_bytes([id as u8; 32]),
         captured_at: when,
+        meta: dcs_domain::photo::CaptureMeta::default(),
         missing: false,
     }
 }
@@ -131,6 +132,34 @@ fn both_emits_jpeg_then_raw_for_each_photo() {
     assert_eq!(plan.ops[1].role, FileRole::Raw);
     assert_eq!(plan.jpeg_count, 1);
     assert_eq!(plan.raw_count, 1);
+}
+
+#[test]
+fn both_requires_the_pair_and_skips_photos_missing_either() {
+    let photos = [
+        photo(1, Some("/src/a.JPG"), Some("/src/a.RAF")), // pair → both copied
+        photo(2, Some("/src/b.JPG"), None),               // no raw → skipped
+        photo(3, None, Some("/src/c.RAF")),               // no jpeg → skipped
+    ];
+    let req = request(FileSelection::Both, Layout::Together, Collision::Rename);
+    let plan = plan_export(&items(&photos), Path::new("/src"), &req).unwrap();
+
+    assert_eq!(plan.ops.len(), 2);
+    assert_eq!(plan.jpeg_count, 1);
+    assert_eq!(plan.raw_count, 1);
+    assert_eq!(
+        plan.skipped,
+        vec![
+            dcs_domain::export::SkippedPhoto {
+                id: PhotoId(2),
+                reason: SkipReason::NoRaw,
+            },
+            dcs_domain::export::SkippedPhoto {
+                id: PhotoId(3),
+                reason: SkipReason::NoJpeg,
+            },
+        ]
+    );
 }
 
 #[test]
@@ -272,15 +301,15 @@ fn nothing_to_copy_when_selection_matches_no_files() {
 }
 
 #[test]
-fn original_copies_whatever_files_exist() {
-    // Mixed scope: a pair, a jpeg-only, a raw-only. Original copies every file
+fn any_copies_whatever_files_exist() {
+    // Mixed scope: a pair, a jpeg-only, a raw-only. Any copies every file
     // present, skipping nothing (spec §6.3 "whatever files exist").
     let photos = [
         photo(1, Some("/src/a.JPG"), Some("/src/a.RAF")),
         photo(2, Some("/src/b.JPG"), None),
         photo(3, None, Some("/src/c.RAF")),
     ];
-    let req = request(FileSelection::Original, Layout::Together, Collision::Rename);
+    let req = request(FileSelection::Any, Layout::Together, Collision::Rename);
     let plan = plan_export(&items(&photos), Path::new("/src"), &req).unwrap();
 
     assert_eq!(plan.ops.len(), 4);

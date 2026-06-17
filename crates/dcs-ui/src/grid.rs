@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dcs_app::{CellInfo, Session};
+use dcs_app::{CellInfo, Session, ThumbView};
 use dcs_domain::cull::AcceptState;
 use dcs_domain::grouping::GroupKind;
 use dcs_domain::photo::PhotoId;
@@ -33,24 +33,33 @@ const HIRES_ZOOM_CELL: f32 = 224.0;
 /// Hi-res decode tiers in pixels. A zoomed cell requests the smallest tier that
 /// covers its on-screen pixel size.
 const TIERS: [u32; 3] = [256, 512, 1024];
-/// VRAM budget for resident thumbnail textures. Larger (zoomed) textures cost
-/// more, so the cache is bounded by bytes, not count.
+/// Default VRAM budget for the grid's thumbnail textures. Larger (zoomed)
+/// textures cost more, so the cache is bounded by bytes, not count.
 const TEXTURE_CACHE_BYTES: u64 = 768_000_000;
 
 /// Bounded LRU of uploaded thumbnail textures, keyed by photo, aged by frame
-/// and bounded by a VRAM byte budget.
+/// and bounded by a per-instance VRAM byte budget.
 pub struct TextureCache {
     map: HashMap<PhotoId, Entry>,
     used: u64,
     frame: u64,
+    budget: u64,
 }
 
 impl TextureCache {
     pub fn new() -> Self {
+        Self::with_budget(TEXTURE_CACHE_BYTES)
+    }
+
+    /// A cache with an explicit VRAM budget — the gallery uses a smaller one,
+    /// since it only ever holds the current frame plus a couple of neighbours
+    /// (but each is far larger than a grid thumbnail).
+    pub fn with_budget(budget: u64) -> Self {
         TextureCache {
             map: HashMap::new(),
             used: 0,
             frame: 0,
+            budget: budget.max(1),
         }
     }
 
@@ -63,7 +72,7 @@ impl TextureCache {
         self.used = 0;
     }
 
-    fn begin_frame(&mut self) {
+    pub fn begin_frame(&mut self) {
         self.frame += 1;
     }
 
@@ -72,19 +81,32 @@ impl TextureCache {
     /// zoom, or back to base on zoom-out). Touches the entry so it survives
     /// eviction. `None` until pixels exist.
     fn texture(&mut self, ui: &Ui, session: &mut Session, id: PhotoId) -> Option<TexRef> {
+        let view = session.thumb(id);
+        self.view_texture(ui, id, view)
+    }
+
+    /// Texture for a caller-supplied image view (e.g. the gallery's large
+    /// frames), uploading on first need and re-uploading when `view.version`
+    /// advances past the resident one. Touches the entry so it survives
+    /// eviction. `None` until pixels exist. Lets a second `TextureCache` back the
+    /// gallery from `Session::gallery_image` while the grid cache draws thumbs.
+    pub fn view_texture(
+        &mut self,
+        ui: &Ui,
+        id: PhotoId,
+        view: Option<ThumbView>,
+    ) -> Option<TexRef> {
         let frame = self.frame;
         // Resident at the current version → just touch it (hot path).
         if let Some(entry) = self.map.get(&id)
-            && session
-                .thumb(id)
-                .is_none_or(|view| view.version == entry.version)
+            && view.is_none_or(|v| v.version == entry.version)
         {
             let entry = self.map.get_mut(&id).expect("just checked it is present");
             entry.last_used = frame;
             return Some(TexRef::of(&entry.handle));
         }
 
-        let view = session.thumb(id)?;
+        let view = view?;
         let color = egui::ColorImage::from_rgba_unmultiplied(
             [view.image.width as usize, view.image.height as usize],
             &view.image.rgba,
@@ -111,8 +133,8 @@ impl TextureCache {
         Some(tref)
     }
 
-    fn evict_over_budget(&mut self) {
-        while self.used > TEXTURE_CACHE_BYTES && self.map.len() > 1 {
+    pub fn evict_over_budget(&mut self) {
+        while self.used > self.budget && self.map.len() > 1 {
             let Some(victim) = self
                 .map
                 .iter()
@@ -142,9 +164,9 @@ struct Entry {
 }
 
 #[derive(Clone, Copy)]
-struct TexRef {
-    id: TextureId,
-    size: Vec2,
+pub struct TexRef {
+    pub id: TextureId,
+    pub size: Vec2,
 }
 
 impl TexRef {
@@ -232,7 +254,13 @@ pub fn show(
                 && let Some(f) = focus
                 && let Some(r) = layout.cell_rect(f, origin, cell, stride)
             {
-                ui.scroll_to_rect(r, Some(egui::Align::Center));
+                // Jump straight to the focus cell — the animated glide across a
+                // long list reads as jank, not feedback.
+                ui.scroll_to_rect_animation(
+                    r,
+                    Some(egui::Align::Center),
+                    egui::style::ScrollAnimation::none(),
+                );
             }
 
             let resp = ui.interact(rect, Id::new("dcs_grid"), Sense::click());
@@ -306,9 +334,6 @@ pub fn show(
     {
         collapsed.insert(title);
     }
-
-    // Keep filling base thumbnails for the rest of the folder in the background.
-    session.fill_base_background();
 
     textures.evict_over_budget();
     GridResponse { visible, cols }
@@ -676,12 +701,15 @@ fn paint_raw_badge(ui: &Ui, cell_rect: Rect) {
     );
 }
 
-fn contain_fit(outer: Rect, size: Vec2) -> Rect {
+/// Largest rect of the texture's aspect ratio that fits inside `outer`,
+/// centered — the contain-fit used by both the grid cell and the gallery frame.
+pub fn contain_fit(outer: Rect, size: Vec2) -> Rect {
     let scale = (outer.width() / size.x).min(outer.height() / size.y);
     let fitted = Vec2::new(size.x * scale, size.y * scale);
     Rect::from_center_size(outer.center(), fitted)
 }
 
-fn full_uv() -> Rect {
+/// The full `[0,0]–[1,1]` UV rect for painting a whole texture.
+pub fn full_uv() -> Rect {
     Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0))
 }

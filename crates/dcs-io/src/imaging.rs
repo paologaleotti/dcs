@@ -28,6 +28,16 @@ use crate::cache::{SharedCache, ThumbCache, ThumbTier};
 /// folder's grid tier fits the disk budget comfortably.
 const CACHE_JPEG_QUALITY: i32 = 88;
 
+/// Scheduling lane for a decode. `High` is for what the user is looking at right
+/// now (the visible grid band, a zoomed cell, the gallery frame and filmstrip);
+/// `Low` is the whole-folder background prefetch. The two run on separate worker
+/// pools so a backlog of background thumbnails never delays a foreground decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodePriority {
+    High,
+    Low,
+}
+
 /// One decode job. Beyond the source file, it carries an optional disk-cache
 /// identity: when `cache_key` and `cache` are both set, the worker serves the
 /// thumbnail from the cache on a hit and populates it on a miss — all on the
@@ -43,6 +53,8 @@ pub struct DecodeRequest {
     pub cache_key: Option<ContentFingerprint>,
     pub tier: ThumbTier,
     pub cache: Option<SharedCache>,
+    /// Which worker pool runs this decode.
+    pub priority: DecodePriority,
 }
 
 /// Decodes thumbnails asynchronously. Requests carry an opaque caller key that
@@ -58,24 +70,38 @@ pub trait ThumbDecoder: Send + Sync {
     fn poll(&self) -> Vec<(u64, Option<ThumbImage>)>;
 }
 
-/// rayon-backed decoder sized to the machine's parallelism.
+/// rayon-backed decoder with two pools: a `high` pool sized to the machine's
+/// parallelism for foreground work, and a small `low` pool for the background
+/// prefetch. Keeping the prefetch on its own few threads means a foreground
+/// decode (gallery frame, viewport) starts immediately instead of queueing
+/// behind thousands of background thumbnails.
 pub struct RayonThumbDecoder {
-    pool: rayon::ThreadPool,
+    high: rayon::ThreadPool,
+    low: rayon::ThreadPool,
     tx: Sender<(u64, Option<ThumbImage>)>,
     rx: Receiver<(u64, Option<ThumbImage>)>,
 }
 
 impl RayonThumbDecoder {
     pub fn new() -> Self {
-        let threads = available_parallelism().map(|n| n.get()).unwrap_or(4);
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .thread_name(|i| format!("dcs-decode-{i}"))
-            .build()
-            .expect("rayon pool with a valid thread count always builds");
+        let cores = available_parallelism().map(|n| n.get()).unwrap_or(4);
+        // The background pool gets a quarter of the cores (at least one): enough
+        // to fill the folder steadily, few enough that foreground decodes on the
+        // high pool win the CPU.
+        let low_threads = (cores / 4).max(1);
+        let high = build_pool(cores, "dcs-decode");
+        let low = build_pool(low_threads, "dcs-decode-bg");
         let (tx, rx) = unbounded();
-        RayonThumbDecoder { pool, tx, rx }
+        RayonThumbDecoder { high, low, tx, rx }
     }
+}
+
+fn build_pool(threads: usize, name: &'static str) -> rayon::ThreadPool {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .thread_name(move |i| format!("{name}-{i}"))
+        .build()
+        .expect("rayon pool with a valid thread count always builds")
 }
 
 impl Default for RayonThumbDecoder {
@@ -87,7 +113,11 @@ impl Default for RayonThumbDecoder {
 impl ThumbDecoder for RayonThumbDecoder {
     fn request(&self, req: DecodeRequest) {
         let tx = self.tx.clone();
-        self.pool.spawn(move || {
+        let pool = match req.priority {
+            DecodePriority::High => &self.high,
+            DecodePriority::Low => &self.low,
+        };
+        pool.spawn(move || {
             let key = req.key;
             let _ = tx.send((key, decode_with_cache(req)));
         });

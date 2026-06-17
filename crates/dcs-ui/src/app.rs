@@ -12,6 +12,7 @@ use dcs_domain::grouping::GroupKind;
 use egui::{Align, Align2, FontId, Key, Layout, RichText, Ui};
 
 use crate::export::ExportDialog;
+use crate::gallery;
 use crate::grid;
 use crate::grid::TextureCache;
 use crate::keymap;
@@ -34,6 +35,10 @@ const CELL_MIN: f32 = 80.0;
 const CELL_MAX: f32 = 400.0;
 const ZOOM_STEP: f32 = 1.15;
 
+/// VRAM budget for the gallery's texture cache. Enough for one full-resolution
+/// 1:1 frame plus a few fit-sized neighbours, far below the grid's budget.
+const GALLERY_TEXTURE_BYTES: u64 = 512_000_000;
+
 /// Primary-modifier glyph for key hints — ⌘ on macOS, `Ctrl+` elsewhere.
 #[cfg(target_os = "macos")]
 const PALETTE_MOD: &str = "⌘";
@@ -49,9 +54,26 @@ const SAVE_DEBOUNCE: Duration = Duration::from_millis(1500);
 /// seeing it as alive. Well under the stale window (#34).
 const LOCK_HEARTBEAT: Duration = Duration::from_secs(60);
 
+/// Which view the central area is in. Ephemeral UI state; gallery opens
+/// on the focused photo and arrows traverse the same visible order as the grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ViewMode {
+    Grid,
+    Gallery,
+}
+
 pub struct DcsApp {
     session: Session,
     textures: TextureCache,
+    /// Which view mode the central area shows.
+    view: ViewMode,
+    /// Texture cache for the gallery's large frames, kept apart from the grid's
+    /// thumb cache so one `PhotoId` never holds both a big frame and a thumb.
+    gallery_textures: TextureCache,
+    /// Gallery zoom: `false` = contain-fit, `true` = 1:1 (`Z` toggles).
+    gallery_full: bool,
+    /// Filmstrip dock collapsed (ephemeral UI).
+    strip_collapsed: bool,
     cell: f32,
     debug: bool,
     fps: f32,
@@ -89,6 +111,13 @@ impl DcsApp {
         DcsApp {
             session,
             textures: TextureCache::new(),
+            view: ViewMode::Grid,
+            // The gallery holds only the current frame and its neighbours, but
+            // each is large — a dedicated, smaller VRAM budget keeps the two
+            // caches from together pinning ~1.5 GB.
+            gallery_textures: TextureCache::with_budget(GALLERY_TEXTURE_BYTES),
+            gallery_full: false,
+            strip_collapsed: false,
             cell: 160.0,
             debug: false,
             fps: 0.0,
@@ -122,6 +151,9 @@ impl eframe::App for DcsApp {
             self.status_bar(ui);
         }
         self.central(ui);
+        // Keep prefetching the whole folder's thumbnails in the background,
+        // regardless of view mode, at low decode priority.
+        self.session.fill_base_background();
         self.autosave(&ctx);
         self.heartbeat(&ctx);
         self.about_window(&ctx);
@@ -136,7 +168,11 @@ impl eframe::App for DcsApp {
         // a core at full framerate — new thumbnails still appear within a frame
         // or two. Active scrolling repaints at 60 fps regardless, because input
         // drives its own repaints. Fully idle = no repaint at all (§3).
-        if self.session.is_scanning() || self.session.has_pending() {
+        if self.session.is_scanning()
+            || self.session.has_pending()
+            || self.session.has_gallery_pending()
+            || self.session.has_background_work()
+        {
             ctx.request_repaint_after(Duration::from_millis(33));
         } else if self.debug {
             ctx.request_repaint_after(Duration::from_millis(250));
@@ -153,6 +189,9 @@ impl DcsApp {
     fn top_bar(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         // Dispatch after the closure so the registry stays the only mutation path.
         let mut clicked: Option<dcs_app::AppAction> = None;
+        // View-mode switch is UI-only (not a registry action); applied post-panel.
+        let mut switch_grid = false;
+        let mut switch_gallery = false;
         egui::Panel::top("top")
             .frame(
                 egui::Frame::default()
@@ -164,11 +203,25 @@ impl DcsApp {
                 // labels line up with the taller chips.
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     micro_label(ui, "MODE");
-                    let _ = ui.selectable_label(true, RichText::new("grid").monospace());
-                    // Gallery mode isn't wired yet, so it shows disabled.
-                    ui.add_enabled_ui(false, |ui| {
-                        let _ = ui.selectable_label(false, RichText::new("gallery").monospace());
-                    });
+                    if ui
+                        .selectable_label(
+                            self.view == ViewMode::Grid,
+                            RichText::new("grid").monospace(),
+                        )
+                        .clicked()
+                    {
+                        switch_grid = true;
+                    }
+                    if ui
+                        .selectable_label(
+                            self.view == ViewMode::Gallery,
+                            RichText::new("gallery").monospace(),
+                        )
+                        .on_hover_text("Open the focused photo big (Space)")
+                        .clicked()
+                    {
+                        switch_gallery = true;
+                    }
 
                     ui.separator();
                     micro_label(ui, "VIEW");
@@ -204,13 +257,8 @@ impl DcsApp {
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
-                            .selectable_label(self.debug, RichText::new("dbg").monospace())
-                            .clicked()
-                        {
-                            clicked = Some(dcs_app::AppAction::ToggleDiagnostics);
-                        }
-                        ui.separator();
+                        // Diagnostics toggle lives in the command palette (⌘P), not
+                        // the toolbar — it's a dev affordance, not a daily control.
                         if ui.button("+").clicked() {
                             clicked = Some(dcs_app::AppAction::ZoomIn);
                         }
@@ -234,6 +282,11 @@ impl DcsApp {
             });
         if let Some(action) = clicked {
             self.dispatch(action, ctx);
+        }
+        if switch_gallery && self.view == ViewMode::Grid {
+            self.enter_gallery();
+        } else if switch_grid && self.view == ViewMode::Gallery {
+            self.exit_gallery();
         }
     }
 
@@ -610,22 +663,31 @@ impl DcsApp {
 
                         section(ui, "Files", |ui| {
                             ui.horizontal_wrapped(|ui| {
-                                ui.radio_value(&mut self.export.files, FileSelection::Both, "Both");
+                                ui.radio_value(&mut self.export.files, FileSelection::Any, "Any")
+                                    .on_hover_text(
+                                        "Copy whatever files each photo has, as shot — never skips",
+                                    );
+                                ui.radio_value(
+                                    &mut self.export.files,
+                                    FileSelection::Both,
+                                    "RAW + JPEG",
+                                )
+                                .on_hover_text(
+                                    "Only photos that have both a RAW and a JPEG — copies both \
+                                     files, skips the rest",
+                                );
                                 ui.radio_value(
                                     &mut self.export.files,
                                     FileSelection::Jpeg,
                                     "JPEG only",
-                                );
+                                )
+                                .on_hover_text("Copy each photo's JPEG; skip photos with no JPEG");
                                 ui.radio_value(
                                     &mut self.export.files,
                                     FileSelection::Raw,
                                     "RAW only",
-                                );
-                                ui.radio_value(
-                                    &mut self.export.files,
-                                    FileSelection::Original,
-                                    "Original",
-                                );
+                                )
+                                .on_hover_text("Copy each photo's RAW; skip photos with no RAW");
                             });
                         });
 
@@ -852,18 +914,44 @@ impl DcsApp {
                     self.empty_state(ui);
                     return;
                 }
-                let view_width = ui.available_width();
-                let resp = grid::show(
-                    ui,
-                    &mut self.session,
-                    &mut self.textures,
-                    self.cell,
-                    view_width,
-                    std::mem::take(&mut self.scroll_to_focus),
-                    &mut self.collapsed,
-                );
-                self.visible = resp.visible;
-                self.cols = resp.cols;
+                match self.view {
+                    ViewMode::Grid => {
+                        let view_width = ui.available_width();
+                        let resp = grid::show(
+                            ui,
+                            &mut self.session,
+                            &mut self.textures,
+                            self.cell,
+                            view_width,
+                            std::mem::take(&mut self.scroll_to_focus),
+                            &mut self.collapsed,
+                        );
+                        self.visible = resp.visible;
+                        self.cols = resp.cols;
+                    }
+                    ViewMode::Gallery => {
+                        let count = self.session.photo_count();
+                        let focus = self.session.focus().unwrap_or(0).min(count - 1);
+                        // Recenter the filmstrip only when the focus just moved.
+                        let state = gallery::GalleryState {
+                            focus,
+                            full_zoom: self.gallery_full,
+                            strip_collapsed: self.strip_collapsed,
+                            center_focus: std::mem::take(&mut self.scroll_to_focus),
+                        };
+                        let resp = gallery::show(
+                            ui,
+                            &mut self.session,
+                            &mut self.gallery_textures,
+                            &mut self.textures,
+                            &state,
+                        );
+                        if let Some(idx) = resp.clicked {
+                            self.session.set_focus(idx, false);
+                            self.scroll_to_focus = true;
+                        }
+                    }
+                }
             });
     }
 
@@ -984,13 +1072,80 @@ impl DcsApp {
             self.palette.open();
             return;
         }
-        // Command keys route through the same registry the palette uses.
+        // Verdict/undo and the rest of the registry work in both views, so route
+        // them first — full key parity in the gallery.
         for action in keymap::actions_for_input(ctx) {
             self.dispatch(action, ctx);
         }
-        // Grid geometry keys are a pure UI concern (they need the column count),
-        // so they stay out of the registry.
-        self.handle_grid_keys(ctx);
+        match self.view {
+            // Grid geometry keys are a pure UI concern (they need the column
+            // count), so they stay out of the registry.
+            ViewMode::Grid => {
+                self.handle_grid_keys(ctx);
+                // Space / F open the focused photo in the gallery.
+                if ctx.input(|i| i.key_pressed(Key::Space) || i.key_pressed(Key::F)) {
+                    self.enter_gallery();
+                }
+            }
+            ViewMode::Gallery => self.handle_gallery_keys(ctx),
+        }
+    }
+
+    /// Open the gallery on the focused photo (else the first visible), starting
+    /// contain-fit.
+    fn enter_gallery(&mut self) {
+        if self.session.photo_count() == 0 {
+            return;
+        }
+        if self.session.focus().is_none() {
+            self.session.set_focus(0, false);
+        }
+        self.view = ViewMode::Gallery;
+        self.gallery_full = false;
+        // Center the filmstrip on the opening photo.
+        self.scroll_to_focus = true;
+    }
+
+    /// Leave the gallery back to the grid, dropping its large frames and asking
+    /// the grid to scroll the photo we were viewing into view.
+    fn exit_gallery(&mut self) {
+        self.view = ViewMode::Grid;
+        self.gallery_full = false;
+        self.session.clear_gallery();
+        self.gallery_textures.clear();
+        self.scroll_to_focus = true;
+    }
+
+    /// Gallery keys: `←`/`↑` previous, `→`/`↓` next over the visible
+    /// order; `Z` toggles fit ↔ 1:1; `Space`/`Esc` return to the grid. `A`/`X`/
+    /// undo already routed through the registry.
+    fn handle_gallery_keys(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.key_pressed(Key::Escape) || i.key_pressed(Key::Space)) {
+            self.exit_gallery();
+            return;
+        }
+        if ctx.input(|i| i.key_pressed(Key::Z)) {
+            self.gallery_full = !self.gallery_full;
+        }
+        let prev = ctx.input(|i| i.key_pressed(Key::ArrowLeft) || i.key_pressed(Key::ArrowUp));
+        let next = ctx.input(|i| i.key_pressed(Key::ArrowRight) || i.key_pressed(Key::ArrowDown));
+        if prev || next {
+            let count = self.session.photo_count();
+            if count > 0 {
+                let cur = self.session.focus().unwrap_or(0);
+                let target = if next {
+                    (cur + 1).min(count - 1)
+                } else {
+                    cur.saturating_sub(1)
+                };
+                // 1:1 framing is per-photo, so reset to fit when stepping on.
+                if target != cur {
+                    self.gallery_full = false;
+                }
+                self.session.set_focus(target, false);
+                self.scroll_to_focus = true;
+            }
+        }
     }
 
     /// Run a registry action: the app does what it can, then we perform whatever

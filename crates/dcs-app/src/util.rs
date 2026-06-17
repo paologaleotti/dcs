@@ -5,19 +5,49 @@ use std::hash::Hash;
 
 use dcs_domain::photo::PhotoId;
 
-/// Pack a folder epoch, a `PhotoId`, and the base/hi-res tier into one decode
-/// key. The epoch lets the session discard thumbnails decoded for a folder that
-/// has since been closed (ids restart at 0 per folder); the tier bit routes the
-/// result to the right cache.
-pub(crate) fn encode_key(epoch: u64, id: PhotoId, hires: bool) -> u64 {
-    (epoch << 33) | ((id.0 as u64) << 1) | hires as u64
+/// Which resident cache a decode result belongs to. Packed into the decode key
+/// so the session routes each result to the right tier on arrival.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DecodeTier {
+    /// Cheap 256 px grid thumbnail.
+    Base,
+    /// Sharp viewport decode while the grid is zoomed in.
+    Hires,
+    /// Large fit/1:1 decode for the gallery view (§2.13).
+    Gallery,
 }
 
-pub(crate) fn decode_key(key: u64) -> (u64, PhotoId, bool) {
+impl DecodeTier {
+    fn bits(self) -> u64 {
+        match self {
+            DecodeTier::Base => 0,
+            DecodeTier::Hires => 1,
+            DecodeTier::Gallery => 2,
+        }
+    }
+
+    fn from_bits(bits: u64) -> DecodeTier {
+        match bits & 0b11 {
+            0 => DecodeTier::Base,
+            1 => DecodeTier::Hires,
+            _ => DecodeTier::Gallery,
+        }
+    }
+}
+
+/// Pack a folder epoch, a `PhotoId`, and the decode tier into one key. The epoch
+/// lets the session discard thumbnails decoded for a folder that has since been
+/// closed (ids restart at 0 per folder); the tier bits route the result to the
+/// right cache.
+pub(crate) fn encode_key(epoch: u64, id: PhotoId, tier: DecodeTier) -> u64 {
+    (epoch << 34) | ((id.0 as u64) << 2) | tier.bits()
+}
+
+pub(crate) fn decode_key(key: u64) -> (u64, PhotoId, DecodeTier) {
     (
-        key >> 33,
-        PhotoId(((key >> 1) & 0xFFFF_FFFF) as u32),
-        key & 1 == 1,
+        key >> 34,
+        PhotoId(((key >> 2) & 0xFFFF_FFFF) as u32),
+        DecodeTier::from_bits(key),
     )
 }
 
@@ -155,26 +185,28 @@ mod tests {
     }
 
     #[test]
-    fn decode_key_round_trips_encode_key() {
-        assert_eq!(
-            decode_key(encode_key(7, PhotoId(123), false)),
-            (7, PhotoId(123), false)
-        );
-        assert_eq!(
-            decode_key(encode_key(7, PhotoId(123), true)),
-            (7, PhotoId(123), true)
-        );
+    fn decode_key_round_trips_every_tier() {
+        for tier in [DecodeTier::Base, DecodeTier::Hires, DecodeTier::Gallery] {
+            assert_eq!(
+                decode_key(encode_key(7, PhotoId(123), tier)),
+                (7, PhotoId(123), tier)
+            );
+        }
     }
 
     #[test]
     fn keys_differ_by_epoch_and_tier_for_same_id() {
         assert_ne!(
-            encode_key(1, PhotoId(5), false),
-            encode_key(2, PhotoId(5), false)
+            encode_key(1, PhotoId(5), DecodeTier::Base),
+            encode_key(2, PhotoId(5), DecodeTier::Base)
         );
         assert_ne!(
-            encode_key(1, PhotoId(5), false),
-            encode_key(1, PhotoId(5), true)
+            encode_key(1, PhotoId(5), DecodeTier::Base),
+            encode_key(1, PhotoId(5), DecodeTier::Hires)
+        );
+        assert_ne!(
+            encode_key(1, PhotoId(5), DecodeTier::Hires),
+            encode_key(1, PhotoId(5), DecodeTier::Gallery)
         );
     }
 }

@@ -44,6 +44,99 @@ pub struct AssociatedFiles {
     pub raw: Option<PathBuf>,
 }
 
+/// Camera capture facts read from EXIF, for the gallery metadata caption.
+/// Every field is optional — cameras and formats vary, and a missing tag never
+/// fails import. Derived, never persisted: re-read from the file on each scan,
+/// exactly like `orientation` and `captured_at`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CaptureMeta {
+    /// Camera make + model, already joined (e.g. `FUJIFILM X-T5`).
+    pub camera: Option<String>,
+    /// Lens model (e.g. `XF16-55mmF2.8 R LM WR`).
+    pub lens: Option<String>,
+    /// Focal length in millimetres.
+    pub focal_mm: Option<f32>,
+    /// Aperture as an f-number (e.g. `2.8`).
+    pub aperture: Option<f32>,
+    /// Exposure time in seconds (e.g. `0.004` for 1/250).
+    pub exposure_secs: Option<f32>,
+    /// ISO sensitivity.
+    pub iso: Option<u32>,
+}
+
+impl CaptureMeta {
+    /// `f/2.8`, or `None` when the aperture is unknown.
+    pub fn aperture_label(&self) -> Option<String> {
+        self.aperture.map(format_aperture)
+    }
+
+    /// `1/250`, `0.5s`, or `2"` — the photographer's reading of the exposure.
+    pub fn shutter_label(&self) -> Option<String> {
+        self.exposure_secs.map(format_shutter)
+    }
+
+    /// `35mm`, or `None` when the focal length is unknown.
+    pub fn focal_label(&self) -> Option<String> {
+        self.focal_mm.map(format_focal)
+    }
+
+    /// `ISO 400`, or `None` when the ISO is unknown.
+    pub fn iso_label(&self) -> Option<String> {
+        self.iso.map(|iso| format!("ISO {iso}"))
+    }
+
+    /// The exposure triplet as one compact line — `35mm · f/2.8 · 1/250 · ISO
+    /// 400` — omitting any field that's missing. `None` when nothing is known.
+    pub fn exposure_line(&self) -> Option<String> {
+        let parts: Vec<String> = [
+            self.focal_label(),
+            self.aperture_label(),
+            self.shutter_label(),
+            self.iso_label(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+}
+
+/// Format an f-number: drop a trailing `.0` so `2.8` stays `f/2.8` but `8.0`
+/// reads `f/8`.
+pub fn format_aperture(f: f32) -> String {
+    if (f.fract()).abs() < 0.05 {
+        format!("f/{}", f.round() as i32)
+    } else {
+        format!("f/{f:.1}")
+    }
+}
+
+/// Format an exposure time the way a photographer reads it: sub-second exposures
+/// as `1/N` (rounded to the nearest whole denominator), one second or longer as
+/// `0.5s` / `2"`.
+pub fn format_shutter(secs: f32) -> String {
+    if secs <= 0.0 {
+        return "0s".to_string();
+    }
+    if secs < 1.0 {
+        let denom = (1.0 / secs).round() as i32;
+        format!("1/{denom}")
+    } else if secs.fract().abs() < 0.05 {
+        format!("{}\"", secs.round() as i32)
+    } else {
+        format!("{secs:.1}s")
+    }
+}
+
+/// Format a focal length: `35mm`, dropping a trailing `.0`.
+pub fn format_focal(mm: f32) -> String {
+    if mm.fract().abs() < 0.05 {
+        format!("{}mm", mm.round() as i32)
+    } else {
+        format!("{mm:.1}mm")
+    }
+}
+
 /// One logical photo. Identity, files, and the facts needed to display it.
 /// Owned cull/tag state arrives with later slices.
 #[derive(Debug, Clone)]
@@ -59,6 +152,9 @@ pub struct Photo {
     /// Raw EXIF `DateTimeOriginal`, naive (no zone). Timezone adjustment to an
     /// `OffsetDateTime` is derived later (§2.4); `None` means undated.
     pub captured_at: Option<PrimitiveDateTime>,
+    /// EXIF capture facts for the gallery caption. Derived, not persisted —
+    /// empty for missing photos until the file returns.
+    pub meta: CaptureMeta,
     /// The backing file is known (from `project.json`) but absent on disk (§4).
     /// State is preserved and the cell renders as a placeholder; it reanimates
     /// when the file returns, matched by fingerprint.
@@ -134,6 +230,7 @@ impl Photo {
             orientation: Orientation::Normal,
             fingerprint,
             captured_at: None,
+            meta: CaptureMeta::default(),
             missing: true,
         }
     }

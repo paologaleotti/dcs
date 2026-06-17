@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use dcs_domain::fingerprint::ContentFingerprint;
 use dcs_domain::pairing::{FileKind, ScannedFile, pair};
+use dcs_domain::photo::CaptureMeta;
 use dcs_domain::sort::by_time_asc;
 use time::macros::datetime;
 
@@ -16,6 +17,7 @@ fn at(path: &str, when: Option<time::PrimitiveDateTime>) -> ScannedFile {
         orientation: Default::default(),
         fingerprint: ContentFingerprint::from_bytes(bytes),
         captured_at: when,
+        meta: CaptureMeta::default(),
     }
 }
 

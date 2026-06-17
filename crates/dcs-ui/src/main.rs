@@ -6,6 +6,7 @@
 
 mod app;
 mod export;
+mod gallery;
 mod grid;
 mod keymap;
 mod picker;

@@ -10,11 +10,13 @@ pub mod export;
 pub mod registry;
 pub mod selection;
 pub mod session;
+pub mod thumb_cache;
 mod util;
 
 pub use export::{ExportScope, ExportStatus};
 pub use registry::{ActionEffect, ActionEntry, AppAction, Category, catalog};
 pub use session::{CellInfo, SaveError, Session, VerdictFilter, VisibleGroup};
+pub use thumb_cache::ThumbView;
 
 // Domain types surfaced through `AppAction`/`Session`, so the UI names them via
 // the conductor rather than reaching into `dcs-domain`.

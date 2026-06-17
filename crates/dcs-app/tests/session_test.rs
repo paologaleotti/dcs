@@ -55,21 +55,86 @@ fn pump_until(
 }
 
 #[test]
-fn scans_jpegs_and_ignores_non_images() {
+fn rescan_keeps_raw_jpeg_pairs_present_with_no_phantoms() {
+    let dir = temp_folder("rescan_pairs");
+    // Three JPEG+RAW pairs: real JPEGs decode, empty RAFs pair by stem.
+    for s in ["a", "b", "c"] {
+        write_jpeg(&dir, &format!("{s}.jpg"), 48, 48);
+        touch(&dir, &format!("{s}.raf"));
+    }
+    let mut session = Session::new();
+    session.open_folder(dir.clone());
+    drain_until(&mut session, 3);
+    assert_eq!(session.photo_count(), 3);
+    assert_eq!(session.pool_len(), 3, "each pair is one photo");
+    assert_eq!(session.missing_count(), 0);
+
+    // Accept the first photo and persist the project.
+    session.set_focus(0, false);
+    session.accept();
+    session.save().expect("save");
+
+    // Rescan (re-imports both kinds). The pairs must return present and paired,
+    // the verdict intact, and — the bug — no phantom missing placeholders and no
+    // duplicate photos inflating the pool.
+    session.rescan();
+    drain_until(&mut session, 3);
+
+    assert_eq!(
+        session.pool_len(),
+        3,
+        "no phantom/duplicate photos after rescan"
+    );
+    assert_eq!(session.photo_count(), 3, "all pairs still shown");
+    assert_eq!(
+        session.missing_count(),
+        0,
+        "no phantom missing placeholders"
+    );
+    let (acc, _rej, unrev) = session.verdict_counts();
+    assert_eq!(acc, 1, "the accepted verdict survives the rescan");
+    assert_eq!(unrev, 2);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pairs_raw_with_jpeg_and_hides_raw_only_photos() {
     let dir = temp_folder("scan");
-    touch(&dir, "a.jpg");
-    touch(&dir, "b.JPG");
-    touch(&dir, "notes.txt");
-    touch(&dir, "c.raf"); // RAW: recognized by domain, not imported yet
+    touch(&dir, "a.jpg"); // JPEG-only
+    touch(&dir, "b.JPG"); // JPEG-only
+    touch(&dir, "notes.txt"); // ignored
+    touch(&dir, "c.raf"); // RAW-only: paired with nothing → hidden in v1
+    touch(&dir, "d.jpg"); // d.jpg + d.RAF pair into ONE photo
+    touch(&dir, "d.RAF");
 
     let mut session = Session::new();
     session.open_folder(dir.clone());
-    drain_until(&mut session, 2);
+    drain_until(&mut session, 3);
 
-    assert_eq!(session.photo_count(), 2, "only the two JPEGs import");
+    // The pool holds four photos: a, b, the d pair, and the RAW-only c. The d
+    // pair proves RAW+JPEG merged into one (else it'd be five).
+    assert_eq!(session.pool_len(), 4);
     assert!(!session.is_scanning());
-    assert!(session.cell_info(0).is_some());
-    assert!(session.cell_info(2).is_none());
+
+    // But v1 can't decode RAW, so the RAW-only c is hidden: three cells show,
+    // none of them RAW-only.
+    assert_eq!(session.photo_count(), 3, "RAW-only photo is not displayed");
+    assert!(session.cell_info(3).is_none());
+    let raw_only = (0..3)
+        .filter(|&i| session.cell_info(i).is_some_and(|c| c.raw_only))
+        .count();
+    assert_eq!(raw_only, 0, "no RAW-only cell is shown");
+
+    // The status tallies count only displayable photos, so unreviewed matches
+    // the shown count — the hidden RAW-only photo never drifts them apart.
+    let (acc, rej, unrev) = session.verdict_counts();
+    assert_eq!((acc, rej), (0, 0));
+    assert_eq!(
+        unrev,
+        session.photo_count(),
+        "unrev tracks shown, not pool_len"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

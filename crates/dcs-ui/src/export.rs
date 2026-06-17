@@ -24,7 +24,7 @@ impl Default for ExportDialog {
         ExportDialog {
             open: false,
             scope: ExportScope::Everything,
-            files: FileSelection::Both,
+            files: FileSelection::Any,
             layout: Layout::Together,
             collision: Collision::Rename,
             template_on: false,

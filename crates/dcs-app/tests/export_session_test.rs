@@ -74,10 +74,11 @@ fn scope_counts_track_verdicts() {
 fn everything_scope_plans_one_op_per_jpeg() {
     let (session, dir) = opened_with(3, "plan_all");
     let out = dir.join("export");
+    // JPEG-only photos: Any copies what exists (Both would skip them all).
     let plan = session
         .plan_export(
             ExportScope::Everything,
-            &request(&out, FileSelection::Both, Layout::Together),
+            &request(&out, FileSelection::Any, Layout::Together),
         )
         .unwrap();
 

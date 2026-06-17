@@ -15,7 +15,7 @@ use std::time::UNIX_EPOCH;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use dcs_domain::fingerprint::ContentFingerprint;
 use dcs_domain::pairing::{FileKind, ScannedFile, classify};
-use dcs_domain::photo::Orientation;
+use dcs_domain::photo::{CaptureMeta, Orientation};
 use rayon::prelude::*;
 use time::PrimitiveDateTime;
 use time::macros::format_description;
@@ -64,29 +64,32 @@ fn walk(root: &Path, tx: &Sender<ScannedFile>, cache: Option<&SharedCache>) {
     // Enumerate first (a fast stat-only walk), then read EXIF + fingerprint in
     // parallel: file reads are the scan's real cost and embarrassingly
     // parallel. Sort order is derived, so arrival order doesn't matter (§2.2).
-    let paths: Vec<PathBuf> = WalkDir::new(root)
+    let files: Vec<(PathBuf, FileKind)> = WalkDir::new(root)
         .into_iter()
         .filter_entry(|e| !is_hidden(e.path()))
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file())
-        .map(|e| e.into_path())
-        // JPEG-only for now: RAW files are recognized by the domain but not
-        // imported yet (no embedded-preview decode).
-        .filter(|p| classify(p) == Some(FileKind::Jpeg))
+        // Import both JPEG and RAW so a JPEG+RAW pair merges into one photo and a
+        // RAW's presence is known. v1 only decodes the JPEG; a RAW-only photo is
+        // paired/persisted but hidden until RAW decode lands.
+        .filter_map(|e| classify(e.path()).map(|kind| (e.into_path(), kind)))
         .collect();
 
-    paths.into_par_iter().for_each_with(tx.clone(), |tx, path| {
-        let (orientation, captured_at) = read_meta(&path);
-        let fingerprint = fingerprint_of(&path, root, cache);
-        // A closed receiver means the session moved on; the send simply fails.
-        let _ = tx.send(ScannedFile {
-            path,
-            kind: FileKind::Jpeg,
-            orientation,
-            fingerprint,
-            captured_at,
+    files
+        .into_par_iter()
+        .for_each_with(tx.clone(), |tx, (path, kind)| {
+            let (orientation, captured_at, meta) = read_meta(&path);
+            let fingerprint = fingerprint_of(&path, root, cache);
+            // A closed receiver means the session moved on; the send simply fails.
+            let _ = tx.send(ScannedFile {
+                path,
+                kind,
+                orientation,
+                fingerprint,
+                captured_at,
+                meta,
+            });
         });
-    });
 }
 
 /// The content fingerprint for a file, reusing the cache when `(mtime, size)`
@@ -185,11 +188,12 @@ fn is_hidden(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// One EXIF pass for orientation + capture time (§4). Missing or unreadable
-/// EXIF degrades to `(Normal, None)` rather than failing the scan.
-fn read_meta(path: &Path) -> (Orientation, Option<PrimitiveDateTime>) {
+/// One EXIF pass for orientation, capture time, and the gallery caption facts.
+/// Missing or unreadable EXIF degrades to defaults rather than failing the scan;
+/// each field is read independently so one bad tag never loses the rest.
+fn read_meta(path: &Path) -> (Orientation, Option<PrimitiveDateTime>, CaptureMeta) {
     let Some(exif) = read_exif(path) else {
-        return (Orientation::default(), None);
+        return (Orientation::default(), None, CaptureMeta::default());
     };
     let orientation = exif
         .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
@@ -200,7 +204,58 @@ fn read_meta(path: &Path) -> (Orientation, Option<PrimitiveDateTime>) {
         .get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)
         .and_then(ascii_value)
         .and_then(parse_exif_datetime);
-    (orientation, captured_at)
+    let meta = CaptureMeta {
+        camera: camera_label(&exif),
+        lens: ascii_field(&exif, exif::Tag::LensModel),
+        focal_mm: rational_f32(&exif, exif::Tag::FocalLength),
+        aperture: rational_f32(&exif, exif::Tag::FNumber),
+        exposure_secs: rational_f32(&exif, exif::Tag::ExposureTime),
+        iso: exif
+            .get_field(exif::Tag::PhotographicSensitivity, exif::In::PRIMARY)
+            .and_then(|f| f.value.get_uint(0)),
+    };
+    (orientation, captured_at, meta)
+}
+
+/// Camera make + model joined into one label, avoiding the common case where the
+/// model already repeats the make (e.g. Canon writes `Canon EOS R5`).
+fn camera_label(exif: &exif::Exif) -> Option<String> {
+    let make = ascii_field(exif, exif::Tag::Make);
+    let model = ascii_field(exif, exif::Tag::Model);
+    match (make, model) {
+        (Some(make), Some(model)) => {
+            if model
+                .to_ascii_lowercase()
+                .starts_with(&make.to_ascii_lowercase())
+            {
+                Some(model)
+            } else {
+                Some(format!("{make} {model}"))
+            }
+        }
+        (Some(make), None) => Some(make),
+        (None, Some(model)) => Some(model),
+        (None, None) => None,
+    }
+}
+
+/// A trimmed, non-empty ASCII EXIF field as an owned `String`.
+fn ascii_field(exif: &exif::Exif, tag: exif::Tag) -> Option<String> {
+    let field = exif.get_field(tag, exif::In::PRIMARY)?;
+    let value = ascii_value(field)?.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+/// The first rational of a field as `f32`, guarding a zero denominator.
+fn rational_f32(exif: &exif::Exif, tag: exif::Tag) -> Option<f32> {
+    let field = exif.get_field(tag, exif::In::PRIMARY)?;
+    match &field.value {
+        exif::Value::Rational(parts) => parts
+            .first()
+            .filter(|r| r.denom != 0)
+            .map(|r| r.num as f32 / r.denom as f32),
+        _ => None,
+    }
 }
 
 fn ascii_value(field: &exif::Field) -> Option<&str> {

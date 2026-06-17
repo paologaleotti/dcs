@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use dcs_domain::fingerprint::ContentFingerprint;
 use dcs_domain::grouping::{Axis, GroupKind, TimeGranularity, group, resolve_auto};
 use dcs_domain::pairing::{FileKind, ScannedFile, pair};
-use dcs_domain::photo::Pool;
+use dcs_domain::photo::{CaptureMeta, Pool};
 use dcs_domain::sort::{Sort, SortDir, SortKey};
 use dcs_domain::timezone::{self, adjusted};
 use time::PrimitiveDateTime;
@@ -30,6 +30,7 @@ fn at(path: &str, when: Option<PrimitiveDateTime>) -> ScannedFile {
         orientation: Default::default(),
         fingerprint: ContentFingerprint::from_bytes(bytes),
         captured_at: when,
+        meta: CaptureMeta::default(),
     }
 }
 

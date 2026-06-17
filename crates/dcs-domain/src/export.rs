@@ -17,14 +17,16 @@ use thiserror::Error;
 
 use crate::photo::{Photo, PhotoId};
 
-/// Which files of each photo to copy (§6.3). `Both`/`Original` copy every file
-/// the photo has; `Jpeg`/`Raw` copy only that role and skip photos lacking it.
+/// Which files of each photo to copy (§6.3). `Jpeg`/`Raw` copy only that role
+/// and skip photos lacking it. `Both` copies the JPEG **and** the RAW, skipping
+/// any photo that doesn't have both. `Any` copies whatever files the photo has,
+/// never skipping (the as-shot superset) — the default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileSelection {
     Jpeg,
     Raw,
     Both,
-    Original,
+    Any,
 }
 
 /// Destination folder layout (§6.4). `GroupAsFolders` reuses the active grouping
@@ -232,7 +234,24 @@ fn selected_roles<'a>(
                 reason: SkipReason::NoRaw,
             }),
         },
-        FileSelection::Both | FileSelection::Original => {
+        // Both demands the pair: a photo missing either file is skipped, with the
+        // missing role as the reason (so the "(show)" report points at it).
+        FileSelection::Both => match (jpeg, raw) {
+            (Some(j), Some(r)) => {
+                out.push((FileRole::Jpeg, j));
+                out.push((FileRole::Raw, r));
+            }
+            (None, _) => skipped.push(SkippedPhoto {
+                id: photo.id,
+                reason: SkipReason::NoJpeg,
+            }),
+            (_, None) => skipped.push(SkippedPhoto {
+                id: photo.id,
+                reason: SkipReason::NoRaw,
+            }),
+        },
+        // Any is the as-shot superset: whatever exists, never skipped.
+        FileSelection::Any => {
             if let Some(p) = jpeg {
                 out.push((FileRole::Jpeg, p));
             }

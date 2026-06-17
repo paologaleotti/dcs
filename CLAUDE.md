@@ -50,6 +50,7 @@ When adding a `use` import, verify it respects this graph.
 - Don't use `mod.rs`; use named files (`foo.rs`, not `foo/mod.rs`).
 - **Module exports.** `lib.rs` declares `pub mod` for top-level modules. Each module root re-exports public types from its private subfiles via `pub use`. Consumers import from one level: `dcs_domain::export::ExportPlan`, never `dcs_domain::export::types::ExportPlan`.
 - **Comments discipline:** `///` on all public functions/types. Private functions get doc comments only when the logic isn't obvious. No section-separator/banner comments. Inline comments only where the *why* isn't clear from the code.
+- **No spec-reference noise.** Never write comments whose only content is a spec pointer (`§2.13`, `#34`, `(spec §6.9)`, `open Q#8`) — they add tokens and visual noise without explaining anything. Don't append `(§X)` tags to otherwise-fine comments either. A comment must explain a *why* or a non-obvious *what* that the code itself doesn't; if it only points at the spec or restates the code, delete it. Trace design decisions through `spec.md` and commit messages, not inline tags.
 
 ## Error Handling
 
