@@ -4,6 +4,12 @@
 
 use egui::{Color32, Context, CornerRadius, Stroke, Vec2, Visuals};
 
+/// An sRGB tag color as an egui color — the one place tag colors cross into the
+/// UI, so strips, chips, and band rules all map identically.
+pub fn tag_color32(c: dcs_domain::tag::Color) -> Color32 {
+    Color32::from_rgb(c.r, c.g, c.b)
+}
+
 /// Empty cell area — the "sheet" surface, slightly lighter than chrome.
 pub const SHEET_BG: Color32 = Color32::from_gray(20);
 /// Panels, bars, menus.

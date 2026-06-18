@@ -13,19 +13,28 @@ fn tag(id: u32, name: &str) -> Tag {
 }
 
 #[test]
-fn palette_maps_one_based_slots() {
+fn palette_maps_one_based_slots_to_the_curated_set() {
     assert_eq!(palette_color(1), PALETTE[0]);
-    assert_eq!(palette_color(9), PALETTE[8]);
+    assert_eq!(palette_color(PALETTE.len()), PALETTE[PALETTE.len() - 1]);
 }
 
 #[test]
-fn palette_wraps_past_nine_and_at_zero() {
-    // A cycle never runs out (10 → back to slot 1's hue) and never panics at 0.
-    assert_eq!(palette_color(10), PALETTE[0]);
-    assert_eq!(palette_color(18), PALETTE[8]);
-    // Slot 0 is never a real key (digits are 1–9); it must not panic and must
-    // still yield a palette member.
-    assert!(PALETTE.contains(&palette_color(0)));
+fn colors_continue_past_the_curated_set() {
+    // Tags are unlimited; beyond the curated palette, colors keep generating
+    // distinct hues rather than wrapping or panicking. Sample a run of generated
+    // slots and confirm none collides with another or with a curated color.
+    let n = PALETTE.len();
+    let mut seen: Vec<_> = PALETTE.to_vec();
+    for slot in (n + 1)..=(n + 12) {
+        let c = palette_color(slot);
+        assert!(
+            !seen.contains(&c),
+            "generated color for slot {slot} collides with an earlier color"
+        );
+        seen.push(c);
+    }
+    // Slot 0 is never a real index; it must not panic.
+    let _ = palette_color(0);
 }
 
 #[test]
@@ -63,6 +72,11 @@ fn delta_invert_round_trips_every_variant() {
             id: t,
             before: "a".into(),
             after: "b".into(),
+        },
+        TagDelta::Recolored {
+            id: t,
+            before: Color::rgb(1, 2, 3),
+            after: Color::rgb(4, 5, 6),
         },
     ];
     for d in cases {

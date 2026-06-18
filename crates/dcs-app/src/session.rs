@@ -120,6 +120,9 @@ pub struct CellInfo {
     pub selected: bool,
     /// The file is absent on disk — render a placeholder + `missing` badge.
     pub missing: bool,
+    /// Tag colors for the bottom-edge strips (lowest-id tags first), up to
+    /// [`crate::tags::MAX_STRIP`]; the grid splits the edge evenly among them.
+    pub tag_colors: [Option<dcs_domain::tag::Color>; crate::tags::MAX_STRIP],
 }
 
 /// Capture time for the gallery caption. `adjusted` is the time in the travel

@@ -174,17 +174,49 @@ impl DcsApp {
                     }
                     if ui
                         .add_enabled(
-                            self.session.has_rejected(),
-                            egui::Button::new("Reveal Rejected in File Manager"),
+                            self.session.has_folder(),
+                            egui::Button::new("Reveal in File Manager"),
                         )
+                        .on_hover_text("Open the project folder in your file manager")
                         .clicked()
                     {
-                        clicked = Some(AppAction::RevealRejected);
+                        clicked = Some(AppAction::RevealFolder);
                         ui.close();
                     }
                     ui.separator();
                     if ui.button("Quit").clicked() {
                         clicked = Some(AppAction::Quit);
+                    }
+                });
+                ui.menu_button("Tags", |ui| {
+                    let has_sel = self.session.selection_count() > 0;
+                    if ui
+                        .add_enabled(has_sel, egui::Button::new("Add to Selection…"))
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::OpenTagPalette);
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.session.selection_has_tags(),
+                            egui::Button::new("Remove from Selection…"),
+                        )
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::OpenUntagPalette);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(
+                            !self.session.all_tags().is_empty(),
+                            egui::Button::new("Manage Tags"),
+                        )
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::ManageTags);
+                        ui.close();
                     }
                 });
                 ui.menu_button("Help", |ui| {
@@ -212,6 +244,13 @@ impl DcsApp {
                 .clicked()
             {
                 picked = Some(dcs_app::AppAction::GroupBy(Axis::None));
+                ui.close();
+            }
+            if ui
+                .selectable_label(axis == Axis::Tag, RichText::new("Tag").monospace())
+                .clicked()
+            {
+                picked = Some(dcs_app::AppAction::GroupBy(Axis::Tag));
                 ui.close();
             }
             ui.separator();
@@ -311,6 +350,7 @@ impl DcsApp {
         use dcs_app::{Axis, TimeGranularity};
         match self.session.axis() {
             Axis::None => "none".to_string(),
+            Axis::Tag => "tag".to_string(),
             Axis::Time(g) => {
                 let resolved = self.session.resolved_granularity();
                 match (g, resolved) {

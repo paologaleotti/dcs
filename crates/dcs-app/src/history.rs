@@ -78,6 +78,7 @@ impl History {
             Command::CreateTag { name, color } => Patch::Tag(tags.apply_create(name, color)),
             Command::RenameTag(id, name) => Patch::Tag(tags.apply_rename(id, name)),
             Command::MergeTags { into, from } => Patch::Tag(tags.apply_merge(into, from)),
+            Command::SetTagColor(id, color) => Patch::Tag(tags.apply_recolor(id, color)),
             Command::DeleteTag(id) => Patch::Tag(tags.apply_delete(id)),
         };
         if patch.is_empty() {

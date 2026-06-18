@@ -15,6 +15,7 @@ use dcs_app::{CellInfo, Session, ThumbView};
 use dcs_domain::cull::AcceptState;
 use dcs_domain::grouping::GroupKind;
 use dcs_domain::photo::PhotoId;
+use dcs_domain::tag::Color;
 use egui::{
     Color32, FontId, Id, Pos2, Rect, Sense, Stroke, StrokeKind, TextureHandle, TextureId,
     TextureOptions, Ui, Vec2,
@@ -377,6 +378,8 @@ struct HeaderInfo {
     count: usize,
     total: usize,
     collapsed: bool,
+    /// The band's tag color (tag axis only) — drives the 2 px color rule.
+    tag_color: Option<Color>,
 }
 
 /// A group prepared for layout: its span plus whether it's collapsed and, if so,
@@ -389,6 +392,7 @@ struct GroupInput {
     total: usize,
     collapsed: bool,
     cover: usize,
+    tag_color: Option<Color>,
 }
 
 /// Resolve the per-group layout inputs from the session and the collapse set.
@@ -405,6 +409,10 @@ fn group_inputs(session: &Session, collapsed: &HashSet<String>) -> Vec<GroupInpu
             } else {
                 g.start
             };
+            let tag_color = match g.kind {
+                GroupKind::Tag(id) => session.tag_def(id).map(|t| t.color),
+                _ => None,
+            };
             GroupInput {
                 title: g.title.clone(),
                 kind: g.kind,
@@ -413,6 +421,7 @@ fn group_inputs(session: &Session, collapsed: &HashSet<String>) -> Vec<GroupInpu
                 total: g.total,
                 collapsed: is_collapsed,
                 cover,
+                tag_color,
             }
         })
         .collect()
@@ -430,6 +439,7 @@ impl Layout {
                     count: g.count,
                     total: g.total,
                     collapsed: g.collapsed,
+                    tag_color: g.tag_color,
                 });
                 rows.push(Row::Header(headers.len() - 1));
             }
@@ -532,11 +542,23 @@ fn paint_header(ui: &Ui, info: &HeaderInfo, rect: Rect, hovered: bool) {
         theme::CHROME_BG
     };
     p.rect_filled(rect, 0.0, band);
-    p.hline(
-        rect.x_range(),
-        rect.top() + 0.5,
-        Stroke::new(1.0, theme::HAIRLINE),
-    );
+    // Tag bands carry a 2 px color rule; derived groups a quiet hairline.
+    match info.tag_color {
+        Some(c) => {
+            p.hline(
+                rect.x_range(),
+                rect.top() + 1.0,
+                Stroke::new(2.0, theme::tag_color32(c)),
+            );
+        }
+        None => {
+            p.hline(
+                rect.x_range(),
+                rect.top() + 0.5,
+                Stroke::new(1.0, theme::HAIRLINE),
+            );
+        }
+    }
     let cy = rect.center().y;
     paint_caret(p, Pos2::new(rect.left() + 10.0, cy), info.collapsed);
     let title_color = if hovered {
@@ -607,6 +629,7 @@ fn paint_cell(
     }
 
     paint_verdict_glyph(ui, cell_rect, info.state);
+    paint_tag_strips(ui, cell_rect, &info.tag_colors);
 
     // Selection first, focus on top and brighter — a focused cell that is also
     // selected reads as the focus.
@@ -625,6 +648,26 @@ fn paint_cell(
             Stroke::new(2.0, theme::FOCUS_OUTLINE),
             StrokeKind::Inside,
         );
+    }
+}
+
+/// Bottom-edge tag strip: a band spanning the full cell width, split into equal
+/// segments — one color per assigned tag (a single tag fills the whole edge).
+/// Shared with the gallery filmstrip so a thumb reads the same in both views.
+pub(crate) fn paint_tag_strips(ui: &Ui, cell_rect: Rect, colors: &[Option<Color>]) {
+    let count = colors.iter().flatten().count();
+    if count == 0 {
+        return;
+    }
+    let h = (cell_rect.width() * 0.05).clamp(3.0, 7.0);
+    let y = cell_rect.bottom() - h;
+    let seg = cell_rect.width() / count as f32;
+    for (i, color) in colors.iter().flatten().enumerate() {
+        let x0 = cell_rect.left() + i as f32 * seg;
+        let x1 = cell_rect.left() + (i + 1) as f32 * seg;
+        let strip = Rect::from_min_max(Pos2::new(x0, y), Pos2::new(x1, cell_rect.bottom()));
+        ui.painter()
+            .rect_filled(strip, 0.0, theme::tag_color32(*color));
     }
 }
 

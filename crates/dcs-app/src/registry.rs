@@ -37,6 +37,12 @@ pub enum AppAction {
     ToggleDiagnostics,
     Accept,
     Reject,
+    /// Open the tag palette to add/create a named tag on the selection.
+    OpenTagPalette,
+    /// Open the tag palette to remove a tag from the selection.
+    OpenUntagPalette,
+    /// Open the tag manager (rename / recolor / delete the project's tags).
+    ManageTags,
     ClearSelection,
     Undo,
     Redo,
@@ -45,6 +51,10 @@ pub enum AppAction {
     ShowMetadata,
     OpenExport,
     RevealRejected,
+    /// Open the project folder in the OS file manager.
+    RevealFolder,
+    /// Reveal the focused photo's file in the OS file manager.
+    RevealSelection,
     About,
     Quit,
 }
@@ -64,6 +74,7 @@ impl AppAction {
             AppAction::SetFilter(VerdictFilter::Accepted) => "view-accepted",
             AppAction::SetFilter(VerdictFilter::Rejected) => "view-rejected",
             AppAction::GroupBy(Axis::Time(_)) => "group-time",
+            AppAction::GroupBy(Axis::Tag) => "group-tag",
             AppAction::GroupBy(Axis::None) => "group-none",
             AppAction::SetGranularity(TimeGranularity::Auto) => "gran-auto",
             AppAction::SetGranularity(TimeGranularity::SmartDay) => "gran-smart-day",
@@ -93,6 +104,9 @@ impl AppAction {
             AppAction::ToggleDiagnostics => "toggle-diagnostics",
             AppAction::Accept => "accept",
             AppAction::Reject => "reject",
+            AppAction::OpenTagPalette => "open-tag-palette",
+            AppAction::OpenUntagPalette => "open-untag-palette",
+            AppAction::ManageTags => "manage-tags",
             AppAction::ClearSelection => "clear-selection",
             AppAction::Undo => "undo",
             AppAction::Redo => "redo",
@@ -101,6 +115,8 @@ impl AppAction {
             AppAction::ShowMetadata => "show-metadata",
             AppAction::OpenExport => "open-export",
             AppAction::RevealRejected => "reveal-rejected",
+            AppAction::RevealFolder => "reveal-folder",
+            AppAction::RevealSelection => "reveal-selection",
             AppAction::About => "about",
             AppAction::Quit => "quit",
         }
@@ -130,6 +146,12 @@ pub enum ActionEffect {
     ExpandAllGroups,
     /// Open the export dialog (it owns the staged settings + live preview).
     OpenExport,
+    /// Open the tag palette to add or create a named tag on the selection.
+    OpenTagPalette,
+    /// Open the tag palette to remove a tag from the selection.
+    OpenUntagPalette,
+    /// Open the tag manager window.
+    OpenTagManager,
     Quit,
 }
 
@@ -232,6 +254,20 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
         );
         push(
             &mut e,
+            AppAction::OpenTagPalette,
+            "Tag: Add to selected photos…",
+            Category::Edit,
+        );
+        if session.selection_has_tags() {
+            push(
+                &mut e,
+                AppAction::OpenUntagPalette,
+                "Tag: Remove from selected photos…",
+                Category::Edit,
+            );
+        }
+        push(
+            &mut e,
             AppAction::ClearSelection,
             "Clear Selection",
             Category::Edit,
@@ -255,6 +291,22 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
     if session.pool_len() > 0 {
         push(&mut e, AppAction::OpenExport, "Export…", Category::File);
     }
+    if session.has_folder() {
+        push(
+            &mut e,
+            AppAction::RevealFolder,
+            "Reveal Folder in File Manager",
+            Category::File,
+        );
+    }
+    if session.focus().is_some() {
+        push(
+            &mut e,
+            AppAction::RevealSelection,
+            "Reveal Photo in File Manager",
+            Category::File,
+        );
+    }
     if session.has_rejected() {
         push(
             &mut e,
@@ -275,6 +327,12 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
         AppAction::SetCameraZone,
         "Set Camera Timezone…",
         Category::Zone,
+    );
+    push(
+        &mut e,
+        AppAction::ManageTags,
+        "Tag: Open Tag Manager…",
+        Category::Edit,
     );
 
     push(&mut e, AppAction::About, "About dcs", Category::App);
@@ -337,6 +395,9 @@ impl Session {
                 self.reject();
                 ActionEffect::None
             }
+            AppAction::OpenTagPalette => ActionEffect::OpenTagPalette,
+            AppAction::OpenUntagPalette => ActionEffect::OpenUntagPalette,
+            AppAction::ManageTags => ActionEffect::OpenTagManager,
             AppAction::ClearSelection => {
                 self.clear_selection();
                 ActionEffect::None
@@ -355,6 +416,14 @@ impl Session {
             AppAction::OpenExport => ActionEffect::OpenExport,
             AppAction::RevealRejected => {
                 self.reveal_rejected();
+                ActionEffect::None
+            }
+            AppAction::RevealFolder => {
+                self.reveal_folder();
+                ActionEffect::None
+            }
+            AppAction::RevealSelection => {
+                self.reveal_focused();
                 ActionEffect::None
             }
             AppAction::About => ActionEffect::ShowAbout,
@@ -395,6 +464,9 @@ fn push_group_actions(e: &mut Vec<ActionEntry>, session: &Session) {
 
     if axis != Axis::None {
         group(e, AppAction::GroupBy(Axis::None), "Group by: None");
+    }
+    if axis != Axis::Tag {
+        group(e, AppAction::GroupBy(Axis::Tag), "Group by: Tag");
     }
     for (g, title) in [
         (TimeGranularity::Auto, "Group by: Auto"),

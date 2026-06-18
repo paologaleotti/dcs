@@ -8,7 +8,7 @@ mod input;
 mod menus;
 mod view;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -100,6 +100,16 @@ pub struct DcsApp {
     camera_zone_picker: Picker,
     /// The `Cmd/Ctrl+P` command palette over the whole registry.
     palette: Picker,
+    /// The `T` tag palette: fuzzy over existing tags, with an explicit
+    /// create-new row, acting on the selection.
+    tag_palette: Picker,
+    /// Whether the tag palette is in remove mode (`Shift+T`) vs add mode (`T`).
+    tag_palette_remove: bool,
+    /// Tag manager window visibility.
+    show_tag_manager: bool,
+    /// Per-tag name edit buffers while the manager is open (the `TextEdit`s need
+    /// stable backing strings across frames); cleared on close.
+    tag_edits: HashMap<dcs_app::TagId, String>,
     /// Collapsed group titles (ephemeral UI state). Keyed by header title.
     collapsed: HashSet<String>,
     /// Export dialog state; persisted across opens.
@@ -136,6 +146,10 @@ impl DcsApp {
             zone_picker: Picker::new("Travel timezone"),
             camera_zone_picker: Picker::new("Camera timezone"),
             palette: Picker::new("Command Palette"),
+            tag_palette: Picker::new("Tags"),
+            tag_palette_remove: false,
+            show_tag_manager: false,
+            tag_edits: HashMap::new(),
             collapsed: HashSet::new(),
             export: ExportDialog::default(),
             last_heartbeat: None,
@@ -170,6 +184,8 @@ impl eframe::App for DcsApp {
         self.zone_picker(&ctx);
         self.camera_zone_picker(&ctx);
         self.command_palette(&ctx);
+        self.tag_palette(&ctx);
+        self.tag_manager(&ctx);
         if self.debug {
             self.diagnostics(&ctx);
         }
@@ -268,6 +284,18 @@ impl DcsApp {
             E::OpenCameraZonePicker => self.camera_zone_picker.open(),
             E::ShowMetadata => self.show_metadata = true,
             E::ShowAbout => self.show_about = true,
+            E::OpenTagPalette => {
+                self.tag_palette_remove = false;
+                self.tag_palette.open();
+            }
+            E::OpenUntagPalette => {
+                self.tag_palette_remove = true;
+                self.tag_palette.open();
+            }
+            E::OpenTagManager => {
+                self.show_tag_manager = true;
+                self.tag_edits.clear();
+            }
             E::OpenExport => {
                 self.export.open = true;
                 // Default scope to the current selection when there is one.

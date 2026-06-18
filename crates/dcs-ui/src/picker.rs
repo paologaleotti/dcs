@@ -12,7 +12,7 @@
 
 use dcs_domain::fuzzy::fuzzy_match;
 use egui::{
-    Align, Align2, Color32, FontId, Key, Modifiers, RichText, ScrollArea, Sense, TextEdit,
+    Align, Align2, Color32, FontId, Key, Modifiers, Rect, RichText, ScrollArea, Sense, TextEdit,
     TextFormat, Ui, Vec2, text::LayoutJob,
 };
 
@@ -25,14 +25,31 @@ use crate::theme;
 pub struct PickerItem<'a> {
     pub label: &'a str,
     pub detail: Option<&'a str>,
+    /// A color chip drawn left of the label — a tag's color in the tag palette.
+    pub swatch: Option<Color32>,
+    /// A disabled row renders dimmed and can't be chosen (e.g. a tag already on
+    /// the whole selection).
+    pub enabled: bool,
 }
 
 impl<'a> PickerItem<'a> {
-    /// A bare label with no trailing detail.
+    /// A bare label with no trailing detail or swatch.
     pub fn new(label: &'a str) -> Self {
         PickerItem {
             label,
             detail: None,
+            swatch: None,
+            enabled: true,
+        }
+    }
+
+    /// A label with a leading color chip.
+    pub fn with_swatch(label: &'a str, swatch: Color32) -> Self {
+        PickerItem {
+            label,
+            detail: None,
+            swatch: Some(swatch),
+            enabled: true,
         }
     }
 }
@@ -73,6 +90,12 @@ impl Picker {
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// The current search text — lets a caller offer a "create from this text"
+    /// row (the tag palette's explicit, never-silent create).
+    pub fn query(&self) -> &str {
+        &self.query
     }
 
     /// Open fresh: clear the query, reset the cursor, and grab keyboard focus
@@ -117,7 +140,10 @@ impl Picker {
                 return PickerEvent::Dismissed;
             }
             Nav::Accept => {
-                if let Some(&(idx, _)) = ranked.get(self.cursor) {
+                // A disabled row can't be chosen — Enter on it is a no-op.
+                if let Some(&(idx, _)) = ranked.get(self.cursor)
+                    && items[idx].enabled
+                {
                     self.open = false;
                     return PickerEvent::Picked(idx);
                 }
@@ -218,31 +244,50 @@ impl Picker {
     /// A moving pointer hovering the row claims the cursor so mouse and keyboard
     /// agree. Returns whether it was clicked.
     fn row(&mut self, ui: &mut Ui, h: f32, row: Row<'_>) -> bool {
+        let enabled = row.item.enabled;
         let on = row.index == self.cursor;
-        let (rect, resp) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::click());
+        let sense = if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), h), sense);
         if row.want_scroll {
             resp.scroll_to_me(Some(Align::Center));
         }
-        if resp.hovered() && row.pointer_moving {
+        if enabled && resp.hovered() && row.pointer_moving {
             self.cursor = row.index;
         }
-        if on {
+        if on && enabled {
             ui.painter().rect_filled(rect, 0.0, theme::CELL_EMPTY);
         }
-        let text_color = if on {
+        let text_color = if !enabled {
+            theme::HAIRLINE
+        } else if on {
             theme::FOCUS_OUTLINE
         } else {
             theme::TEXT_DIM
         };
+        let mut text_left = rect.left() + 6.0;
+        if let Some(swatch) = row.item.swatch {
+            let s = h * 0.5;
+            let chip = Rect::from_center_size(
+                egui::pos2(text_left + s / 2.0, rect.center().y),
+                Vec2::splat(s),
+            );
+            ui.painter().rect_filled(chip, 0.0, swatch);
+            text_left = chip.right() + 6.0;
+        }
         let job = highlight(row.item.label, row.hits, text_color);
         let galley = ui.painter().layout_job(job);
-        let text_pos = egui::pos2(rect.left() + 6.0, rect.center().y - galley.size().y / 2.0);
+        let text_pos = egui::pos2(text_left, rect.center().y - galley.size().y / 2.0);
         ui.painter().galley(text_pos, galley, text_color);
 
         if let Some(detail) = row.item.detail {
             // Key hints (and picker detail) read at a glance — dim, not invisible.
-            let detail_color = if on {
+            let detail_color = if !enabled {
+                theme::HAIRLINE
+            } else if on {
                 theme::SELECT_OUTLINE
             } else {
                 theme::TEXT_DIM

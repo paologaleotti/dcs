@@ -7,7 +7,10 @@
 //! project dirty but don't regroup — grouping by tag re-derives from these
 //! assignments when that axis is active.
 
+use std::collections::BTreeSet;
+
 use dcs_domain::command::{Command, Patch, TagDelta};
+use dcs_domain::grouping::{self, DerivedGroup};
 use dcs_domain::photo::PhotoId;
 use dcs_domain::tag::{Color, Tag, TagId};
 
@@ -33,31 +36,41 @@ impl Session {
     /// Add a tag to every listed photo (no-op per already-tagged photo).
     pub fn assign_tag(&mut self, tag: TagId, ids: &[PhotoId]) {
         self.dispatch(Command::AssignTag(tag, ids.to_vec()));
+        self.refresh_after_owned_change();
     }
 
     /// Remove a tag from every listed photo.
     pub fn unassign_tag(&mut self, tag: TagId, ids: &[PhotoId]) {
         self.dispatch(Command::UnassignTag(tag, ids.to_vec()));
+        self.refresh_after_owned_change();
     }
 
     /// Rename a tag — or merge it into an existing tag if the new name already
     /// belongs to one.
     pub fn rename_tag(&mut self, tag: TagId, name: impl Into<String>) {
         self.dispatch(Command::RenameTag(tag, name.into()));
+        self.refresh_after_owned_change();
     }
 
     /// Merge `from` into `into`: `from`'s photos move to `into`, `from` is gone.
     pub fn merge_tags(&mut self, into: TagId, from: TagId) {
         self.dispatch(Command::MergeTags { into, from });
+        self.refresh_after_owned_change();
+    }
+
+    /// Recolor a tag. A display-only change to the tag definition; no regroup.
+    pub fn set_tag_color(&mut self, tag: TagId, color: Color) {
+        self.dispatch(Command::SetTagColor(tag, color));
     }
 
     /// Delete a tag and all its assignments.
     pub fn delete_tag(&mut self, tag: TagId) {
         self.dispatch(Command::DeleteTag(tag));
+        self.refresh_after_owned_change();
     }
 
     /// Assign a tag to the current selection (or the focused photo). The
-    /// selection-driven entry the UI's `T` / `1–9` keys call.
+    /// selection-driven entry the `T` palette calls.
     pub fn tag_selection(&mut self, tag: TagId) {
         let targets = self.selection_targets();
         if !targets.is_empty() {
@@ -96,6 +109,55 @@ impl Session {
     /// Unique photos carrying a tag — a band's count.
     pub fn tag_photo_count(&self, tag: TagId) -> usize {
         self.tags.photo_count(tag)
+    }
+
+    /// The tags present on the current selection (union, deduped, id order) —
+    /// the removable set the untag palette lists.
+    pub fn selection_tags(&self) -> Vec<Tag> {
+        let mut ids: BTreeSet<TagId> = BTreeSet::new();
+        for photo in self.selection_targets() {
+            ids.extend(self.tags.tags_of(photo));
+        }
+        ids.into_iter()
+            .filter_map(|id| self.tags.def(id).cloned())
+            .collect()
+    }
+
+    /// Every tag paired with how many of the current selection already carry it
+    /// — lets the add palette mark tags already on the selection.
+    pub fn tags_with_selection_counts(&self) -> Vec<(Tag, usize)> {
+        let targets = self.selection_targets();
+        self.tags
+            .defs()
+            .into_iter()
+            .map(|t| {
+                let on = targets
+                    .iter()
+                    .filter(|&&p| self.tags.is_assigned(t.id, p))
+                    .count();
+                (t, on)
+            })
+            .collect()
+    }
+
+    /// Whether the current selection carries any tag — gates the remove action.
+    pub fn selection_has_tags(&self) -> bool {
+        self.selection_targets()
+            .iter()
+            .any(|&p| !self.tags.tags_of(p).is_empty())
+    }
+
+    /// Derive the tag bands for the tag axis: one band per non-empty tag,
+    /// projections into each, `Untagged` last. Borrows the owned assignment
+    /// index directly, so a regroup allocates only the bands it builds.
+    pub(super) fn derive_tag_groups(&self) -> Vec<DerivedGroup> {
+        let photos = self.builder.photos();
+        grouping::tag_groups(
+            photos,
+            self.tags.photo_tag_index(),
+            &self.tags.name_map(),
+            self.sort,
+        )
     }
 
     /// The selection, or the focused photo when nothing is selected — the

@@ -64,6 +64,17 @@ impl Session {
         self.regroup();
     }
 
+    /// Refresh after an owned-state change (verdict or tag). Under the tag axis a
+    /// mutation can change band membership, so regroup; otherwise the bands are
+    /// stable and only the filtered visible order needs rebuilding.
+    pub(super) fn refresh_after_owned_change(&mut self) {
+        if self.axis == Axis::Tag {
+            self.regroup();
+        } else {
+            self.rebuild_visible();
+        }
+    }
+
     /// Recompute the grouping over the whole pool, then the visible order.
     /// Called when the pool, axis, sort, or shoot zone changes.
     pub(super) fn regroup(&mut self) {
@@ -76,9 +87,12 @@ impl Session {
                 display,
                 g,
             )),
-            Axis::None => None,
+            Axis::Tag | Axis::None => None,
         };
-        let groups = grouping::group(self.builder.photos(), self.axis, camera, display, self.sort);
+        let groups = match self.axis {
+            Axis::Tag => self.derive_tag_groups(),
+            _ => grouping::group(self.builder.photos(), self.axis, camera, display, self.sort),
+        };
         self.order = groups
             .iter()
             .flat_map(|g| g.members.iter().copied())

@@ -376,6 +376,8 @@ impl DcsApp {
         items.push(PickerItem {
             label: CLEAR_ZONE_ROW,
             detail: Some("system default"),
+            swatch: None,
+            enabled: true,
         });
         items.extend(zones.iter().map(|z| PickerItem::new(z)));
 
@@ -406,6 +408,8 @@ impl DcsApp {
         items.push(PickerItem {
             label: CLEAR_ZONE_ROW,
             detail: Some("system default"),
+            swatch: None,
+            enabled: true,
         });
         items.extend(zones.iter().map(|z| PickerItem::new(z)));
 
@@ -436,6 +440,8 @@ impl DcsApp {
             .map(|(e, hint)| PickerItem {
                 label: &e.title,
                 detail: hint.as_deref(),
+                swatch: None,
+                enabled: true,
             })
             .collect();
         let picked = match self.palette.show(ctx, None, "type a command…", &items) {
@@ -444,6 +450,226 @@ impl DcsApp {
         };
         if let Some(action) = picked {
             self.dispatch(action, ctx);
+        }
+    }
+
+    /// The tag palette (`T` add / `Shift+T` remove). Add mode fuzzes over every
+    /// tag (each with its color chip) and offers an explicit "Create" row when
+    /// the typed name matches none — never creating silently. Remove mode lists
+    /// only the tags currently on the selection.
+    pub(super) fn tag_palette(&mut self, ctx: &egui::Context) {
+        if !self.tag_palette.is_open() {
+            return;
+        }
+        if self.tag_palette_remove {
+            self.tag_remove_palette(ctx);
+        } else {
+            self.tag_add_palette(ctx);
+        }
+    }
+
+    fn tag_add_palette(&mut self, ctx: &egui::Context) {
+        let selected = self.session.selection_count();
+        let tags = self.session.tags_with_selection_counts();
+        let query = self.tag_palette.query().trim().to_string();
+        let has_exact = tags
+            .iter()
+            .any(|(t, _)| t.name.eq_ignore_ascii_case(&query));
+        let create_label = (!query.is_empty() && !has_exact).then(|| format!("Create “{query}”"));
+
+        // Mark how much of the selection already carries each tag. A tag already
+        // on the whole selection is disabled (adding it would do nothing).
+        let details: Vec<String> = tags
+            .iter()
+            .map(|(_, on)| {
+                if *on == 0 || selected == 0 {
+                    String::new()
+                } else if *on == selected {
+                    "already added".to_string()
+                } else {
+                    format!("on {on}/{selected} photos")
+                }
+            })
+            .collect();
+
+        let mut items: Vec<PickerItem> = tags
+            .iter()
+            .enumerate()
+            .map(|(i, (t, on))| PickerItem {
+                label: &t.name,
+                detail: (!details[i].is_empty()).then_some(details[i].as_str()),
+                swatch: Some(theme::tag_color32(t.color)),
+                enabled: !(selected > 0 && *on == selected),
+            })
+            .collect();
+        if let Some(label) = &create_label {
+            items.push(PickerItem {
+                label,
+                detail: Some("new tag"),
+                swatch: None,
+                enabled: true,
+            });
+        }
+
+        let subtitle = if tags.is_empty() {
+            format!("add to {selected} selected — type a name, then Enter to create")
+        } else {
+            format!("add to {selected} selected — pick a tag, or type to create")
+        };
+        let event =
+            self.tag_palette
+                .show(ctx, Some(&subtitle), "filter or name a new tag…", &items);
+        match event {
+            PickerEvent::Picked(i) if i < tags.len() => self.session.tag_selection(tags[i].0.id),
+            PickerEvent::Picked(_) => {
+                let color = dcs_domain::tag::palette_color(tags.len() + 1);
+                if let Some(id) = self.session.create_tag(query, color) {
+                    self.session.tag_selection(id);
+                }
+            }
+            PickerEvent::Dismissed | PickerEvent::Pending => {}
+        }
+    }
+
+    fn tag_remove_palette(&mut self, ctx: &egui::Context) {
+        let selected = self.session.selection_count();
+        let tags = self.session.selection_tags();
+        let items: Vec<PickerItem> = tags
+            .iter()
+            .map(|t| PickerItem::with_swatch(&t.name, theme::tag_color32(t.color)))
+            .collect();
+        let subtitle = if tags.is_empty() {
+            "selection has no tags to remove".to_string()
+        } else {
+            format!("remove from {selected} selected")
+        };
+        match self
+            .tag_palette
+            .show(ctx, Some(&subtitle), "filter tags to remove…", &items)
+        {
+            PickerEvent::Picked(i) => self.session.untag_selection(tags[i].id),
+            PickerEvent::Dismissed | PickerEvent::Pending => {}
+        }
+    }
+
+    /// The tag manager: the project's one place to rename, recolor, and delete
+    /// tags. A row per tag — color swatch (click to recolor), an inline name
+    /// field (rename; renaming onto another tag's name merges), photo count, and
+    /// Delete. Every edit is an ordinary undoable command.
+    pub(super) fn tag_manager(&mut self, ctx: &egui::Context) {
+        if !self.show_tag_manager {
+            return;
+        }
+        let tags = self.session.all_tags();
+        let mut open = true;
+        let mut rename: Option<(dcs_app::TagId, String)> = None;
+        let mut recolor: Option<(dcs_app::TagId, dcs_app::Color)> = None;
+        let mut delete: Option<dcs_app::TagId> = None;
+
+        egui::Window::new("Tags")
+            .collapsible(false)
+            .resizable(true)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(540.0);
+                // Buttons in this dialog shouldn't grow/shrink on hover — keep
+                // them geometrically still so the table reads steady.
+                ui.visuals_mut().widgets.hovered.expansion = 0.0;
+                ui.visuals_mut().widgets.active.expansion = 0.0;
+                ui.add_space(2.0);
+                ui.label(
+                    RichText::new(format!(
+                        "{} tag{} · click a swatch to recolor, edit a name to rename (onto an existing name to merge)",
+                        tags.len(),
+                        if tags.len() == 1 { "" } else { "s" },
+                    ))
+                    .monospace()
+                    .size(11.0)
+                    .color(theme::TEXT_DIM),
+                );
+                ui.add_space(8.0);
+                if tags.is_empty() {
+                    ui.label(
+                        RichText::new("No tags yet — add one with T on a selection.")
+                            .monospace()
+                            .color(theme::TEXT_DIM),
+                    );
+                    return;
+                }
+                egui::Grid::new("tag-manager")
+                    .num_columns(4)
+                    .spacing([14.0, 10.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        let head = |ui: &mut Ui, text: &str| {
+                            ui.label(
+                                RichText::new(text)
+                                    .monospace()
+                                    .size(10.0)
+                                    .color(theme::HAIRLINE),
+                            );
+                        };
+                        head(ui, "COLOR");
+                        head(ui, "NAME");
+                        head(ui, "PHOTOS");
+                        head(ui, "");
+                        ui.end_row();
+
+                        for tag in &tags {
+                            if let Some(c) = swatch_menu(ui, theme::tag_color32(tag.color)) {
+                                recolor = Some((tag.id, c));
+                            }
+                            let buf = self
+                                .tag_edits
+                                .entry(tag.id)
+                                .or_insert_with(|| tag.name.clone());
+                            let resp = ui.add_sized(
+                                [260.0, 26.0],
+                                egui::TextEdit::singleline(buf).font(FontId::proportional(14.0)),
+                            );
+                            if resp.lost_focus() && !buf.trim().is_empty() && *buf != tag.name {
+                                rename = Some((tag.id, buf.clone()));
+                            }
+                            let n = self.session.tag_photo_count(tag.id);
+                            ui.label(
+                                RichText::new(format!("{n} photo{}", if n == 1 { "" } else { "s" }))
+                                    .monospace()
+                                    .size(11.0)
+                                    .color(theme::TEXT_DIM),
+                            );
+                            let delete_btn = egui::Button::new(
+                                RichText::new("Delete").color(theme::VERDICT_REJECT),
+                            )
+                            .stroke(egui::Stroke::new(1.0, theme::VERDICT_REJECT));
+                            if ui
+                                .add_sized([90.0, 26.0], delete_btn)
+                                .on_hover_text("Delete this tag and remove it from every photo")
+                                .clicked()
+                            {
+                                delete = Some(tag.id);
+                            }
+                            ui.end_row();
+                        }
+                    });
+            });
+
+        if let Some((id, name)) = rename {
+            self.session.rename_tag(id, name);
+            self.tag_edits.remove(&id);
+        }
+        if let Some((id, color)) = recolor {
+            self.session.set_tag_color(id, color);
+        }
+        if let Some(id) = delete {
+            self.session.delete_tag(id);
+            self.tag_edits.remove(&id);
+        }
+        if !open {
+            self.show_tag_manager = false;
+        }
+        if !self.show_tag_manager {
+            self.tag_edits.clear();
         }
     }
 
@@ -484,6 +710,25 @@ fn progress(done: usize, total: usize) -> f32 {
     } else {
         (done as f32 / total as f32).clamp(0.0, 1.0)
     }
+}
+
+/// A color-swatch button that opens a menu of the curated palette colors.
+/// Returns the chosen color, if any. The tag manager's recolor control.
+fn swatch_menu(ui: &mut Ui, current: egui::Color32) -> Option<dcs_app::Color> {
+    let mut picked = None;
+    ui.menu_button(RichText::new("⬛").color(current).size(16.0), |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for c in dcs_domain::tag::PALETTE {
+                let btn =
+                    egui::Button::new(RichText::new("⬛").color(theme::tag_color32(c)).size(20.0));
+                if ui.add(btn).clicked() {
+                    picked = Some(c);
+                    ui.close();
+                }
+            }
+        });
+    });
+    picked
 }
 
 /// A titled settings block in the export dialog: a heading, the controls

@@ -175,6 +175,7 @@ impl Session {
             state: self.cull.state(photo.id),
             selected: self.sel.is_selected(photo.id),
             missing: photo.missing,
+            tag_colors: self.tags.strip(photo.id),
         })
     }
 

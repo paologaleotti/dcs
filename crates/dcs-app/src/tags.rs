@@ -13,6 +13,10 @@ use dcs_domain::command::TagDelta;
 use dcs_domain::photo::PhotoId;
 use dcs_domain::tag::{Color, Tag, TagId, normalize_name};
 
+/// Most tag-color strips shown on a cell's bottom edge; beyond this the edge
+/// would slice into unreadable slivers, so extra tags are summarized elsewhere.
+pub const MAX_STRIP: usize = 6;
+
 /// The owned tag store. Empty tags keep their definition (only the *render* is
 /// suppressed); a definition leaves only via delete or merge.
 #[derive(Default)]
@@ -78,6 +82,21 @@ impl TagStore {
             .unwrap_or_default()
     }
 
+    /// The per-photo tag index, borrowed for tag-band derivation — lets the pure
+    /// grouping read membership without the caller materializing a copy.
+    pub fn photo_tag_index(&self) -> &HashMap<PhotoId, BTreeSet<TagId>> {
+        &self.photo_tags
+    }
+
+    /// A borrowed `id → name` map for tag-band titles — avoids cloning the tag
+    /// defs on every regroup.
+    pub fn name_map(&self) -> HashMap<TagId, &str> {
+        self.defs
+            .values()
+            .map(|t| (t.id, t.name.as_str()))
+            .collect()
+    }
+
     /// Whether a photo carries a tag.
     pub fn is_assigned(&self, tag: TagId, photo: PhotoId) -> bool {
         self.tag_photos
@@ -91,14 +110,39 @@ impl TagStore {
         self.tag_photos.get(&tag).map_or(0, |s| s.len())
     }
 
-    /// Find a tag whose name matches `name` (trimmed, case-insensitive),
-    /// excluding `except`. Drives the merge-via-rename rule.
-    pub fn find_by_name(&self, name: &str, except: TagId) -> Option<TagId> {
+    /// The strip colors for a photo (its lowest-id tags), up to [`MAX_STRIP`].
+    /// Allocation-free for the grid's per-cell hot path; tags without a
+    /// definition are skipped. The grid divides the cell's bottom edge evenly
+    /// among the present colors.
+    pub fn strip(&self, photo: PhotoId) -> [Option<Color>; MAX_STRIP] {
+        let mut colors = [None; MAX_STRIP];
+        let Some(tags) = self.photo_tags.get(&photo) else {
+            return colors;
+        };
+        for (slot, def) in tags
+            .iter()
+            .filter_map(|t| self.defs.get(t))
+            .take(MAX_STRIP)
+            .enumerate()
+        {
+            colors[slot] = Some(def.color);
+        }
+        colors
+    }
+
+    /// The tag whose name matches `name` (trimmed, case-insensitive), if any.
+    pub fn id_by_name(&self, name: &str) -> Option<TagId> {
         let target = normalize_name(name);
         self.defs
             .values()
-            .find(|t| t.id != except && normalize_name(&t.name) == target)
+            .find(|t| normalize_name(&t.name) == target)
             .map(|t| t.id)
+    }
+
+    /// Like [`Self::id_by_name`] but excluding `except` — drives the
+    /// merge-via-rename rule (a rename onto another tag's name merges).
+    pub fn find_by_name(&self, name: &str, except: TagId) -> Option<TagId> {
+        self.id_by_name(name).filter(|&id| id != except)
     }
 
     /// Forget photos entirely: drop them from every tag. Maintenance for missing
@@ -182,6 +226,24 @@ impl TagStore {
         }]
     }
 
+    /// Recolor a tag, returning the reversible delta. Empty when the tag is
+    /// undefined or already that color.
+    pub fn apply_recolor(&mut self, id: TagId, color: Color) -> Vec<TagDelta> {
+        let Some(def) = self.defs.get_mut(&id) else {
+            return Vec::new();
+        };
+        if def.color == color {
+            return Vec::new();
+        }
+        let before = def.color;
+        def.color = color;
+        vec![TagDelta::Recolored {
+            id,
+            before,
+            after: color,
+        }]
+    }
+
     /// Merge `from` into `into`: every `from` photo gains `into` (if missing)
     /// and loses `from`, then `from`'s definition is removed. The delta order
     /// (assigns + unassigns, then the def removal) inverts cleanly in reverse.
@@ -255,6 +317,11 @@ impl TagStore {
             TagDelta::Renamed { id, after, .. } => {
                 if let Some(def) = self.defs.get_mut(id) {
                     def.name = after.clone();
+                }
+            }
+            TagDelta::Recolored { id, after, .. } => {
+                if let Some(def) = self.defs.get_mut(id) {
+                    def.color = *after;
                 }
             }
         }

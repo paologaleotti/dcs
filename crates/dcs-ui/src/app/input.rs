@@ -8,7 +8,10 @@ impl DcsApp {
     pub(super) fn handle_keys(&mut self, ctx: &egui::Context) {
         // Any picker owns the keyboard while open (it consumes its own keys in
         // `Picker::show`), so the grid stays inert behind it — just bail.
-        if self.palette.is_open() || self.zone_picker.is_open() || self.camera_zone_picker.is_open()
+        if self.palette.is_open()
+            || self.tag_palette.is_open()
+            || self.zone_picker.is_open()
+            || self.camera_zone_picker.is_open()
         {
             return;
         }
@@ -16,6 +19,14 @@ impl DcsApp {
         if self.show_about {
             if ctx.input(|i| i.key_pressed(Key::Escape)) {
                 self.show_about = false;
+            }
+            return;
+        }
+        // The tag manager owns the keyboard while open (it has text fields); Esc
+        // closes it, grid keys inert behind it.
+        if self.show_tag_manager {
+            if ctx.input(|i| i.key_pressed(Key::Escape)) && !ctx.egui_wants_keyboard_input() {
+                self.show_tag_manager = false;
             }
             return;
         }

@@ -129,14 +129,24 @@ Gap ≈ 10% of cell size (min 4 px); burst bricks at half gap.
 ### 2.7 Tags
 
 A tag = `{name, color}`, many-to-many, the only persisted structure; all
-user-created. **Color tags** on `1–9` are built-in tags — one color
-system: every color on the sheet is a tag color. Accept/reject is a
-verdict, not a tag.
+user-created. One color system: every color on the sheet is a tag color,
+auto-assigned from a curated distinct-hue cycle (golden-angle past the
+curated set, so colors stay distinct for any number of tags). Accept/reject
+is a verdict, not a tag.
 
 Hygiene: the palette **never creates silently** (fuzzy matches first,
-explicit "create new…" row last). **Merge = rename-to-existing** (the
-full manager panel is deferred). Empty tags never render. Non-contiguous
-tags render as bottom-edge strips (max 2, `+n` on hover).
+explicit "create new…" row last). **Merge = rename-to-existing.** Empty tags
+never render. Non-contiguous tags render as bottom-edge strips (the full
+cell-width edge, split evenly per tag).
+
+A **simple tag manager** is the one centralized place to manage the
+project's tags: a panel listing every tag (color swatch · name · photo
+count) with inline **rename** (rename-to-existing merges), **recolor**, and
+**delete** (drops the tag and all its assignments) — all ordinary undoable
+commands. Reached from the menu and the command palette. Power affordances
+on group/band headers (`F2` rename, header context menu) complement it but
+are not the primary path; a richer manager (bulk merge UI, reorder) stays
+deferred.
 
 ### 2.8 Grouping axes
 
@@ -446,7 +456,8 @@ feature is testable in the pure core.
 virtualized grid) · entry + progressive import + re-scan +
 missing/unreadable handling + fingerprint identity · time/tag/none
 grouping, smart day, timezone (IANA), derived bursts · explicit sort,
-zoom, bricks, square cells · tags + palette + `1–9` + merge-via-rename ·
+zoom, bricks, square cells · tags + palette + simple tag manager
+(rename/recolor/delete) + merge-via-rename ·
 A/X/unreviewed + AND/OR filters + solo · registry → keys + `Cmd+P` +
 two context menus · gallery + filmstrip + 1:1 · durable undo/redo ·
 `.dcs/` sidecar (project.json + undo.log + cache.sqlite3) with `views`
@@ -457,7 +468,8 @@ reveal-rejected.
 
 GPS axis (data already collected) · move export · named export presets ·
 rename re-link UI via content fingerprint (identity already keyed on it) ·
-tag-manager panel · empty-grid menu · verdict sort · recents.
+advanced tag manager (bulk merge UI, reorder; the simple rename/recolor/delete
+manager ships in v1) · empty-grid menu · verdict sort · recents.
 
 ### Future
 
@@ -520,6 +532,7 @@ tag-manager panel · empty-grid menu · verdict sort · recents.
 | 35 | **`MoveOnBoard` drags coalesce into one undo entry on drop; an aborted/interrupted drag commits nothing — positions roll back to pre-drag, no torn entry** |
 | 36 | **Export = pure planner in `dcs-domain` (`plan_export` → `ExportPlan`) + dumb executor in `dcs-io`; `dcs-app` is the thin trigger. The dialog preview *is* the plan, so "reads true aloud" is structural. `dcs-domain` owns its own error enums; domain failures never leak from io (§6.9, §9)** |
 | 37 | **Cross-platform is first-class (non-negotiable #5): Windows, macOS, Linux all run *well*, not just compile. Paths via `Path`/`PathBuf` only (never string-split on `/`); config/cache under each OS's standard dirs; atomic save + lock-file semantics validated on all three filesystems; primary modifier ⌘ on macOS, Ctrl elsewhere; system timezone + GPU backend (Metal/Vulkan/DX12 via wgpu) work per platform. CI = build + test matrix on all three; a single-platform regression blocks release.** |
+| 38 | **`1–9` color-tag keys dropped (confusing); tags are named, via `T`/`Shift+T`. Tag colors auto-assign from a curated distinct-hue cycle, golden-angle past it (unlimited distinct colors). A **simple tag manager** (list + rename/recolor/delete, undoable) ships in v1 as the centralized place to manage tags — the prior "full manager deferred" line is superseded; only the *advanced* manager (bulk merge UI, reorder) stays v1.1.** |
 
 ---
 

@@ -143,7 +143,7 @@ impl Session {
                 let _ = log.record_undo();
             }
             self.dirty = true;
-            self.rebuild_visible();
+            self.refresh_after_owned_change();
             true
         } else {
             false
@@ -160,7 +160,7 @@ impl Session {
                 let _ = log.record_redo();
             }
             self.dirty = true;
-            self.rebuild_visible();
+            self.refresh_after_owned_change();
             true
         } else {
             false
@@ -186,6 +186,21 @@ impl Session {
     /// export.
     pub fn reveal(&self, path: &Path) {
         dcs_io::reveal::reveal(path);
+    }
+
+    /// Open the OS file manager at the open project folder. No-op with no folder.
+    pub fn reveal_folder(&self) {
+        if let Some(root) = &self.root {
+            self.reveal(root);
+        }
+    }
+
+    /// Reveal the focused photo's file in the OS file manager, selected where the
+    /// platform allows. No-op when nothing is focused.
+    pub fn reveal_focused(&self) {
+        if let Some(photo) = self.focus().and_then(|i| self.photo_at(i)) {
+            dcs_io::reveal::reveal_file(photo.display_path());
+        }
     }
 
     /// Toggle target is decided by the *focused* photo's verdict, then applied

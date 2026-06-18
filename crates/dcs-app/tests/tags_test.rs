@@ -178,6 +178,51 @@ fn find_by_name_is_case_insensitive_and_excludes_self() {
 }
 
 #[test]
+fn strip_returns_colors_in_id_order_and_caps() {
+    let mut s = TagStore::new();
+    let mut tag_ids = Vec::new();
+    for i in 0..8 {
+        let d = s.apply_create(format!("t{i}"), Color::rgb(i, 0, 0));
+        if let dcs_domain::command::TagDelta::Created(t) = &d[0] {
+            tag_ids.push(t.id);
+        }
+    }
+    for &t in &tag_ids {
+        s.apply_assign(t, &[PhotoId(1)]);
+    }
+    let strip = s.strip(PhotoId(1));
+    // Capped at MAX_STRIP, lowest ids first.
+    assert!(strip.iter().all(|c| c.is_some()), "all six slots filled");
+    assert_eq!(strip[0], Some(Color::rgb(0, 0, 0)));
+    assert_eq!(strip[5], Some(Color::rgb(5, 0, 0)), "7th/8th tags dropped");
+}
+
+#[test]
+fn recolor_changes_color_and_reverts() {
+    let (mut s, ids) = store_with(&["a"]);
+    let t = ids[0];
+    let deltas = s.apply_recolor(t, Color::rgb(9, 9, 9));
+    assert_eq!(deltas.len(), 1);
+    assert_eq!(s.def(t).unwrap().color, Color::rgb(9, 9, 9));
+
+    // Same color is a no-op.
+    assert!(s.apply_recolor(t, Color::rgb(9, 9, 9)).is_empty());
+
+    s.revert(&deltas);
+    assert_eq!(
+        s.def(t).unwrap().color,
+        palette_color(1),
+        "revert restores the prior color"
+    );
+}
+
+#[test]
+fn strip_empty_for_untagged_photo() {
+    let s = TagStore::new();
+    assert!(s.strip(PhotoId(1)).iter().all(|c| c.is_none()));
+}
+
+#[test]
 fn color_is_carried_through() {
     let mut s = TagStore::new();
     let deltas = s.apply_create("x".into(), Color::rgb(9, 8, 7));

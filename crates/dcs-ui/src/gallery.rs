@@ -11,12 +11,13 @@
 
 use dcs_app::Session;
 use dcs_domain::cull::AcceptState;
+use dcs_domain::tag::Color;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 
 use crate::grid::{TextureCache, contain_fit, full_uv};
 use crate::theme;
 
-/// Docked info-bar height in points (two compact rows + padding).
+/// Docked info-bar height in points (filename/tags/time, gear/group).
 const INFO_BAR_H: f32 = 48.0;
 /// Filmstrip dock height in points (thumb + padding).
 const STRIP_H: f32 = 84.0;
@@ -161,6 +162,8 @@ struct FrameInfo {
     group: String,
     /// Capture time in the travel (display) zone, or empty when undated.
     time: String,
+    /// The photo's tags as `(color, name)`, drawn as a color dot + name.
+    tags: Vec<(Color, String)>,
 }
 
 /// Gather the info-bar facts for display index `focus`.
@@ -181,6 +184,7 @@ fn frame_info(session: &Session, focus: usize) -> FrameInfo {
             .as_ref()
             .map(|c| format!("{}  (UTC{})", c.adjusted, c.offset))
             .unwrap_or_default(),
+        tags: Vec::new(),
     };
     let Some(photo) = session.photo_at(focus) else {
         return info;
@@ -205,6 +209,13 @@ fn frame_info(session: &Session, focus: usize) -> FrameInfo {
         .chain(photo.meta.exposure_line())
         .collect();
     info.detail = detail.join("  ·  ");
+
+    // Caption tags: color dot + name, drawn on their own row in the info bar.
+    info.tags = session
+        .tags_of(photo.id)
+        .into_iter()
+        .filter_map(|t| session.tag_def(t).map(|def| (def.color, def.name)))
+        .collect();
     info
 }
 
@@ -227,7 +238,7 @@ fn paint_info_bar(ui: &Ui, info: &FrameInfo, rect: Rect) {
     let row1 = rect.top() + rect.height() * 0.34;
     let row2 = rect.top() + rect.height() * 0.70;
 
-    // Top row: filename (bright) → type chip → time (right).
+    // Top row: filename (bright) → type chip → tags → time (right).
     let name = p.text(
         Pos2::new(left, row1),
         Align2::LEFT_CENTER,
@@ -235,16 +246,20 @@ fn paint_info_bar(ui: &Ui, info: &FrameInfo, rect: Rect) {
         FontId::monospace(13.0),
         theme::SELECT_OUTLINE,
     );
-    paint_kind_chip(p, info, Pos2::new(name.right() + 10.0, row1));
+    let chip_right = paint_kind_chip(p, info, Pos2::new(name.right() + 10.0, row1));
+    // Time hugs the right; the tags fill the gap between the chip and it.
+    let mut tag_limit = right;
     if !info.time.is_empty() {
-        p.text(
+        let time = p.text(
             Pos2::new(right, row1),
             Align2::RIGHT_CENTER,
             &info.time,
             FontId::monospace(12.0),
             theme::TEXT_DIM,
         );
+        tag_limit = time.left() - 10.0;
     }
+    paint_caption_tags(p, &info.tags, Pos2::new(chip_right + 12.0, row1), tag_limit);
 
     // Bottom row: gear + exposure (left), group (right) — both dim.
     p.text(
@@ -265,10 +280,50 @@ fn paint_info_bar(ui: &Ui, info: &FrameInfo, rect: Rect) {
     }
 }
 
+/// `tags: ●name ●name …` next to the type chip — a color dot + name per tag,
+/// flowing right and clipped at `limit`. A clear readout of what the photo
+/// carries, without lifting the bar into a third row.
+fn paint_caption_tags(p: &egui::Painter, tags: &[(Color, String)], start: Pos2, limit: f32) {
+    if tags.is_empty() {
+        return;
+    }
+    let font = FontId::monospace(12.0);
+    let label = p.text(
+        start,
+        Align2::LEFT_CENTER,
+        "tags:",
+        font.clone(),
+        theme::TEXT_DIM,
+    );
+    let dot_r = 4.0;
+    let mut x = label.right() + 8.0;
+    for (color, name) in tags {
+        if x + dot_r * 2.0 > limit {
+            break;
+        }
+        p.circle_filled(
+            Pos2::new(x + dot_r, start.y),
+            dot_r,
+            theme::tag_color32(*color),
+        );
+        x += dot_r * 2.0 + 5.0;
+        let name = p.text(
+            Pos2::new(x, start.y),
+            Align2::LEFT_CENTER,
+            name,
+            font.clone(),
+            theme::SELECT_OUTLINE,
+        );
+        x = name.right() + 12.0;
+    }
+}
+
 /// The file-type chip (`RAW+JPEG` / `JPEG` / `RAW`), centered on its left edge at
 /// `anchor`. A RAW-bearing photo gets a brighter outline so the (load-bearing)
 /// "has a RAW" fact reads instantly; grayscale only.
-fn paint_kind_chip(p: &egui::Painter, info: &FrameInfo, anchor: Pos2) {
+/// Draw the type chip at `anchor` (left-center) and return its right edge so the
+/// caller can place the tags that follow.
+fn paint_kind_chip(p: &egui::Painter, info: &FrameInfo, anchor: Pos2) -> f32 {
     let fg = if info.has_raw {
         theme::FOCUS_OUTLINE
     } else {
@@ -281,6 +336,7 @@ fn paint_kind_chip(p: &egui::Painter, info: &FrameInfo, anchor: Pos2) {
     let chip = Rect::from_min_size(Pos2::new(anchor.x, anchor.y - size.y / 2.0), size);
     p.rect_stroke(chip, 2.0, Stroke::new(1.0, fg), StrokeKind::Inside);
     p.galley(Pos2::new(chip.left() + px, chip.top() + py), galley, fg);
+    chip.right()
 }
 
 /// The filmstrip dock: a centered band of the visible order, base thumbs reused
@@ -360,6 +416,7 @@ fn paint_filmstrip(
                 if info.state == AcceptState::Rejected {
                     ui.painter().rect_filled(slot, 0.0, theme::REJECT_DIM);
                 }
+                crate::grid::paint_tag_strips(ui, slot, &info.tag_colors);
                 paint_strip_glyph(ui, slot, info.state);
                 if idx == focus {
                     ui.painter().rect_stroke(

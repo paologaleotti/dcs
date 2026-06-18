@@ -48,6 +48,8 @@ pub enum Command {
     MergeTags { into: TagId, from: TagId },
     /// Delete a tag and all its assignments.
     DeleteTag(TagId),
+    /// Recolor a tag.
+    SetTagColor(TagId, Color),
 }
 
 /// One reversible verdict change: the photo, its verdict before, and after.
@@ -72,6 +74,12 @@ pub enum TagDelta {
         before: String,
         after: String,
     },
+    /// A tag was recolored. Inverse: swap before/after.
+    Recolored {
+        id: TagId,
+        before: Color,
+        after: Color,
+    },
 }
 
 impl TagDelta {
@@ -86,6 +94,11 @@ impl TagDelta {
                 id: *id,
                 before: after.clone(),
                 after: before.clone(),
+            },
+            TagDelta::Recolored { id, before, after } => TagDelta::Recolored {
+                id: *id,
+                before: *after,
+                after: *before,
             },
         }
     }

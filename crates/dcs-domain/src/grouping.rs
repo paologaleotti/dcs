@@ -6,20 +6,22 @@
 //! order; the leftover (`No date`) group is always last. Counts are *not*
 //! stored — they're derived after filtering, by the caller.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use time::{Date, OffsetDateTime, PrimitiveDateTime, UtcOffset};
 use time_tz::Tz;
 
-use crate::photo::Photo;
+use crate::photo::{Photo, PhotoId};
 use crate::sort::{self, Sort, SortDir};
+use crate::tag::TagId;
 use crate::timezone;
 
-/// The grouping axis. `Gps`/`Tag` are deferred to later slices; the enum
-/// stays small so the active set is exactly what's wired.
+/// The grouping axis. `Gps` is deferred; the enum stays small so the active set
+/// is exactly what's wired.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Axis {
     Time(TimeGranularity),
+    Tag,
     None,
 }
 
@@ -39,7 +41,10 @@ pub enum TimeGranularity {
 pub enum GroupKind {
     /// A derived time bucket.
     Time,
-    /// The `No date` tail — undated photos, always last.
+    /// A tag band — the header takes the tag's color.
+    Tag(TagId),
+    /// The leftover tail — undated (`No date`) or untagged (`Untagged`) photos,
+    /// always last.
     Leftover,
     /// The single group when the axis is `None`.
     Stream,
@@ -74,7 +79,70 @@ pub fn group(
             display_zone,
             sort,
         ),
+        // Tag bands derive from owned assignments, which this pure photo-only
+        // entry never sees; the app routes the tag axis to `tag_groups` instead.
+        Axis::Tag => unreachable!("tag grouping is derived via grouping::tag_groups"),
     }
+}
+
+/// Segment `photos` into tag bands: one band per non-empty tag, ordered by its
+/// earliest member (in sorted order), with multi-tagged photos projected into
+/// every band they belong to. Untagged photos form the leftover band, last.
+///
+/// Membership and titles are borrowed, not copied — `photo_tags` is the owned
+/// store's per-photo index (keyed by `PhotoId`), `names` an `id → title` map —
+/// so a regroup over a large pool allocates only the bands it builds, and the
+/// core stays pure (the store lives in the app). A tag missing a name is
+/// skipped.
+pub fn tag_groups(
+    photos: &[Photo],
+    photo_tags: &HashMap<PhotoId, BTreeSet<TagId>>,
+    names: &HashMap<TagId, &str>,
+    sort: Sort,
+) -> Vec<DerivedGroup> {
+    let order = sort::order(photos, sort);
+    let mut bands: HashMap<TagId, Vec<usize>> = HashMap::new();
+    let mut band_order: Vec<TagId> = Vec::new();
+    let mut untagged: Vec<usize> = Vec::new();
+    for &i in &order {
+        let tags = photo_tags.get(&photos[i].id);
+        if tags.is_none_or(|s| s.is_empty()) {
+            untagged.push(i);
+            continue;
+        }
+        for &tag in tags.into_iter().flatten() {
+            // First time a tag is seen (in sorted order) fixes its band's rank,
+            // so bands order by earliest member.
+            bands
+                .entry(tag)
+                .or_insert_with(|| {
+                    band_order.push(tag);
+                    Vec::new()
+                })
+                .push(i);
+        }
+    }
+
+    let mut groups: Vec<DerivedGroup> = band_order
+        .into_iter()
+        .filter_map(|tag| {
+            let title = names.get(&tag)?.to_string();
+            Some(DerivedGroup {
+                kind: GroupKind::Tag(tag),
+                title,
+                members: bands.remove(&tag).unwrap_or_default(),
+            })
+        })
+        .collect();
+
+    if !untagged.is_empty() {
+        groups.push(DerivedGroup {
+            kind: GroupKind::Leftover,
+            title: "Untagged".to_string(),
+            members: untagged,
+        });
+    }
+    groups
 }
 
 /// Resolve `Auto` against the data: one calendar day (in zone) → `SmartDay`,

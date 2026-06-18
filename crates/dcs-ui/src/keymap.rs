@@ -62,6 +62,14 @@ const fn cmd(key: Key) -> Chord {
     }
 }
 
+const fn shift(key: Key) -> Chord {
+    Chord {
+        key,
+        cmd: false,
+        shift: true,
+    }
+}
+
 const fn cmd_shift(key: Key) -> Chord {
     Chord {
         key,
@@ -75,6 +83,8 @@ const fn cmd_shift(key: Key) -> Chord {
 const KEYMAP: &[(AppAction, Chord)] = &[
     (AppAction::Accept, plain(Key::A)),
     (AppAction::Reject, plain(Key::X)),
+    (AppAction::OpenTagPalette, plain(Key::T)),
+    (AppAction::OpenUntagPalette, shift(Key::T)),
     (AppAction::ShowMetadata, plain(Key::I)),
     (AppAction::Undo, cmd(Key::Z)),
     (AppAction::Redo, cmd_shift(Key::Z)),
