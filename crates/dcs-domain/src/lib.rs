@@ -15,5 +15,6 @@ pub mod grouping;
 pub mod pairing;
 pub mod photo;
 pub mod sort;
+pub mod tag;
 pub mod thumb;
 pub mod timezone;

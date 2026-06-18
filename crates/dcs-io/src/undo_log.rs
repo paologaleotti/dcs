@@ -8,28 +8,29 @@
 //! redo stacks — its records are never re-applied to state, so the two stores
 //! can't double-count.
 //!
-//! Framing is JSON-lines: one `LogRecord` per line. A `Do` carries the verdict
-//! deltas; `Undo`/`Redo` are one-line cursor moves. Folding the records in
-//! order reproduces the stacks exactly:
-//!   - `Do`   → push to undo, clear redo
-//!   - `Undo` → move the top of undo onto redo
-//!   - `Redo` → move the top of redo onto undo
+//! Framing is JSON-lines: one `LogRecord` per line. `Do`/`DoTag` carry a
+//! command's deltas (verdict or tag); `Undo`/`Redo` are one-line cursor moves.
+//! Folding the records in order reproduces the stacks exactly:
+//!   - `Do`/`DoTag` → push to undo, clear redo
+//!   - `Undo`       → move the top of undo onto redo
+//!   - `Redo`       → move the top of redo onto undo
+//!
+//! **Append-only framing.** `Do` (verdict) predates tags; it is kept verbatim so
+//! existing logs still replay. `DoTag` is the additive tag record.
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use dcs_domain::cull::AcceptState;
-use dcs_domain::photo::PhotoId;
+use dcs_domain::command::TagDelta;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub use dcs_domain::command::{Patch, VerdictChange};
 
 /// Undo entries kept after compaction. The live in-RAM stack is capped
 /// separately; this bounds the on-disk log so it can't grow without end.
 pub const DEFAULT_ENTRY_CAP: usize = 1000;
-
-/// One reversible verdict change: the photo, its verdict before, and after.
-pub type VerdictChange = (PhotoId, AcceptState, AcceptState);
 
 /// Errors appending to or reading the log. History only — never fatal to state.
 #[derive(Debug, Error)]
@@ -40,18 +41,25 @@ pub enum LogError {
     Json(#[from] serde_json::Error),
 }
 
-/// The undo + redo stacks reconstructed from the log. Each entry is the delta
-/// set of one command; the last element of each vec is the stack top.
+/// The undo + redo stacks reconstructed from the log. Each entry is one
+/// command's reversible [`Patch`]; the last element of each vec is the stack top.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Stacks {
-    pub undo: Vec<Vec<VerdictChange>>,
-    pub redo: Vec<Vec<VerdictChange>>,
+    pub undo: Vec<Patch>,
+    pub redo: Vec<Patch>,
 }
 
 /// A single append-only log line.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum LogRecord {
-    Do { changes: Vec<VerdictChange> },
+    /// Verdict deltas (predates tags; kept for back-compat replay).
+    Do {
+        changes: Vec<VerdictChange>,
+    },
+    /// Tag deltas.
+    DoTag {
+        deltas: Vec<TagDelta>,
+    },
     Undo,
     Redo,
 }
@@ -68,11 +76,9 @@ impl UndoLog {
         Ok(UndoLog { file })
     }
 
-    /// Record one applied command's deltas (and the implied redo-clear).
-    pub fn record_do(&mut self, changes: &[VerdictChange]) -> Result<(), LogError> {
-        self.append(&LogRecord::Do {
-            changes: changes.to_vec(),
-        })
+    /// Record one applied command's patch (and the implied redo-clear).
+    pub fn record_patch(&mut self, patch: &Patch) -> Result<(), LogError> {
+        self.append(&record_of(patch))
     }
 
     /// Record an undo cursor move.
@@ -114,7 +120,11 @@ pub fn load(path: &Path) -> Result<Stacks, LogError> {
         };
         match record {
             LogRecord::Do { changes } => {
-                stacks.undo.push(changes);
+                stacks.undo.push(Patch::Verdict(changes));
+                stacks.redo.clear();
+            }
+            LogRecord::DoTag { deltas } => {
+                stacks.undo.push(Patch::Tag(deltas));
                 stacks.redo.clear();
             }
             LogRecord::Undo => {
@@ -142,21 +152,11 @@ pub fn load(path: &Path) -> Result<Stacks, LogError> {
 pub fn compact(path: &Path, stacks: &Stacks, cap: usize) -> Result<(), LogError> {
     let undo = trim_oldest(&stacks.undo, cap);
     let mut out = Vec::new();
-    for entry in undo {
-        write_record(
-            &mut out,
-            &LogRecord::Do {
-                changes: entry.clone(),
-            },
-        )?;
+    for patch in undo {
+        write_record(&mut out, &record_of(patch))?;
     }
-    for entry in stacks.redo.iter().rev() {
-        write_record(
-            &mut out,
-            &LogRecord::Do {
-                changes: entry.clone(),
-            },
-        )?;
+    for patch in stacks.redo.iter().rev() {
+        write_record(&mut out, &record_of(patch))?;
     }
     for _ in 0..stacks.redo.len() {
         write_record(&mut out, &LogRecord::Undo)?;
@@ -164,8 +164,20 @@ pub fn compact(path: &Path, stacks: &Stacks, cap: usize) -> Result<(), LogError>
     atomic_write(path, &out)
 }
 
+/// The log record for one patch: `Do` for verdict, `DoTag` for tag.
+fn record_of(patch: &Patch) -> LogRecord {
+    match patch {
+        Patch::Verdict(changes) => LogRecord::Do {
+            changes: changes.clone(),
+        },
+        Patch::Tag(deltas) => LogRecord::DoTag {
+            deltas: deltas.clone(),
+        },
+    }
+}
+
 /// The newest `cap` entries of a stack (drop the oldest when over the cap).
-fn trim_oldest(stack: &[Vec<VerdictChange>], cap: usize) -> &[Vec<VerdictChange>] {
+fn trim_oldest(stack: &[Patch], cap: usize) -> &[Patch] {
     if stack.len() > cap {
         &stack[stack.len() - cap..]
     } else {

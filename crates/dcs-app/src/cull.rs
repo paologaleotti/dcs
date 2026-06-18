@@ -1,20 +1,14 @@
-//! Owned verdict store plus the in-memory undo/redo stacks.
-//!
-//! Verdict is owned, not derived: every change is a `Command`, every change is
-//! reversible. Dispatch dedups the `PhotoId` set to unique photos, captures
-//! each photo's prior verdict, applies the change, and pushes one reversible
-//! `UndoEntry`. This phase keeps the stacks in RAM; the durable,
-//! compacted `undo.log` is the next phase.
+//! Owned verdict store. Verdict is owned, not derived: every change is a
+//! `Command`, every change reversible. This module is now just the map of
+//! `PhotoId → AcceptState` plus the primitives to apply and reverse a verdict
+//! delta; the unified undo/redo timeline (verdict *and* tag mutations) lives in
+//! [`crate::history::History`], so one stack reverses anything.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
-use dcs_domain::command::Command;
+use dcs_domain::command::VerdictChange;
 use dcs_domain::cull::AcceptState;
 use dcs_domain::photo::PhotoId;
-
-/// Undo entries retained in memory before the oldest is dropped. Only bounds
-/// RAM this phase; the durable log is capped and compacted separately.
-const UNDO_CAP: usize = 1000;
 
 /// Accepted/rejected tallies for the status bar. Unreviewed is derived
 /// by the caller from the pool size — absent photos are `Unreviewed`.
@@ -24,80 +18,33 @@ pub struct VerdictCounts {
     pub rejected: usize,
 }
 
-/// A reversible patch: for each affected photo, the verdict before and after.
-/// `undo` restores *before*, `redo` restores *after*. Command-agnostic enough
-/// for verdicts; generalize when tag mutations arrive.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UndoEntry {
-    changes: Vec<(PhotoId, AcceptState, AcceptState)>,
-}
-
-impl UndoEntry {
-    /// Reconstruct an entry from persisted deltas (folded from `undo.log`).
-    pub fn from_changes(changes: Vec<(PhotoId, AcceptState, AcceptState)>) -> Self {
-        UndoEntry { changes }
-    }
-
-    /// The (photo, before, after) deltas — what the durable log records.
-    pub fn changes(&self) -> &[(PhotoId, AcceptState, AcceptState)] {
-        &self.changes
-    }
-
-    /// Photos this entry touches — one per unique photo, never a duplicate.
-    pub fn len(&self) -> usize {
-        self.changes.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.changes.is_empty()
-    }
-}
-
-/// The owned verdict store and its undo/redo history.
-///
-/// Keyed by `PhotoId`: identity is reconciled to the content
-/// fingerprint by the persistence layer at load/save, not here, so commands and
-/// the durable `undo.log` keep a stable key while verdicts still survive a
-/// rename-in-place.
+/// The owned verdict store, keyed by `PhotoId`. Identity is reconciled to the
+/// content fingerprint by the persistence layer at load/save, not here, so the
+/// key stays stable while verdicts survive a rename-in-place. Absent ==
+/// `Unreviewed`, so the map only ever holds reviewed photos.
+#[derive(Default)]
 pub struct Cull {
     verdicts: HashMap<PhotoId, AcceptState>,
-    undo: VecDeque<UndoEntry>,
-    redo: Vec<UndoEntry>,
 }
 
 impl Cull {
     pub fn new() -> Self {
-        Cull {
-            verdicts: HashMap::new(),
-            undo: VecDeque::new(),
-            redo: Vec::new(),
-        }
+        Cull::default()
     }
 
-    /// Rebuild the store from persisted state on reopen: `verdicts` from
-    /// `project.json` (the authoritative state) and the undo/redo stacks folded
-    /// from `undo.log`. The stacks are *not* replayed onto state — state already
-    /// reflects them. Absent/`Unreviewed` verdicts are not stored, so
-    /// the map stays small.
-    pub fn from_state(
-        verdicts: impl IntoIterator<Item = (PhotoId, AcceptState)>,
-        undo: Vec<UndoEntry>,
-        redo: Vec<UndoEntry>,
-    ) -> Self {
+    /// Rebuild the store from persisted `project.json` verdicts on reopen.
+    /// `Unreviewed` entries are dropped so the map stays small.
+    pub fn from_verdicts(verdicts: impl IntoIterator<Item = (PhotoId, AcceptState)>) -> Self {
         let mut map = HashMap::new();
         for (id, state) in verdicts {
             if state != AcceptState::Unreviewed {
                 map.insert(id, state);
             }
         }
-        Cull {
-            verdicts: map,
-            undo: undo.into(),
-            redo,
-        }
+        Cull { verdicts: map }
     }
 
-    /// Verdict for a photo; absent = `Unreviewed`, so the map stays small.
+    /// Verdict for a photo; absent = `Unreviewed`.
     pub fn state(&self, id: PhotoId) -> AcceptState {
         self.verdicts.get(&id).copied().unwrap_or_default()
     }
@@ -115,101 +62,16 @@ impl Cull {
         c
     }
 
-    pub fn can_undo(&self) -> bool {
-        !self.undo.is_empty()
-    }
-
-    pub fn can_redo(&self) -> bool {
-        !self.redo.is_empty()
-    }
-
-    /// Undo / redo stack depths (diagnostics + tests).
-    pub fn undo_depth(&self) -> usize {
-        self.undo.len()
-    }
-
-    pub fn redo_depth(&self) -> usize {
-        self.redo.len()
-    }
-
-    /// Undo entries oldest→newest, as delta vecs — what the log compacts to.
-    pub fn undo_entries(&self) -> Vec<Vec<(PhotoId, AcceptState, AcceptState)>> {
-        self.undo.iter().map(|e| e.changes.clone()).collect()
-    }
-
-    /// Redo entries oldest→newest (bottom→top of the stack).
-    pub fn redo_entries(&self) -> Vec<Vec<(PhotoId, AcceptState, AcceptState)>> {
-        self.redo.iter().map(|e| e.changes.clone()).collect()
-    }
-
-    /// Apply a command, recording one reversible entry. Duplicate `PhotoId`s
-    /// collapse to unique photos first; a change that moves nothing
-    /// records no entry (and so cannot be "undone" into a surprise). Returns the
-    /// recorded deltas so the caller can mirror them into the durable log, or
-    /// `None` when nothing moved.
-    pub fn dispatch(
-        &mut self,
-        command: Command,
-    ) -> Option<Vec<(PhotoId, AcceptState, AcceptState)>> {
-        let Command::SetState(ids, target) = command;
-        let changes = self.apply_set_state(&ids, target);
-        if changes.is_empty() {
-            return None;
-        }
-        self.redo.clear();
-        let recorded = changes.clone();
-        self.push_undo(UndoEntry { changes });
-        Some(recorded)
-    }
-
-    /// Reverse the most recent entry, moving it onto the redo stack. Returns
-    /// whether anything was undone.
-    pub fn undo(&mut self) -> bool {
-        let Some(entry) = self.undo.pop_back() else {
-            return false;
-        };
-        for &(id, before, _after) in &entry.changes {
-            self.set_raw(id, before);
-        }
-        self.redo.push(entry);
-        true
-    }
-
-    /// Re-apply the most recently undone entry. Returns whether anything ran.
-    pub fn redo(&mut self) -> bool {
-        let Some(entry) = self.redo.pop() else {
-            return false;
-        };
-        for &(id, _before, after) in &entry.changes {
-            self.set_raw(id, after);
-        }
-        self.undo.push_back(entry);
-        true
-    }
-
-    /// Forget photos entirely: drop their verdicts and scrub them from the
-    /// undo/redo stacks, removing any entry left empty. Used when the user
-    /// removes missing files; a maintenance op, not itself undoable.
+    /// Forget photos entirely: drop their verdicts. Used when the user prunes
+    /// missing files; scrubbing the undo timeline is the history's job.
     pub fn forget(&mut self, ids: &HashSet<PhotoId>) {
-        if ids.is_empty() {
-            return;
-        }
         self.verdicts.retain(|id, _| !ids.contains(id));
-        for entry in &mut self.undo {
-            entry.changes.retain(|(id, _, _)| !ids.contains(id));
-        }
-        self.undo.retain(|e| !e.changes.is_empty());
-        for entry in &mut self.redo {
-            entry.changes.retain(|(id, _, _)| !ids.contains(id));
-        }
-        self.redo.retain(|e| !e.changes.is_empty());
     }
 
-    fn apply_set_state(
-        &mut self,
-        ids: &[PhotoId],
-        target: AcceptState,
-    ) -> Vec<(PhotoId, AcceptState, AcceptState)> {
+    /// Apply a `SetState` over `ids` to `target`, returning the reversible
+    /// deltas — deduped to unique photos, with no-op photos omitted. An
+    /// empty result means nothing moved.
+    pub fn apply_set_state(&mut self, ids: &[PhotoId], target: AcceptState) -> Vec<VerdictChange> {
         let mut seen = HashSet::new();
         let mut changes = Vec::new();
         for &id in ids {
@@ -226,24 +88,25 @@ impl Cull {
         changes
     }
 
+    /// Re-apply a recorded delta set (redo): each photo to its *after* state.
+    pub fn apply(&mut self, changes: &[VerdictChange]) {
+        for &(id, _before, after) in changes {
+            self.set_raw(id, after);
+        }
+    }
+
+    /// Reverse a recorded delta set (undo): each photo to its *before* state.
+    pub fn revert(&mut self, changes: &[VerdictChange]) {
+        for &(id, before, _after) in changes {
+            self.set_raw(id, before);
+        }
+    }
+
     fn set_raw(&mut self, id: PhotoId, state: AcceptState) {
         if state == AcceptState::Unreviewed {
             self.verdicts.remove(&id); // absent == Unreviewed, keep the map small
         } else {
             self.verdicts.insert(id, state);
         }
-    }
-
-    fn push_undo(&mut self, entry: UndoEntry) {
-        self.undo.push_back(entry);
-        if self.undo.len() > UNDO_CAP {
-            self.undo.pop_front(); // drop the oldest; the durable log keeps real history
-        }
-    }
-}
-
-impl Default for Cull {
-    fn default() -> Self {
-        Self::new()
     }
 }

@@ -17,6 +17,7 @@ mod display;
 mod edit;
 mod layout;
 mod store;
+mod tag;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -39,9 +40,11 @@ use dcs_io::undo_log::{self, UndoLog};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::cull::{Cull, UndoEntry};
+use crate::cull::Cull;
 use crate::export::ExportStatus;
+use crate::history::History;
 use crate::selection::Selection;
+use crate::tags::TagStore;
 use crate::thumb_cache::ThumbCache;
 use crate::util::decode_key;
 
@@ -179,8 +182,12 @@ pub struct Session {
     /// `Auto` resolved against the current data, cached at regroup so the toolbar
     /// label doesn't re-scan the pool (and re-read the system zone) every frame.
     resolved_gran: Option<TimeGranularity>,
-    /// Owned verdicts + undo/redo. Reset per folder (ids restart).
+    /// Owned verdict store. Reset per folder (ids restart).
     cull: Cull,
+    /// Owned tag store: defs + photo↔tag assignments. Reset per folder.
+    tags: TagStore,
+    /// Unified durable undo/redo timeline over verdict + tag mutations.
+    history: History,
     /// Ephemeral focus cursor + selection.
     sel: Selection,
     filter: VerdictFilter,
@@ -263,6 +270,8 @@ impl Session {
             sort: Sort::default(),
             resolved_gran: None,
             cull: Cull::new(),
+            tags: TagStore::new(),
+            history: History::new(),
             sel: Selection::new(),
             filter: VerdictFilter::All,
             scan: None,
@@ -342,7 +351,9 @@ impl Session {
         // builder and an empty Cull.
         let snapshot = self.store.load(&sidecar).ok().flatten();
         self.builder = seed_builder(&snapshot);
-        self.cull = seed_cull(&snapshot, &sidecar);
+        self.cull = seed_cull(&snapshot);
+        self.tags = seed_tags(&snapshot);
+        self.history = seed_history(&snapshot, &sidecar);
         let (views, config, records) = match snapshot {
             Some(s) => (s.views, s.config, s.photos),
             None => (default_views(), ProjectConfig::default(), Vec::new()),
@@ -444,24 +455,32 @@ fn seed_builder(snapshot: &Option<ProjectSnapshot>) -> PoolBuilder {
     }
 }
 
-/// Rebuild the verdict store from `project.json` (state) plus `undo.log`
-/// (stacks, folded not replayed). Empty when there's no saved project.
-fn seed_cull(snapshot: &Option<ProjectSnapshot>, sidecar: &Path) -> Cull {
-    let Some(snapshot) = snapshot else {
-        return Cull::new();
-    };
+/// Rebuild the verdict store from `project.json` (authoritative state). Empty
+/// when there's no saved project.
+fn seed_cull(snapshot: &Option<ProjectSnapshot>) -> Cull {
+    match snapshot {
+        Some(s) => Cull::from_verdicts(s.verdicts()),
+        None => Cull::new(),
+    }
+}
+
+/// Rebuild the tag store from `project.json`: defs + per-photo assignments + the
+/// id counter. Empty when there's no saved project.
+fn seed_tags(snapshot: &Option<ProjectSnapshot>) -> TagStore {
+    match snapshot {
+        Some(s) => TagStore::from_state(s.tag_defs(), s.tag_assignments(), s.next_tag_id),
+        None => TagStore::new(),
+    }
+}
+
+/// Rebuild the unified undo timeline from `undo.log` (folded, never replayed —
+/// `project.json` already reflects it). Empty when there's no saved project.
+fn seed_history(snapshot: &Option<ProjectSnapshot>, sidecar: &Path) -> History {
+    if snapshot.is_none() {
+        return History::new();
+    }
     let stacks = undo_log::load(&sidecar.join(UNDO_LOG_FILE)).unwrap_or_default();
-    let undo = stacks
-        .undo
-        .into_iter()
-        .map(UndoEntry::from_changes)
-        .collect();
-    let redo = stacks
-        .redo
-        .into_iter()
-        .map(UndoEntry::from_changes)
-        .collect();
-    Cull::from_state(snapshot.verdicts(), undo, redo)
+    History::from_stacks(stacks.undo, stacks.redo)
 }
 
 /// The default views array for a fresh project: one Grid view.

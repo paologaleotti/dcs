@@ -1,13 +1,32 @@
+use dcs_domain::command::{Patch, TagDelta};
 use dcs_domain::cull::AcceptState;
 use dcs_domain::photo::PhotoId;
+use dcs_domain::tag::{Color, Tag, TagId};
 use dcs_io::undo_log::{self, Stacks, UndoLog, VerdictChange};
 
 fn chg(id: u32, before: AcceptState, after: AcceptState) -> VerdictChange {
     (PhotoId(id), before, after)
 }
 
-fn entry(id: u32) -> Vec<VerdictChange> {
-    vec![chg(id, AcceptState::Unreviewed, AcceptState::Accepted)]
+/// A verdict patch (one accepted photo).
+fn entry(id: u32) -> Patch {
+    Patch::Verdict(vec![chg(
+        id,
+        AcceptState::Unreviewed,
+        AcceptState::Accepted,
+    )])
+}
+
+/// A tag patch (create + assign), exercising the `DoTag` record path.
+fn tag_entry(tag: u32, photo: u32) -> Patch {
+    Patch::Tag(vec![
+        TagDelta::Created(Tag {
+            id: TagId(tag),
+            name: format!("t{tag}"),
+            color: Color::rgb(1, 2, 3),
+        }),
+        TagDelta::Assigned(TagId(tag), PhotoId(photo)),
+    ])
 }
 
 fn log_path() -> std::path::PathBuf {
@@ -33,8 +52,8 @@ fn missing_log_folds_to_empty_stacks() {
 fn append_then_fold_reconstructs_undo_and_redo() {
     let path = log_path();
     let mut log = UndoLog::open(&path).unwrap();
-    log.record_do(&entry(1)).unwrap();
-    log.record_do(&entry(2)).unwrap();
+    log.record_patch(&entry(1)).unwrap();
+    log.record_patch(&entry(2)).unwrap();
     log.record_undo().unwrap();
     drop(log);
 
@@ -44,12 +63,26 @@ fn append_then_fold_reconstructs_undo_and_redo() {
 }
 
 #[test]
+fn verdict_and_tag_patches_interleave_in_one_timeline() {
+    let path = log_path();
+    let mut log = UndoLog::open(&path).unwrap();
+    log.record_patch(&entry(1)).unwrap();
+    log.record_patch(&tag_entry(5, 1)).unwrap();
+    log.record_undo().unwrap(); // tag entry → redo
+    drop(log);
+
+    let stacks = undo_log::load(&path).unwrap();
+    assert_eq!(stacks.undo, vec![entry(1)], "verdict entry remains");
+    assert_eq!(stacks.redo, vec![tag_entry(5, 1)], "tag entry redoable");
+}
+
+#[test]
 fn a_new_do_clears_the_redo_stack() {
     let path = log_path();
     let mut log = UndoLog::open(&path).unwrap();
-    log.record_do(&entry(1)).unwrap();
+    log.record_patch(&entry(1)).unwrap();
     log.record_undo().unwrap(); // redo = [1]
-    log.record_do(&entry(2)).unwrap(); // a fresh action drops the redo branch
+    log.record_patch(&entry(2)).unwrap(); // a fresh action drops the redo branch
     drop(log);
 
     let stacks = undo_log::load(&path).unwrap();
@@ -61,8 +94,8 @@ fn a_new_do_clears_the_redo_stack() {
 fn compaction_round_trips_both_stacks() {
     let path = log_path();
     let stacks = Stacks {
-        undo: vec![entry(1), entry(2), entry(3)],
-        redo: vec![entry(8), entry(9)],
+        undo: vec![entry(1), tag_entry(2, 2), entry(3)],
+        redo: vec![entry(8), tag_entry(9, 9)],
     };
     undo_log::compact(&path, &stacks, 100).unwrap();
     assert_eq!(undo_log::load(&path).unwrap(), stacks);
@@ -94,7 +127,7 @@ fn appending_after_compaction_keeps_folding_correctly() {
     undo_log::compact(&path, &start, 100).unwrap();
 
     let mut log = UndoLog::open(&path).unwrap();
-    log.record_do(&entry(2)).unwrap();
+    log.record_patch(&entry(2)).unwrap();
     drop(log);
 
     let stacks = undo_log::load(&path).unwrap();
@@ -105,7 +138,7 @@ fn appending_after_compaction_keeps_folding_correctly() {
 fn a_torn_trailing_line_is_ignored_not_fatal() {
     let path = log_path();
     let mut log = UndoLog::open(&path).unwrap();
-    log.record_do(&entry(1)).unwrap();
+    log.record_patch(&entry(1)).unwrap();
     drop(log);
     // Simulate a crash mid-append: a partial JSON line with no newline.
     use std::io::Write;

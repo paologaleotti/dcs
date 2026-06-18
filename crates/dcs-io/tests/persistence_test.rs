@@ -1,6 +1,7 @@
 use dcs_domain::cull::AcceptState;
 use dcs_domain::fingerprint::ContentFingerprint;
 use dcs_domain::photo::PhotoId;
+use dcs_domain::tag::{Color, Tag, TagId};
 use dcs_io::persistence::{
     JsonProjectStore, PersistError, PhotoRecord, ProjectConfig, ProjectSnapshot, ProjectStore,
 };
@@ -14,6 +15,7 @@ fn rec(id: u32, fp_seed: u8, verdict: AcceptState, jpeg: Option<&str>) -> PhotoR
         id: PhotoId(id),
         fingerprint: fp(fp_seed),
         verdict,
+        tags: Vec::new(),
         jpeg: jpeg.map(std::path::PathBuf::from),
         raw: None,
     }
@@ -27,6 +29,8 @@ fn snapshot() -> ProjectSnapshot {
             rec(2, 3, AcceptState::Unreviewed, Some("c.jpg")),
         ],
         next_id: 3,
+        tags: Vec::new(),
+        next_tag_id: 0,
         views: vec![serde_json::json!({ "kind": "Grid", "settings": { "zoom": 4 } })],
         config: ProjectConfig {
             shoot_zone: Some("Europe/Rome".to_string()),
@@ -44,6 +48,41 @@ fn round_trips_through_disk() {
     store.save(&dir, &original).unwrap();
     let loaded = store.load(&dir).unwrap().unwrap();
     assert_eq!(loaded, original);
+}
+
+#[test]
+fn tags_and_assignments_round_trip() {
+    let dir = tempdir();
+    let store = JsonProjectStore;
+    let mut snap = snapshot();
+    snap.tags = vec![
+        Tag {
+            id: TagId(0),
+            name: "temples".into(),
+            color: Color::rgb(0xE5, 0x4B, 0x4B),
+        },
+        Tag {
+            id: TagId(1),
+            name: "shrines".into(),
+            color: Color::rgb(0x4B, 0x8F, 0xE5),
+        },
+    ];
+    snap.next_tag_id = 2;
+    snap.photos[0].tags = vec![TagId(0), TagId(1)];
+    snap.photos[1].tags = vec![TagId(1)];
+
+    store.save(&dir, &snap).unwrap();
+    let loaded = store.load(&dir).unwrap().unwrap();
+    assert_eq!(
+        loaded, snap,
+        "tag defs + per-photo assignments survive disk"
+    );
+    assert_eq!(loaded.tag_defs().len(), 2);
+    assert_eq!(
+        loaded.tag_assignments().len(),
+        2,
+        "only tagged photos listed"
+    );
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use dcs_domain::command::Command;
+use dcs_domain::command::{Command, Patch};
 use dcs_domain::cull::AcceptState;
 use dcs_domain::photo::PhotoId;
 
@@ -42,11 +42,11 @@ impl Session {
     }
 
     pub fn can_undo(&self) -> bool {
-        self.cull.can_undo()
+        self.history.can_undo()
     }
 
     pub fn can_redo(&self) -> bool {
-        self.cull.can_redo()
+        self.history.can_redo()
     }
 
     /// The cover cell of a visible group: its first accepted member, else its
@@ -133,12 +133,12 @@ impl Session {
         self.toggle_verdict(AcceptState::Rejected);
     }
 
-    /// `Ctrl+Z`: undo the last verdict change.
+    /// `Ctrl+Z`: undo the last mutation (verdict or tag).
     pub fn undo(&mut self) -> bool {
         if self.read_only {
             return false;
         }
-        if self.cull.undo() {
+        if self.history.undo(&mut self.cull, &mut self.tags) {
             if let Some(log) = &mut self.log {
                 let _ = log.record_undo();
             }
@@ -155,7 +155,7 @@ impl Session {
         if self.read_only {
             return false;
         }
-        if self.cull.redo() {
+        if self.history.redo(&mut self.cull, &mut self.tags) {
             if let Some(log) = &mut self.log {
                 let _ = log.record_redo();
             }
@@ -210,12 +210,25 @@ impl Session {
         } else {
             on
         };
-        if let Some(changes) = self.cull.dispatch(Command::SetState(targets, target)) {
-            if let Some(log) = &mut self.log {
-                let _ = log.record_do(&changes);
-            }
-            self.dirty = true;
-        }
+        self.dispatch(Command::SetState(targets, target));
         self.rebuild_visible();
+    }
+
+    /// Apply one command through the unified undo timeline and mirror its patch
+    /// into the durable log. Routes verdict and tag mutations alike; a no-op
+    /// command records nothing. Returns the recorded patch (the caller may need
+    /// the allocated tag id), or `None` when nothing moved or we're read-only.
+    pub(crate) fn dispatch(&mut self, command: Command) -> Option<Patch> {
+        if self.read_only {
+            return None;
+        }
+        let patch = self
+            .history
+            .dispatch(command, &mut self.cull, &mut self.tags)?;
+        if let Some(log) = &mut self.log {
+            let _ = log.record_patch(&patch);
+        }
+        self.dirty = true;
+        Some(patch)
     }
 }

@@ -7,9 +7,11 @@
 
 pub mod cull;
 pub mod export;
+pub mod history;
 pub mod registry;
 pub mod selection;
 pub mod session;
+pub mod tags;
 pub mod thumb_cache;
 mod util;
 
@@ -28,3 +30,4 @@ pub use dcs_domain::export::{
 };
 pub use dcs_domain::grouping::{Axis, TimeGranularity};
 pub use dcs_domain::sort::{Sort, SortDir, SortKey};
+pub use dcs_domain::tag::{Color, Tag, TagId};

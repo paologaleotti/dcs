@@ -40,10 +40,8 @@ impl Session {
         let sidecar = self.sidecar.clone().ok_or(SaveError::NoFolder)?;
         let snapshot = self.build_snapshot();
         self.store.save(&sidecar, &snapshot)?;
-        let stacks = undo_log::Stacks {
-            undo: self.cull.undo_entries(),
-            redo: self.cull.redo_entries(),
-        };
+        let (undo, redo) = self.history.stacks();
+        let stacks = undo_log::Stacks { undo, redo };
         let log_path = sidecar.join(UNDO_LOG_FILE);
         // Close the append handle before compaction rewrites the log via
         // tmp→rename. Otherwise our handle is left on the old, now-unlinked
@@ -83,6 +81,8 @@ impl Session {
         let removed = ids.len();
         self.builder.forget(&ids);
         self.cull.forget(&ids);
+        self.tags.forget(&ids);
+        self.history.forget(&ids);
         self.sel.clear();
         self.regroup();
         self.dirty = true;
@@ -302,6 +302,7 @@ impl Session {
                 id: p.id,
                 fingerprint: p.fingerprint,
                 verdict: self.cull.state(p.id),
+                tags: self.tags.tags_of(p.id),
                 jpeg: relativize(p.files.jpeg.as_deref(), root),
                 raw: relativize(p.files.raw.as_deref(), root),
             })
@@ -309,6 +310,8 @@ impl Session {
         ProjectSnapshot {
             photos,
             next_id: self.builder.next_id(),
+            tags: self.tags.defs(),
+            next_tag_id: self.tags.next_id(),
             views: self.views.clone(),
             config: self.config.clone(),
         }

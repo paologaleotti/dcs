@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use dcs_domain::cull::AcceptState;
 use dcs_domain::fingerprint::ContentFingerprint;
 use dcs_domain::photo::PhotoId;
+use dcs_domain::tag::{Tag, TagId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -53,6 +54,10 @@ pub struct PhotoRecord {
     pub id: PhotoId,
     pub fingerprint: ContentFingerprint,
     pub verdict: AcceptState,
+    /// Owned tag assignments for this photo, by id. Empty (the common case)
+    /// isn't written, so untagged photos stay compact.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<TagId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jpeg: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -86,6 +91,11 @@ pub struct ProjectSnapshot {
     /// The monotonic id counter to persist (max assigned id + 1), so fresh
     /// photos never collide with reclaimed ones after reopen.
     pub next_id: u32,
+    /// Tag definitions (the only persisted user-created structure). Assignments
+    /// live per-photo on `PhotoRecord::tags`.
+    pub tags: Vec<Tag>,
+    /// The monotonic tag-id counter to persist (max assigned tag id + 1).
+    pub next_tag_id: u32,
     /// Views as raw JSON values; unknown kinds survive a round-trip verbatim.
     pub views: Vec<serde_json::Value>,
     /// Owned project settings.
@@ -101,6 +111,21 @@ impl ProjectSnapshot {
     /// The `PhotoId → verdict` pairs used to seed the verdict store.
     pub fn verdicts(&self) -> Vec<(PhotoId, AcceptState)> {
         self.photos.iter().map(|p| (p.id, p.verdict)).collect()
+    }
+
+    /// The tag definitions used to seed the tag store.
+    pub fn tag_defs(&self) -> Vec<Tag> {
+        self.tags.clone()
+    }
+
+    /// The `PhotoId → [TagId]` assignments used to seed the tag store. Only
+    /// tagged photos appear.
+    pub fn tag_assignments(&self) -> Vec<(PhotoId, Vec<TagId>)> {
+        self.photos
+            .iter()
+            .filter(|p| !p.tags.is_empty())
+            .map(|p| (p.id, p.tags.clone()))
+            .collect()
     }
 }
 
@@ -152,6 +177,12 @@ struct ProjectDto {
     version: u32,
     photos: Vec<PhotoRecord>,
     next_id: u32,
+    /// Tag defs. Defaulted so a pre-tags project file (none written) loads with
+    /// no tags rather than failing — additive, no version bump needed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<Tag>,
+    #[serde(default)]
+    next_tag_id: u32,
     #[serde(default)]
     views: Vec<serde_json::Value>,
     #[serde(default)]
@@ -164,6 +195,8 @@ impl ProjectDto {
             version: CURRENT_VERSION,
             photos: s.photos.clone(),
             next_id: s.next_id,
+            tags: s.tags.clone(),
+            next_tag_id: s.next_tag_id,
             views: s.views.clone(),
             config: s.config.clone(),
         }
@@ -173,6 +206,8 @@ impl ProjectDto {
         ProjectSnapshot {
             photos: self.photos,
             next_id: self.next_id,
+            tags: self.tags,
+            next_tag_id: self.next_tag_id,
             views: self.views,
             config: self.config,
         }
