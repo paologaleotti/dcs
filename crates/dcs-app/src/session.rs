@@ -15,6 +15,7 @@
 
 mod display;
 mod edit;
+mod group_ops;
 mod layout;
 mod store;
 mod tag;

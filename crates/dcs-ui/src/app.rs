@@ -16,6 +16,7 @@ use dcs_app::{Session, VerdictFilter};
 use dcs_domain::grouping::GroupKind;
 use egui::Ui;
 
+use crate::context_menu::MenuTarget;
 use crate::export::ExportDialog;
 use crate::grid::TextureCache;
 use crate::picker::Picker;
@@ -112,6 +113,9 @@ pub struct DcsApp {
     tag_edits: HashMap<dcs_app::TagId, String>,
     /// Collapsed group titles (ephemeral UI state). Keyed by header title.
     collapsed: HashSet<String>,
+    /// What the last right-click in the grid landed on, kept so the context menu
+    /// shows the right items while it stays open across frames.
+    grid_ctx: Option<MenuTarget>,
     /// Export dialog state; persisted across opens.
     export: ExportDialog,
     /// Last time we refreshed the project lock; throttles the heartbeat.
@@ -151,6 +155,7 @@ impl DcsApp {
             show_tag_manager: false,
             tag_edits: HashMap::new(),
             collapsed: HashSet::new(),
+            grid_ctx: None,
             export: ExportDialog::default(),
             last_heartbeat: None,
         }

@@ -12,6 +12,7 @@
 
 use std::path::PathBuf;
 
+use dcs_domain::cull::AcceptState;
 use dcs_domain::grouping::{Axis, TimeGranularity};
 use dcs_domain::sort::{Sort, SortDir, SortKey};
 
@@ -43,6 +44,19 @@ pub enum AppAction {
     OpenUntagPalette,
     /// Open the tag manager (rename / recolor / delete the project's tags).
     ManageTags,
+    /// Replace the selection with every visible member of group `idx` (the index
+    /// into [`Session::groups`]). Ephemeral, like any selection change.
+    SelectGroup(usize),
+    /// Accept every visible member of group `idx` (bulk set, not a toggle).
+    AcceptGroup(usize),
+    /// Reject every visible member of group `idx`.
+    RejectGroup(usize),
+    /// Select group `idx`, then open the tag palette so a tag lands on all its
+    /// members — the header's "tag all members" / crystallize affordance.
+    TagGroup(usize),
+    /// Select group `idx`, then open the untag palette to drop a tag from all
+    /// its members.
+    UntagGroup(usize),
     ClearSelection,
     Undo,
     Redo,
@@ -107,6 +121,11 @@ impl AppAction {
             AppAction::OpenTagPalette => "open-tag-palette",
             AppAction::OpenUntagPalette => "open-untag-palette",
             AppAction::ManageTags => "manage-tags",
+            AppAction::SelectGroup(_) => "select-group",
+            AppAction::AcceptGroup(_) => "accept-group",
+            AppAction::RejectGroup(_) => "reject-group",
+            AppAction::TagGroup(_) => "tag-group",
+            AppAction::UntagGroup(_) => "untag-group",
             AppAction::ClearSelection => "clear-selection",
             AppAction::Undo => "undo",
             AppAction::Redo => "redo",
@@ -238,6 +257,7 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
     );
 
     push_group_actions(&mut e, session);
+    push_focused_group_actions(&mut e, session);
 
     if session.selection_count() > 0 {
         push(
@@ -398,6 +418,26 @@ impl Session {
             AppAction::OpenTagPalette => ActionEffect::OpenTagPalette,
             AppAction::OpenUntagPalette => ActionEffect::OpenUntagPalette,
             AppAction::ManageTags => ActionEffect::OpenTagManager,
+            AppAction::SelectGroup(idx) => {
+                self.select_group(idx);
+                ActionEffect::None
+            }
+            AppAction::AcceptGroup(idx) => {
+                self.set_group_state(idx, AcceptState::Accepted);
+                ActionEffect::None
+            }
+            AppAction::RejectGroup(idx) => {
+                self.set_group_state(idx, AcceptState::Rejected);
+                ActionEffect::None
+            }
+            AppAction::TagGroup(idx) => {
+                self.select_group(idx);
+                ActionEffect::OpenTagPalette
+            }
+            AppAction::UntagGroup(idx) => {
+                self.select_group(idx);
+                ActionEffect::OpenUntagPalette
+            }
             AppAction::ClearSelection => {
                 self.clear_selection();
                 ActionEffect::None
@@ -447,6 +487,54 @@ fn push_filter(
         title: title.to_string(),
         category: Category::View,
     });
+}
+
+/// Group-scoped commands targeting the group the focus cursor sits in, so the
+/// palette can do everything the header context menu does ("select / accept /
+/// reject / tag all in this group"). Only offered for a real group header — the
+/// single `none`-axis stream has none, and `Ctrl+A` already selects it whole.
+fn push_focused_group_actions(e: &mut Vec<ActionEntry>, session: &Session) {
+    let Some(idx) = session.focused_group() else {
+        return;
+    };
+    let Some(title) = session.group_title(idx) else {
+        return;
+    };
+    let title = title.to_string();
+    let g = |e: &mut Vec<ActionEntry>, action, text: String| {
+        e.push(ActionEntry {
+            action,
+            title: text,
+            category: Category::Group,
+        });
+    };
+    g(
+        e,
+        AppAction::SelectGroup(idx),
+        format!("Group: Select All in {title}"),
+    );
+    g(
+        e,
+        AppAction::AcceptGroup(idx),
+        format!("Group: Accept All in {title}"),
+    );
+    g(
+        e,
+        AppAction::RejectGroup(idx),
+        format!("Group: Reject All in {title}"),
+    );
+    g(
+        e,
+        AppAction::TagGroup(idx),
+        format!("Group: Tag All in {title}…"),
+    );
+    if session.group_has_tags(idx) {
+        g(
+            e,
+            AppAction::UntagGroup(idx),
+            format!("Group: Untag All in {title}…"),
+        );
+    }
 }
 
 /// Grouping + sort entries. The axis switch is always offered; the

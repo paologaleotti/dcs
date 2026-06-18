@@ -11,7 +11,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dcs_app::{CellInfo, Session, ThumbView};
+use dcs_app::{AppAction, CellInfo, Session, ThumbView};
+
+use crate::context_menu::{self, MenuTarget};
 use dcs_domain::cull::AcceptState;
 use dcs_domain::grouping::GroupKind;
 use dcs_domain::photo::PhotoId;
@@ -196,6 +198,9 @@ pub struct GridResponse {
     pub cols: usize,
     /// Display index of a double-clicked cell — the app opens it in the gallery.
     pub double_clicked: Option<usize>,
+    /// A registry action chosen from a context menu, dispatched by the app
+    /// through the same path as keys, palette, and toolbar.
+    pub action: Option<AppAction>,
 }
 
 /// Paint the grouped, virtualized grid. `cell` is the square cell edge; the grid
@@ -203,6 +208,7 @@ pub struct GridResponse {
 /// then its cells flowing in rows of `cols`. Only the rows intersecting the
 /// viewport are painted. When `scroll_to_focus` is set, the focus cell is
 /// scrolled into view (after a keyboard nav move).
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
     session: &mut Session,
@@ -211,6 +217,7 @@ pub fn show(
     view_width: f32,
     scroll_to_focus: bool,
     collapsed: &mut HashSet<String>,
+    ctx_target: &mut Option<MenuTarget>,
 ) -> GridResponse {
     let count = session.photo_count();
     if count == 0 {
@@ -218,6 +225,7 @@ pub fn show(
             visible: 0,
             cols: 1,
             double_clicked: None,
+            action: None,
         };
     }
     textures.begin_frame();
@@ -264,76 +272,100 @@ pub fn show(
     if let Some(target) = scroll_target {
         area = area.vertical_scroll_offset(target);
     }
-    area.show_viewport(ui, |ui, viewport| {
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(view_width, layout.total), Sense::hover());
-        let origin = rect.min;
+    let grid_resp = area
+        .show_viewport(ui, |ui, viewport| {
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(view_width, layout.total), Sense::hover());
+            let origin = rect.min;
 
-        let resp = ui.interact(rect, Id::new("dcs_grid"), Sense::click());
-        let hover_pos = ui.input(|i| i.pointer.hover_pos());
-        let click_pos = resp
-            .clicked()
-            .then(|| resp.interact_pointer_pos())
-            .flatten();
-        let dbl_pos = resp
-            .double_clicked()
-            .then(|| resp.interact_pointer_pos())
-            .flatten();
+            let resp = ui.interact(rect, Id::new("dcs_grid"), Sense::click());
+            let hover_pos = ui.input(|i| i.pointer.hover_pos());
+            let click_pos = resp
+                .clicked()
+                .then(|| resp.interact_pointer_pos())
+                .flatten();
+            let dbl_pos = resp
+                .double_clicked()
+                .then(|| resp.interact_pointer_pos())
+                .flatten();
+            // A right-click resolves to whatever cell or header it lands on; the
+            // app then opens the context menu over the returned grid response.
+            let sec_pos = resp
+                .secondary_clicked()
+                .then(|| resp.interact_pointer_pos())
+                .flatten();
+            let mut sec_target: Option<MenuTarget> = None;
 
-        let (first, last) = layout.visible_rows(viewport.min.y, viewport.max.y);
-        for r in first..last {
-            let y = origin.y + layout.offsets[r];
-            match &layout.rows[r] {
-                Row::Header(h) => {
-                    let info = &layout.headers[*h];
-                    let hrect = Rect::from_min_size(
-                        Pos2::new(origin.x, y),
-                        Vec2::new(view_width, HEADER_H),
-                    );
-                    if click_pos.is_some_and(|p| hrect.contains(p)) {
-                        toggle = Some(info.title.clone());
-                    }
-                    let hovered = hover_pos.is_some_and(|p| hrect.contains(p));
-                    paint_header(ui, info, hrect, hovered);
-                }
-                Row::Cells { start, len } => {
-                    for c in 0..*len {
-                        let idx = start + c;
-                        let Some(info) = session.cell_info(idx) else {
-                            continue;
-                        };
-                        if zoomed {
-                            session.request_hires(idx, hires_edge);
-                        }
-                        let cell_rect = Rect::from_min_size(
-                            Pos2::new(origin.x + c as f32 * stride, y),
-                            Vec2::splat(cell),
+            let (first, last) = layout.visible_rows(viewport.min.y, viewport.max.y);
+            for r in first..last {
+                let y = origin.y + layout.offsets[r];
+                match &layout.rows[r] {
+                    Row::Header(h) => {
+                        let info = &layout.headers[*h];
+                        let hrect = Rect::from_min_size(
+                            Pos2::new(origin.x, y),
+                            Vec2::new(view_width, HEADER_H),
                         );
-                        if click_pos.is_some_and(|p| cell_rect.contains(p)) {
-                            clicked = Some(idx);
+                        if click_pos.is_some_and(|p| hrect.contains(p)) {
+                            toggle = Some(info.title.clone());
                         }
-                        if dbl_pos.is_some_and(|p| cell_rect.contains(p)) {
-                            double_clicked = Some(idx);
+                        if sec_pos.is_some_and(|p| hrect.contains(p)) {
+                            // Settle the group's facts now so the open menu never
+                            // re-scans the pool per frame.
+                            sec_target = Some(MenuTarget::Group {
+                                idx: info.group_idx,
+                                count: info.count,
+                                has_tags: session.group_has_tags(info.group_idx),
+                            });
                         }
-                        paint_cell(ui, session, textures, info, focus == Some(idx), cell_rect);
-                        visible += 1;
+                        let hovered = hover_pos.is_some_and(|p| hrect.contains(p));
+                        paint_header(ui, info, hrect, hovered);
+                    }
+                    Row::Cells { start, len } => {
+                        for c in 0..*len {
+                            let idx = start + c;
+                            let Some(info) = session.cell_info(idx) else {
+                                continue;
+                            };
+                            if zoomed {
+                                session.request_hires(idx, hires_edge);
+                            }
+                            let cell_rect = Rect::from_min_size(
+                                Pos2::new(origin.x + c as f32 * stride, y),
+                                Vec2::splat(cell),
+                            );
+                            if click_pos.is_some_and(|p| cell_rect.contains(p)) {
+                                clicked = Some(idx);
+                            }
+                            if dbl_pos.is_some_and(|p| cell_rect.contains(p)) {
+                                double_clicked = Some(idx);
+                            }
+                            if sec_pos.is_some_and(|p| cell_rect.contains(p)) {
+                                sec_target = Some(MenuTarget::Cell(idx));
+                            }
+                            paint_cell(ui, session, textures, info, focus == Some(idx), cell_rect);
+                            visible += 1;
+                        }
                     }
                 }
             }
-        }
-        // Prefetch the rows around the viewport so scrolling stays smooth.
-        // Walking rows (not a min/max index span) keeps collapsed groups
-        // cheap: a collapsed group contributes only its single cover cell,
-        // never the hidden run between covers.
-        let pf_first = first.saturating_sub(PREFETCH_ROWS);
-        let pf_last = (last + PREFETCH_ROWS).min(layout.rows.len());
-        for r in pf_first..pf_last {
-            if let Row::Cells { start, len } = layout.rows[r] {
-                for idx in start..start + len {
-                    session.request_base(idx);
+            // Prefetch the rows around the viewport so scrolling stays smooth.
+            // Walking rows (not a min/max index span) keeps collapsed groups
+            // cheap: a collapsed group contributes only its single cover cell,
+            // never the hidden run between covers.
+            let pf_first = first.saturating_sub(PREFETCH_ROWS);
+            let pf_last = (last + PREFETCH_ROWS).min(layout.rows.len());
+            for r in pf_first..pf_last {
+                if let Row::Cells { start, len } = layout.rows[r] {
+                    for idx in start..start + len {
+                        session.request_base(idx);
+                    }
                 }
             }
-        }
-    });
+            (resp, sec_target)
+        })
+        .inner;
+    let (grid_resp, sec_target) = grid_resp;
 
     // The UI only reports the raw click + modifiers; the app owns the policy.
     if let Some(idx) = clicked {
@@ -347,11 +379,38 @@ pub fn show(
         collapsed.insert(title);
     }
 
+    // Right-clicking a cell that isn't already selected selects it first, so the
+    // menu's photo actions act on what was clicked; right-clicking inside an
+    // existing multi-selection leaves it intact (the file-manager convention).
+    if let Some(MenuTarget::Cell(idx)) = sec_target {
+        let already = session
+            .cell_info(idx)
+            .is_some_and(|c| session.is_selected(c.id));
+        if !already {
+            session.click_select(idx);
+        }
+    }
+    if let Some(t) = sec_target {
+        *ctx_target = Some(t);
+    }
+
+    let mut action = None;
+    let mut menu_toggle = None;
+    grid_resp.context_menu(|ui| {
+        action = context_menu::show_menu(ui, session, *ctx_target, collapsed, &mut menu_toggle);
+    });
+    if let Some(title) = menu_toggle
+        && !collapsed.remove(&title)
+    {
+        collapsed.insert(title);
+    }
+
     textures.evict_over_budget();
     GridResponse {
         visible,
         cols,
         double_clicked,
+        action,
     }
 }
 
@@ -378,6 +437,9 @@ struct HeaderInfo {
     count: usize,
     total: usize,
     collapsed: bool,
+    /// Index into `Session::groups`, so a right-clicked header addresses its
+    /// group for the context menu.
+    group_idx: usize,
     /// The band's tag color (tag axis only) — drives the 2 px color rule.
     tag_color: Option<Color>,
 }
@@ -392,6 +454,7 @@ struct GroupInput {
     total: usize,
     collapsed: bool,
     cover: usize,
+    group_idx: usize,
     tag_color: Option<Color>,
 }
 
@@ -401,7 +464,8 @@ fn group_inputs(session: &Session, collapsed: &HashSet<String>) -> Vec<GroupInpu
     session
         .groups()
         .iter()
-        .map(|g| {
+        .enumerate()
+        .map(|(group_idx, g)| {
             let collapsible = g.kind != GroupKind::Stream;
             let is_collapsed = collapsible && collapsed.contains(&g.title);
             let cover = if is_collapsed {
@@ -421,6 +485,7 @@ fn group_inputs(session: &Session, collapsed: &HashSet<String>) -> Vec<GroupInpu
                 total: g.total,
                 collapsed: is_collapsed,
                 cover,
+                group_idx,
                 tag_color,
             }
         })
@@ -439,6 +504,7 @@ impl Layout {
                     count: g.count,
                     total: g.total,
                     collapsed: g.collapsed,
+                    group_idx: g.group_idx,
                     tag_color: g.tag_color,
                 });
                 rows.push(Row::Header(headers.len() - 1));

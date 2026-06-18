@@ -9,11 +9,12 @@
 //! filmstrip reuses from the grid — keeping them apart so the focused photo's
 //! big frame and its tiny strip thumb never collide on one `PhotoId` key.
 
-use dcs_app::Session;
+use dcs_app::{AppAction, Session};
 use dcs_domain::cull::AcceptState;
 use dcs_domain::tag::Color;
-use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
+use egui::{Align2, Color32, FontId, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 
+use crate::context_menu::cell_menu;
 use crate::grid::{TextureCache, contain_fit, full_uv};
 use crate::theme;
 
@@ -42,6 +43,9 @@ pub struct GalleryState {
 pub struct GalleryResponse {
     /// A filmstrip thumb was clicked — jump the focus to this display index.
     pub clicked: Option<usize>,
+    /// A registry action chosen from a context menu (on the photo or a filmstrip
+    /// thumb), dispatched by the app through the one shared path.
+    pub action: Option<AppAction>,
 }
 
 /// Paint the gallery for the given [`GalleryState`].
@@ -65,7 +69,10 @@ pub fn show(
     ui.painter().rect_filled(area, 0.0, theme::SHEET_BG);
 
     let Some(id) = session.photo_at(focus).map(|p| p.id) else {
-        return GalleryResponse { clicked: None };
+        return GalleryResponse {
+            clicked: None,
+            action: None,
+        };
     };
 
     // Carve the area top→bottom: image, then the docked info bar, then the
@@ -91,14 +98,37 @@ pub fn show(
     paint_frame(ui, session, frame_textures, id, image_rect, full_zoom, ppp);
     paint_info_bar(ui, &frame_info(session, focus), bar_rect);
 
-    let clicked = if strip_collapsed {
-        None
-    } else {
-        let strip_rect = Rect::from_min_max(Pos2::new(area.min.x, bar_rect.max.y), area.max);
-        paint_filmstrip(ui, session, strip_textures, focus, center_focus, strip_rect)
-    };
+    let mut action = None;
+    // Right-click the photo → the same per-photo menu as a grid cell, acting on
+    // the displayed photo. Only in fit mode: the 1:1 scroll area owns pointer
+    // drags for panning, so an overlaid interact would fight it.
+    if !full_zoom {
+        let frame_resp = ui.interact(image_rect, Id::new("dcs_gallery_frame"), Sense::click());
+        if frame_resp.secondary_clicked() {
+            // Normalize the selection to the one photo on screen, so Accept /
+            // Reject / tag hit exactly it rather than a selection carried in
+            // from the grid.
+            session.set_focus(focus, false);
+        }
+        frame_resp.context_menu(|ui| action = cell_menu(ui, session, focus));
+    }
 
-    GalleryResponse { clicked }
+    let mut clicked = None;
+    if !strip_collapsed {
+        let strip_rect = Rect::from_min_max(Pos2::new(area.min.x, bar_rect.max.y), area.max);
+        let strip = paint_filmstrip(ui, session, strip_textures, focus, center_focus, strip_rect);
+        clicked = strip.clicked;
+        action = action.or(strip.action);
+    }
+
+    GalleryResponse { clicked, action }
+}
+
+/// What the filmstrip reports: a left-click jump target and/or a context-menu
+/// action from a right-clicked thumb.
+struct StripResponse {
+    clicked: Option<usize>,
+    action: Option<AppAction>,
 }
 
 /// The big frame: the resident gallery decode if ready, else the base thumb
@@ -349,7 +379,7 @@ fn paint_filmstrip(
     focus: usize,
     center_focus: bool,
     rect: Rect,
-) -> Option<usize> {
+) -> StripResponse {
     // The band background spans the full width (painter, absolute rect) so it
     // reads as one surface even past the ends of the scroll content.
     let painter = ui.painter();
@@ -362,7 +392,10 @@ fn paint_filmstrip(
 
     let count = session.photo_count();
     if count == 0 {
-        return None;
+        return StripResponse {
+            clicked: None,
+            action: None,
+        };
     }
     let pitch = STRIP_THUMB + STRIP_GAP;
     // Leading/trailing pad so the first and last thumbs can still scroll to the
@@ -370,6 +403,7 @@ fn paint_filmstrip(
     let pad = (rect.width() / 2.0 - STRIP_THUMB / 2.0).max(0.0);
     let content_w = pad * 2.0 + count as f32 * pitch - STRIP_GAP;
     let mut hit = None;
+    let mut menu_action = None;
 
     // A horizontal scroll area carved into the band: virtualized to the thumbs
     // intersecting the viewport, click-to-jump like the grid, and centred on the
@@ -428,20 +462,40 @@ fn paint_filmstrip(
                 }
             }
 
-            // Map a click to the thumb under it (ignoring the inter-thumb gap).
-            if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.clicked()) {
+            // Map a pointer x to the thumb under it, ignoring the inter-thumb gap.
+            let thumb_at = |pos: Pos2| -> Option<usize> {
                 let rel = pos.x - origin.x - pad;
-                if rel >= 0.0 {
-                    let idx = (rel / pitch) as usize;
-                    if idx < count && rel - idx as f32 * pitch <= STRIP_THUMB {
-                        hit = Some(idx);
-                    }
+                if rel < 0.0 {
+                    return None;
                 }
+                let idx = (rel / pitch) as usize;
+                (idx < count && rel - idx as f32 * pitch <= STRIP_THUMB).then_some(idx)
+            };
+            // Left-click jumps the focus there.
+            if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.clicked()) {
+                hit = thumb_at(pos);
             }
+            // Right-click focuses that thumb (so the menu's actions target it),
+            // then opens the same per-photo menu as a grid cell.
+            if let Some(idx) = resp
+                .interact_pointer_pos()
+                .filter(|_| resp.secondary_clicked())
+                .and_then(thumb_at)
+            {
+                session.set_focus(idx, false);
+            }
+            resp.context_menu(|ui| {
+                if let Some(f) = session.focus() {
+                    menu_action = cell_menu(ui, session, f);
+                }
+            });
         });
     });
     textures.evict_over_budget();
-    hit
+    StripResponse {
+        clicked: hit,
+        action: menu_action,
+    }
 }
 
 /// A small verdict tick in the filmstrip thumb's corner — green accept, red

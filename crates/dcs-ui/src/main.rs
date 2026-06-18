@@ -5,6 +5,7 @@
 //! tree.
 
 mod app;
+mod context_menu;
 mod export;
 mod gallery;
 mod grid;

@@ -136,6 +136,18 @@ impl Selection {
         }
     }
 
+    /// Replace the selection with an explicit id set (a group's members), moving
+    /// focus + anchor to `focus` when given. Ids the visible order doesn't hold
+    /// are still stored but simply never paint, matching the existing rule that
+    /// selection survives filtering.
+    pub fn select_ids(&mut self, ids: &[PhotoId], focus: Option<usize>) {
+        self.selected = ids.iter().copied().collect();
+        if let Some(f) = focus {
+            self.focus = Some(f);
+            self.anchor = Some(f);
+        }
+    }
+
     /// `Esc`: clear the selection (the only Esc-chain member this phase).
     /// Focus stays put; the anchor collapses onto it.
     pub fn clear(&mut self) {

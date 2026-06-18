@@ -88,6 +88,7 @@ impl DcsApp {
                             view_width,
                             std::mem::take(&mut self.scroll_to_focus),
                             &mut self.collapsed,
+                            &mut self.grid_ctx,
                         );
                         self.visible = resp.visible;
                         self.cols = resp.cols;
@@ -95,6 +96,11 @@ impl DcsApp {
                         if let Some(idx) = resp.double_clicked {
                             self.session.set_focus(idx, false);
                             self.enter_gallery();
+                        }
+                        // A context-menu pick rides the one dispatch path.
+                        if let Some(action) = resp.action {
+                            let ctx = ui.ctx().clone();
+                            self.dispatch(action, &ctx);
                         }
                     }
                     ViewMode::Gallery => {
@@ -117,6 +123,16 @@ impl DcsApp {
                         if let Some(idx) = resp.clicked {
                             self.session.set_focus(idx, false);
                             self.scroll_to_focus = true;
+                        }
+                        // A context-menu pick rides the one dispatch path.
+                        if let Some(action) = resp.action {
+                            let ctx = ui.ctx().clone();
+                            self.dispatch(action, &ctx);
+                            // Selecting a whole group is a grid affordance — drop
+                            // back so the selection is actually visible.
+                            if matches!(action, dcs_app::AppAction::SelectGroup(_)) {
+                                self.exit_gallery();
+                            }
                         }
                     }
                 }
