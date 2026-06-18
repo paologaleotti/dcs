@@ -20,17 +20,23 @@ fn temp_folder(tag: &str) -> PathBuf {
 }
 
 fn write_jpeg(dir: &Path, name: &str) {
+    // Vary the content per file so each gets a distinct content fingerprint —
+    // identical bytes would collide in the fingerprint→id map on reopen and make
+    // id reclaim (and thus tag re-linking) ambiguous.
+    let seed = name.bytes().map(u32::from).sum::<u32>();
     let mut img = RgbImage::new(32, 32);
     for (x, y, px) in img.enumerate_pixels_mut() {
-        *px = Rgb([(x % 256) as u8, (y % 256) as u8, 128]);
+        *px = Rgb([
+            ((x + seed) % 256) as u8,
+            ((y * 7 + seed) % 256) as u8,
+            (seed % 256) as u8,
+        ]);
     }
     img.save(dir.join(name)).expect("encode jpeg");
 }
 
 fn drain_until(session: &mut Session, want: usize) {
-    // Generous budget: many scan-driven session tests run in parallel and
-    // contend for the decode pool, so a tight deadline flakes under load.
-    for _ in 0..15000 {
+    for _ in 0..3000 {
         session.tick();
         if session.photo_count() >= want && !session.is_scanning() {
             return;
