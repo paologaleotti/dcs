@@ -18,6 +18,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 800.0])
+            .with_maximized(true)
             .with_title("dcs - digital contact sheet"),
         ..Default::default()
     };

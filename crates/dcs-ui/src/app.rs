@@ -134,7 +134,7 @@ impl DcsApp {
             gallery_textures: TextureCache::with_budget(GALLERY_TEXTURE_BYTES),
             gallery_full: false,
             strip_collapsed: false,
-            cell: 160.0,
+            cell: 92.0,
             debug: false,
             fps: 0.0,
             visible: 0,
