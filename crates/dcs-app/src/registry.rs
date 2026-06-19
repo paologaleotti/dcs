@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use dcs_domain::cull::AcceptState;
 use dcs_domain::grouping::{Axis, TimeGranularity};
 use dcs_domain::sort::{Sort, SortDir, SortKey};
+use dcs_domain::tag::TagId;
 
 use crate::session::{Session, VerdictFilter};
 
@@ -39,6 +40,23 @@ pub enum AppAction {
     /// Toggle the grid's burst overlay (span accents + labels). A persisted view
     /// preference.
     ToggleBursts,
+    /// Toggle one verdict in/out of the filter (multi-select: acc + rej, …).
+    ToggleVerdictFilter(AcceptState),
+    /// Toggle a tag in/out of the filter (the filter dropdown's tag checkboxes).
+    ToggleFilterTag(TagId),
+    /// Open a picker to toggle verdict filters one at a time (palette path).
+    OpenFilterStatePalette,
+    /// Open a picker to toggle tag filters one at a time (palette path).
+    OpenFilterTagPalette,
+    /// Remove the chip at `(group, chip)` from the active filter — the chip ✕.
+    RemoveFilterChip {
+        group: usize,
+        chip: usize,
+    },
+    /// Flip a filter group's within-group combinator (AND ↔ OR).
+    ToggleFilterGroupOp(usize),
+    /// Drop every filter chip — back to the full grid.
+    ClearFilters,
     Accept,
     Reject,
     /// Open the tag palette to add/create a named tag on the selection.
@@ -120,6 +138,15 @@ impl AppAction {
             AppAction::ZoomOut => "zoom-out",
             AppAction::ToggleDiagnostics => "toggle-diagnostics",
             AppAction::ToggleBursts => "toggle-bursts",
+            AppAction::ToggleVerdictFilter(AcceptState::Unreviewed) => "filter-verdict-unrev",
+            AppAction::ToggleVerdictFilter(AcceptState::Accepted) => "filter-verdict-acc",
+            AppAction::ToggleVerdictFilter(AcceptState::Rejected) => "filter-verdict-rej",
+            AppAction::ToggleFilterTag(_) => "filter-tag-toggle",
+            AppAction::OpenFilterStatePalette => "filter-state-palette",
+            AppAction::OpenFilterTagPalette => "filter-tag-palette",
+            AppAction::RemoveFilterChip { .. } => "filter-remove-chip",
+            AppAction::ToggleFilterGroupOp(_) => "filter-toggle-op",
+            AppAction::ClearFilters => "filter-clear",
             AppAction::Accept => "accept",
             AppAction::Reject => "reject",
             AppAction::OpenTagPalette => "open-tag-palette",
@@ -163,6 +190,10 @@ pub enum ActionEffect {
     ToggleDiagnostics,
     OpenZonePicker,
     OpenCameraZonePicker,
+    /// Open the picker to toggle tag filters.
+    OpenFilterTagPalette,
+    /// Open the picker to toggle verdict filters.
+    OpenFilterStatePalette,
     ShowMetadata,
     ShowAbout,
     CollapseAllGroups,
@@ -269,6 +300,33 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
         },
         Category::View,
     );
+
+    // The palette opens a picker for each filter dimension, mirroring the
+    // toolbar FILTER dropdown — toggle one state/tag at a time in the picker.
+    if session.pool_len() > 0 {
+        push(
+            &mut e,
+            AppAction::OpenFilterStatePalette,
+            "Filter: State…",
+            Category::View,
+        );
+    }
+    if !session.all_tags().is_empty() {
+        push(
+            &mut e,
+            AppAction::OpenFilterTagPalette,
+            "Filter: Tag…",
+            Category::View,
+        );
+    }
+    if session.is_filtered() {
+        push(
+            &mut e,
+            AppAction::ClearFilters,
+            "Filter: Clear",
+            Category::View,
+        );
+    }
 
     push_group_actions(&mut e, session);
     push_focused_group_actions(&mut e, session);
@@ -423,6 +481,28 @@ impl Session {
             AppAction::ToggleDiagnostics => ActionEffect::ToggleDiagnostics,
             AppAction::ToggleBursts => {
                 self.toggle_bursts();
+                ActionEffect::None
+            }
+            AppAction::ToggleVerdictFilter(state) => {
+                self.toggle_verdict_filter(state);
+                ActionEffect::None
+            }
+            AppAction::ToggleFilterTag(tag) => {
+                self.toggle_tag_chip(tag);
+                ActionEffect::None
+            }
+            AppAction::OpenFilterStatePalette => ActionEffect::OpenFilterStatePalette,
+            AppAction::OpenFilterTagPalette => ActionEffect::OpenFilterTagPalette,
+            AppAction::RemoveFilterChip { group, chip } => {
+                self.remove_filter_chip(group, chip);
+                ActionEffect::None
+            }
+            AppAction::ToggleFilterGroupOp(group) => {
+                self.toggle_filter_group_op(group);
+                ActionEffect::None
+            }
+            AppAction::ClearFilters => {
+                self.clear_filter();
                 ActionEffect::None
             }
             AppAction::Accept => {

@@ -365,6 +365,10 @@ impl Session {
     /// order match the sheet.
     fn scope_indices(&self, scope: ExportScope) -> Vec<usize> {
         let photos = self.builder.photos();
+        // The chip filter resolves to a pool-index set; precompute it so the
+        // per-index match stays O(1). Only needed for the `CurrentFilter` scope.
+        let filter_set = (scope == ExportScope::CurrentFilter)
+            .then(|| dcs_domain::filter::resolve(photos, &self.filter, &self.filter_ctx()));
         self.order
             .iter()
             .copied()
@@ -372,6 +376,9 @@ impl Session {
                 let id = photos[i].id;
                 match scope {
                     ExportScope::Selection => self.sel.is_selected(id),
+                    ExportScope::CurrentFilter => {
+                        filter_set.as_ref().is_some_and(|s| s.contains(&i))
+                    }
                     ExportScope::Accepted => self.cull.state(id) == AcceptState::Accepted,
                     ExportScope::Rejected => self.cull.state(id) == AcceptState::Rejected,
                     ExportScope::Unreviewed => self.cull.state(id) == AcceptState::Unreviewed,

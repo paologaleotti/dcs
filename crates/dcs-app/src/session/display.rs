@@ -26,6 +26,17 @@ impl Session {
         self.builder.len()
     }
 
+    /// Photos that *can* show on the grid, ignoring the filter — the pool minus
+    /// RAW-only photos (which have nothing to display in v1). This is the honest
+    /// denominator for "N of M shown": with no filter, `photo_count` equals it.
+    pub fn displayable_count(&self) -> usize {
+        self.builder
+            .photos()
+            .iter()
+            .filter(|p| !p.is_raw_only())
+            .count()
+    }
+
     /// Photo at a display position in the current visible order.
     pub fn photo_at(&self, display_index: usize) -> Option<&Photo> {
         let &pool_index = self.visible.get(display_index)?;

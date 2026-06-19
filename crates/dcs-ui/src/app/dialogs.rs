@@ -114,14 +114,19 @@ impl DcsApp {
         // the scope counts and live plan, so skip that work once a run starts.
         let status = self.session.export_status();
         let idle = status.is_none();
-        let scopes = [
-            (ExportScope::Selection, "Selection"),
+        // "Current filter" only appears while a chip filter is active — otherwise
+        // it's identical to "Everything" and just adds noise.
+        let mut scopes = vec![(ExportScope::Selection, "Selection")];
+        if self.session.is_filtered() {
+            scopes.push((ExportScope::CurrentFilter, "Current filter"));
+        }
+        scopes.extend([
             (ExportScope::Accepted, "Accepted"),
             (ExportScope::AcceptedAndUnreviewed, "Accepted + Unreviewed"),
             (ExportScope::Unreviewed, "Unreviewed"),
             (ExportScope::Rejected, "Rejected"),
             (ExportScope::Everything, "Everything"),
-        ];
+        ]);
         let scope_counts: Vec<(ExportScope, &str, usize)> = if idle {
             scopes
                 .iter()
@@ -465,6 +470,61 @@ impl DcsApp {
             self.tag_remove_palette(ctx);
         } else {
             self.tag_add_palette(ctx);
+        }
+    }
+
+    /// The palette-path filter picker: toggle verdicts (state mode) or tags (tag
+    /// mode). Active entries show an `active` hint; sticky, so each pick toggles
+    /// and the picker stays open for the next — Esc closes it.
+    pub(super) fn filter_palette(&mut self, ctx: &egui::Context) {
+        use dcs_domain::cull::AcceptState;
+        if !self.filter_palette.is_open() {
+            return;
+        }
+        if self.filter_palette_state {
+            let states = [
+                ("unreviewed", AcceptState::Unreviewed),
+                ("accepted", AcceptState::Accepted),
+                ("rejected", AcceptState::Rejected),
+            ];
+            let items: Vec<PickerItem> = states
+                .iter()
+                .map(|(name, state)| PickerItem {
+                    label: name,
+                    detail: self
+                        .session
+                        .verdict_filter_active(*state)
+                        .then_some("active"),
+                    swatch: None,
+                    enabled: true,
+                })
+                .collect();
+            if let PickerEvent::Picked(i) = self.filter_palette.show(
+                ctx,
+                Some("toggle a state filter"),
+                "filter by state…",
+                &items,
+            ) {
+                self.session.toggle_verdict_filter(states[i].1);
+            }
+        } else {
+            let tags = self.session.all_tags();
+            let items: Vec<PickerItem> = tags
+                .iter()
+                .map(|t| PickerItem {
+                    label: &t.name,
+                    detail: self.session.tag_chip_active(t.id).then_some("active"),
+                    swatch: Some(theme::tag_color32(t.color)),
+                    enabled: true,
+                })
+                .collect();
+            if let PickerEvent::Picked(i) =
+                self.filter_palette
+                    .show(ctx, Some("toggle a tag filter"), "filter by tag…", &items)
+                && i < tags.len()
+            {
+                self.session.toggle_tag_chip(tags[i].id);
+            }
         }
     }
 

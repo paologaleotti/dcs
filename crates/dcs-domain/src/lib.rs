@@ -10,6 +10,7 @@ pub mod burst;
 pub mod command;
 pub mod cull;
 pub mod export;
+pub mod filter;
 pub mod fingerprint;
 pub mod fuzzy;
 pub mod grouping;

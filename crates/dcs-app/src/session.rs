@@ -16,6 +16,7 @@
 mod burst;
 mod display;
 mod edit;
+mod filter;
 mod group_ops;
 mod layout;
 mod store;
@@ -26,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use dcs_domain::burst::BurstKnobs;
+use dcs_domain::filter::Filter;
 use dcs_domain::grouping::{Axis, DerivedGroup, GroupKind, TimeGranularity};
 use dcs_domain::pairing::PoolBuilder;
 use dcs_domain::photo::PhotoId;
@@ -224,7 +226,14 @@ pub struct Session {
     history: History,
     /// Ephemeral focus cursor + selection.
     sel: Selection,
-    filter: VerdictFilter,
+    /// Active chip filter (state + tag + search chips, AND across groups / OR
+    /// within). Derived display state, never persisted; empty = show everything.
+    /// The verdict toggle is sugar over the lone-verdict group within it.
+    filter: Filter,
+    /// Search query → matching photos, the seam a future embedding consumer
+    /// fills. Empty in v1 (no model), so `Search` chips match nothing. Never
+    /// persisted; reset per folder.
+    search_sets: HashMap<String, HashSet<PhotoId>>,
     scan: Option<ScanHandle>,
     decoder: ThumbDecoderPool,
     /// Cheap 256 px grid thumbnails (disk-cached).
@@ -310,7 +319,8 @@ impl Session {
             tags: TagStore::new(),
             history: History::new(),
             sel: Selection::new(),
-            filter: VerdictFilter::All,
+            filter: Filter::default(),
+            search_sets: HashMap::new(),
             scan: None,
             decoder: ThumbDecoderPool::new(),
             base: ThumbCache::new(BASE_CACHE_BYTES),
@@ -358,7 +368,8 @@ impl Session {
         self.bursts = HashMap::new();
         self.burst_count = 0;
         self.sel = Selection::new();
-        self.filter = VerdictFilter::All;
+        self.filter = Filter::default();
+        self.search_sets.clear();
         // Abandon any running export from the previous folder (its handle drops).
         self.export_handle = None;
         self.export_status = None;

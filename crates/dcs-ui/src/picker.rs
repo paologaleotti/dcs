@@ -74,6 +74,9 @@ pub struct Picker {
     open: bool,
     /// Set on open so the next frame focuses the search field and resets scroll.
     just_opened: bool,
+    /// Stay open after a pick (multi-toggle pickers like the filter dimensions);
+    /// only Esc or the window close dismisses it. Default false (pick = close).
+    sticky: bool,
 }
 
 impl Picker {
@@ -85,6 +88,7 @@ impl Picker {
             cursor: 0,
             open: false,
             just_opened: false,
+            sticky: false,
         }
     }
 
@@ -103,8 +107,16 @@ impl Picker {
     pub fn open(&mut self) {
         self.open = true;
         self.just_opened = true;
+        self.sticky = false;
         self.query.clear();
         self.cursor = 0;
+    }
+
+    /// Open in sticky mode: a pick toggles but keeps the picker open, so several
+    /// items can be flipped in a row; Esc or the window close dismisses it.
+    pub fn open_sticky(&mut self) {
+        self.open();
+        self.sticky = true;
     }
 
     /// Render the picker and report what happened. No-op returning `Pending`
@@ -134,22 +146,21 @@ impl Picker {
 
         self.cursor = self.cursor.min(ranked.len().saturating_sub(1));
         let nav = self.consume_nav_keys(ctx, ranked.len());
-        match nav {
-            Nav::Dismiss => {
-                self.open = false;
-                return PickerEvent::Dismissed;
-            }
-            Nav::Accept => {
-                // A disabled row can't be chosen — Enter on it is a no-op.
-                if let Some(&(idx, _)) = ranked.get(self.cursor)
-                    && items[idx].enabled
-                {
-                    self.open = false;
-                    return PickerEvent::Picked(idx);
-                }
-            }
-            Nav::Move | Nav::None => {}
+        if matches!(nav, Nav::Dismiss) {
+            self.open = false;
+            return PickerEvent::Dismissed;
         }
+        // A keyboard Accept is resolved *after* the window draws this frame, not
+        // by an early return — otherwise a sticky pick blinks the window away for
+        // a frame. A disabled row can't be chosen.
+        let mut picked = if matches!(nav, Nav::Accept) {
+            ranked
+                .get(self.cursor)
+                .filter(|&&(idx, _)| items[idx].enabled)
+                .map(|&(idx, _)| idx)
+        } else {
+            None
+        };
         // On reopen, force the scroll back to the top so it agrees with cursor 0.
         let opened_fresh = self.just_opened;
         let scroll_to_cursor = matches!(nav, Nav::Move) || opened_fresh;
@@ -233,10 +244,19 @@ impl Picker {
             self.open = false;
             return PickerEvent::Dismissed;
         }
-        if matches!(event, PickerEvent::Picked(_)) {
-            self.open = false;
+        // A row click this frame overrides any keyboard accept.
+        if let PickerEvent::Picked(idx) = event {
+            picked = Some(idx);
         }
-        event
+        match picked {
+            Some(idx) => {
+                if !self.sticky {
+                    self.open = false;
+                }
+                PickerEvent::Picked(idx)
+            }
+            None => PickerEvent::Pending,
+        }
     }
 
     /// One result row: a full-width clickable strip, highlighted when it is the

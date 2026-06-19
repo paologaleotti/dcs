@@ -10,6 +10,7 @@ impl DcsApp {
         // `Picker::show`), so the grid stays inert behind it — just bail.
         if self.palette.is_open()
             || self.tag_palette.is_open()
+            || self.filter_palette.is_open()
             || self.zone_picker.is_open()
             || self.camera_zone_picker.is_open()
         {

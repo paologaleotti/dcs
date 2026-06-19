@@ -685,9 +685,13 @@ pub fn derive_bursts(frames: &[(PhotoId, OffsetDateTime, FileSeq)], k: BurstKnob
 
 // Filters: AND across groups, OR within a group (#13)
 pub enum ChipOp { And, Or }
+pub enum Chip { Verdict(AcceptState), Tag(TagId), Search(String) }  // Search = scaffold; matches inject at resolve, empty until embeddings land
 pub struct FilterGroup { op: ChipOp, chips: Vec<Chip> }   // op = within-group
 pub struct Filter { groups: Vec<FilterGroup> }            // groups AND-combined
-pub fn resolve(pool: &Pool, tags: &Tags, f: &Filter) -> Vec<PhotoId>;
+// Owned membership (verdicts/tags) and the future search sets are injected via a
+// borrowed FilterCtx, so resolution stays pure and arrows point down. An empty
+// filter matches everything; RAW-only exclusion is the caller's gate, not here.
+pub fn resolve(photos: &[Photo], f: &Filter, ctx: &FilterCtx) -> HashSet<usize>;
 
 pub enum ViewKind { Grid(GridSettings), Board(BoardState) }   // Board typed now
 
@@ -708,7 +712,7 @@ pub enum Command {            // ONE registry: keys, palette, menus
 
 // What the dialog collects — the §6 stages as plain settings.
 pub struct ExportRequest {
-    scope: ExportScope,                     // Selection | Filter(Filter) | Verdict(..) | SoloGroup
+    scope: ExportScope,                     // Selection | CurrentFilter (reads the live Filter) | Verdict shortcuts (Accepted, Rejected, Unreviewed, AcceptedAndUnreviewed, Everything) | SoloGroup
     files: ExportFiles,                     // JpegOnly | RawOnly | Both | AsShot
     sidecars: bool,
     layout: ExportLayout,                   // Together | SplitJpegRaw | MirrorTree | GroupAsFolders

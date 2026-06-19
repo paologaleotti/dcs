@@ -1,6 +1,7 @@
-use egui::{Align, FontId, Layout, RichText, Ui};
+use egui::containers::menu::{MenuButton, MenuConfig};
+use egui::{Align, FontId, Layout, PopupCloseBehavior, RichText, Sense, Ui, Vec2};
 
-use super::{DcsApp, VERDICT_FILTERS, ViewMode};
+use super::{DcsApp, ViewMode};
 use crate::theme;
 
 impl DcsApp {
@@ -42,24 +43,18 @@ impl DcsApp {
                     }
 
                     ui.separator();
-                    micro_label(ui, "VIEW");
-                    let active = self.session.filter();
-                    for (label, filter) in VERDICT_FILTERS {
-                        if ui
-                            .selectable_label(active == filter, RichText::new(label).monospace())
-                            .clicked()
-                        {
-                            clicked = Some(dcs_app::AppAction::SetFilter(filter));
-                        }
-                    }
-
-                    ui.separator();
                     micro_label(ui, "GROUP");
                     if let Some(a) = self.group_menu(ui) {
                         clicked = Some(a);
                     }
                     micro_label(ui, "SORT");
                     if let Some(a) = self.sort_menu(ui) {
+                        clicked = Some(a);
+                    }
+
+                    ui.separator();
+                    micro_label(ui, "FILTER");
+                    if let Some(a) = self.filter_menu(ui) {
                         clicked = Some(a);
                     }
 
@@ -252,6 +247,86 @@ impl DcsApp {
         });
         if let Some(action) = clicked {
             self.dispatch(action, ctx);
+        }
+    }
+
+    /// The FILTER dropdown: one place to narrow the sheet — verdict checkboxes
+    /// (multi-select) and a checkbox + color swatch per tag. Toggling emits a
+    /// chip; the active chips show in the accent bar below. The button reads the
+    /// active count so the toolbar shows at a glance whether a filter is on.
+    fn filter_menu(&self, ui: &mut Ui) -> Option<dcs_app::AppAction> {
+        use dcs_app::AppAction;
+        use dcs_domain::cull::AcceptState;
+        let mut picked = None;
+        // CloseOnClickOutside keeps the dropdown open while you tick several
+        // boxes — toggling a checkbox shouldn't dismiss the menu.
+        MenuButton::new(RichText::new(self.filter_summary()).monospace())
+            .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
+            .ui(ui, |ui| {
+                ui.set_min_width(180.0);
+                ui.label(RichText::new("STATE").small().weak());
+                for (label, state) in [
+                    ("unreviewed", AcceptState::Unreviewed),
+                    ("accepted", AcceptState::Accepted),
+                    ("rejected", AcceptState::Rejected),
+                ] {
+                    let mut on = self.session.verdict_filter_active(state);
+                    if ui.checkbox(&mut on, label).changed() {
+                        picked = Some(AppAction::ToggleVerdictFilter(state));
+                    }
+                }
+
+                ui.add_space(4.0);
+                ui.label(RichText::new("TAGS").small().weak());
+                let tags = self.session.all_tags();
+                if tags.is_empty() {
+                    ui.add_enabled(false, egui::Button::new(RichText::new("no tags").small()));
+                } else {
+                    for tag in &tags {
+                        // Checkbox, then the tag's color swatch, then the name.
+                        ui.horizontal(|ui| {
+                            let mut on = self.session.tag_chip_active(tag.id);
+                            let cb = ui.checkbox(&mut on, "");
+                            let (rect, _) =
+                                ui.allocate_exact_size(Vec2::splat(11.0), Sense::hover());
+                            ui.painter()
+                                .rect_filled(rect, 2.0, theme::tag_color32(tag.color));
+                            ui.add_space(4.0);
+                            let lbl = ui.add(
+                                egui::Label::new(RichText::new(&tag.name).monospace())
+                                    .sense(Sense::click()),
+                            );
+                            if cb.changed() || lbl.clicked() {
+                                picked = Some(AppAction::ToggleFilterTag(tag.id));
+                            }
+                        });
+                    }
+                }
+
+                if self.session.is_filtered() {
+                    ui.separator();
+                    if ui.button(RichText::new("clear").monospace()).clicked() {
+                        picked = Some(AppAction::ClearFilters);
+                        ui.close();
+                    }
+                }
+            });
+        picked
+    }
+
+    /// The FILTER button's label: how many chips are active, or `none`.
+    fn filter_summary(&self) -> String {
+        let n: usize = self
+            .session
+            .active_filter()
+            .groups
+            .iter()
+            .map(|g| g.chips.len())
+            .sum();
+        if n == 0 {
+            "none".to_string()
+        } else {
+            format!("{n} active")
         }
     }
 

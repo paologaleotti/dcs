@@ -3,12 +3,15 @@
 //! hands the plan to the `dcs-io` executor — the methods live on `Session`
 //! (`session.rs`) where they can read its private state.
 
-/// Which photos an export covers. Tag- and filter-chip scopes arrive with
-/// the Tags slice; these key on selection and verdict only.
+/// Which photos an export covers. The verdict shortcuts are pre-built filters
+/// surfaced for the common cases; `CurrentFilter` exports exactly what the active
+/// chips resolve to, so the dialog and the grid never disagree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportScope {
     /// The current multi-select.
     Selection,
+    /// Whatever the active chip filter currently resolves to.
+    CurrentFilter,
     Accepted,
     Rejected,
     Unreviewed,

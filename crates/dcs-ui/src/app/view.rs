@@ -1,5 +1,7 @@
-use dcs_app::VerdictFilter;
-use egui::{Align, FontId, Layout, RichText, Ui};
+use dcs_app::AppAction;
+use dcs_domain::cull::AcceptState;
+use dcs_domain::filter::{ChipOp, FilterChip};
+use egui::{Align, Color32, FontId, Layout, RichText, Sense, Stroke, Ui, Vec2};
 
 use super::{DcsApp, PALETTE_MOD, ViewMode};
 use crate::gallery;
@@ -19,9 +21,19 @@ impl DcsApp {
         } else {
             " · saved"
         };
+        // When filtered, lead with "N of M" so the narrowed set is unmistakable.
+        let shown = if self.session.is_filtered() {
+            format!(
+                "{} of {} shown",
+                self.session.photo_count(),
+                self.session.displayable_count()
+            )
+        } else {
+            format!("{} shown", self.session.photo_count())
+        };
         let text = format!(
-            "{} shown · {} sel · acc {} · rej {} · unrev {}{}{}",
-            self.session.photo_count(),
+            "{} · {} sel · acc {} · rej {} · unrev {}{}{}",
+            shown,
             self.session.selection_count(),
             acc,
             rej,
@@ -53,6 +65,138 @@ impl DcsApp {
                 });
             });
         });
+    }
+
+    /// The active-filter bar: a slim accent row that appears **only when a chip
+    /// filter is on** (the filter is built from the toolbar `FILTER` dropdown).
+    /// Reads the active set back — removable chip pills, multi-chip groups
+    /// bracketed with a clickable AND/OR, `clear`, and an `N of M` count — so
+    /// being filtered is unmistakable. One dispatch path.
+    pub(super) fn filter_bar(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        if !self.session.is_filtered() {
+            return;
+        }
+        let mut clicked: Option<AppAction> = None;
+        let filter = self.session.active_filter().clone();
+        egui::Panel::top("filter_bar")
+            .frame(
+                egui::Frame::default()
+                    .fill(theme::CHROME_BG)
+                    // Small inset above the accent rule; the breathing room goes
+                    // *below* it (added before the chips), not above.
+                    .inner_margin(egui::Margin {
+                        left: 8,
+                        right: 8,
+                        top: 5,
+                        bottom: 8,
+                    }),
+            )
+            .show_inside(ui, |ui| {
+                let top = ui.max_rect();
+                ui.painter().hline(
+                    top.x_range(),
+                    top.top(),
+                    Stroke::new(2.0, theme::FILTER_ACCENT),
+                );
+                // Gap between the accent rule and the chips below it.
+                ui.add_space(10.0);
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.label(
+                        RichText::new("FILTER")
+                            .font(FontId::monospace(10.0))
+                            .color(theme::FILTER_ACCENT),
+                    );
+                    ui.add_space(2.0);
+                    for (gi, group) in filter.groups.iter().enumerate() {
+                        if gi > 0 {
+                            ui.label(RichText::new("and").monospace().color(theme::TEXT_DIM));
+                        }
+                        // Brackets only earn their ink when a group has a
+                        // combinator to show (2+ chips).
+                        let bracketed = group.chips.len() > 1;
+                        if bracketed {
+                            ui.label(RichText::new("(").monospace().color(theme::TEXT_DIM));
+                        }
+                        for (ci, chip) in group.chips.iter().enumerate() {
+                            if ci > 0 {
+                                let op = match group.op {
+                                    ChipOp::Or => "or",
+                                    ChipOp::And => "and",
+                                };
+                                if ui
+                                    .small_button(RichText::new(op).monospace())
+                                    .on_hover_text("toggle and / or")
+                                    .clicked()
+                                {
+                                    clicked = Some(AppAction::ToggleFilterGroupOp(gi));
+                                }
+                            }
+                            if self.chip_pill(ui, chip) {
+                                clicked = Some(AppAction::RemoveFilterChip {
+                                    group: gi,
+                                    chip: ci,
+                                });
+                            }
+                        }
+                        if bracketed {
+                            ui.label(RichText::new(")").monospace().color(theme::TEXT_DIM));
+                        }
+                    }
+                    ui.add_space(4.0);
+                    if ui
+                        .small_button(RichText::new("clear").monospace())
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::ClearFilters);
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "{} of {}",
+                                self.session.photo_count(),
+                                self.session.displayable_count()
+                            ))
+                            .font(FontId::monospace(12.0))
+                            .color(theme::FILTER_ACCENT),
+                        );
+                    });
+                });
+            });
+        if let Some(action) = clicked {
+            self.dispatch(action, ctx);
+        }
+    }
+
+    /// Render one chip as a pill (optional color swatch + label + `×`). Returns
+    /// true when its `×` was clicked.
+    fn chip_pill(&self, ui: &mut Ui, chip: &FilterChip) -> bool {
+        let (label, swatch) = self.chip_label(chip);
+        let mut remove = false;
+        ui.horizontal(|ui| {
+            if let Some(color) = swatch {
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+                ui.painter().rect_filled(rect, 2.0, color);
+            }
+            ui.label(RichText::new(label).monospace());
+            if ui.small_button("×").clicked() {
+                remove = true;
+            }
+        });
+        remove
+    }
+
+    /// A chip's display label and optional swatch color.
+    fn chip_label(&self, chip: &FilterChip) -> (String, Option<Color32>) {
+        match chip {
+            FilterChip::Verdict(AcceptState::Accepted) => ("accepted".into(), None),
+            FilterChip::Verdict(AcceptState::Rejected) => ("rejected".into(), None),
+            FilterChip::Verdict(AcceptState::Unreviewed) => ("unreviewed".into(), None),
+            FilterChip::Tag(id) => match self.session.tag_def(*id) {
+                Some(tag) => (tag.name.clone(), Some(theme::tag_color32(tag.color))),
+                None => ("?".into(), None),
+            },
+            FilterChip::Search(query) => (format!("search: {query}"), None),
+        }
     }
 
     pub(super) fn central(&mut self, ui: &mut Ui) {
@@ -186,10 +330,13 @@ impl DcsApp {
     }
 
     fn empty_state(&mut self, ui: &mut Ui) {
-        // Reached only once scanning is done (central gates that), so the empty
-        // grid is either no folder open or the filter hid everything.
+        // Reached only once scanning is done (central gates that). Three ways to
+        // be here: no folder open, a filter hid everything, or the pool holds
+        // only RAW-only photos that v1 can't display (no filter to blame).
         let no_folder = self.session.pool_len() == 0;
+        let filtered_out = !no_folder && self.session.is_filtered();
         let mut open_clicked = false;
+        let mut clear_clicked = false;
         // A top spacer of ~half the leftover height centers the fixed-size block.
         ui.vertical_centered(|ui| {
             let avail = ui.available_height();
@@ -218,34 +365,38 @@ impl DcsApp {
                         .size(11.0)
                         .color(theme::HAIRLINE),
                 );
-            } else {
-                // Pool has photos; the active verdict filter hides them all.
-                pad(ui, 48.0);
+            } else if filtered_out {
+                // Pool has photos; the active filter hides them all.
+                pad(ui, 60.0);
                 ui.label(
-                    RichText::new(format!("no {} photos", filter_word(self.session.filter())))
+                    RichText::new("no photos match the filter")
                         .monospace()
                         .color(theme::TEXT_DIM),
                 );
+                ui.add_space(8.0);
+                if ui
+                    .button(RichText::new("Clear filters").monospace().size(13.0))
+                    .clicked()
+                {
+                    clear_clicked = true;
+                }
+            } else {
+                // Pool holds only RAW-only photos — nothing to draw in v1, and no
+                // filter to clear. Say so honestly instead of blaming a filter.
+                pad(ui, 40.0);
                 ui.label(
-                    RichText::new("view: all to show everything")
+                    RichText::new("no displayable photos — this folder has only RAW files")
                         .monospace()
-                        .size(11.0)
-                        .color(theme::HAIRLINE),
+                        .color(theme::TEXT_DIM),
                 );
             }
         });
         if open_clicked {
             self.open_folder_dialog();
         }
-    }
-}
-
-/// The verdict-filter word for the empty-view message (`All` never empties).
-fn filter_word(filter: VerdictFilter) -> &'static str {
-    match filter {
-        VerdictFilter::All => "",
-        VerdictFilter::Unreviewed => "unreviewed",
-        VerdictFilter::Accepted => "accepted",
-        VerdictFilter::Rejected => "rejected",
+        if clear_clicked {
+            let ctx = ui.ctx().clone();
+            self.dispatch(AppAction::ClearFilters, &ctx);
+        }
     }
 }

@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use dcs_app::{Session, VerdictFilter};
+use dcs_app::Session;
 use dcs_domain::grouping::GroupKind;
 use egui::Ui;
 
@@ -25,14 +25,6 @@ use crate::theme;
 /// First row of the timezone picker — picking it clears the shoot zone back to
 /// the system default (so "no zone" stays a keyboard-reachable choice).
 const CLEAR_ZONE_ROW: &str = "(clear — use system default zone)";
-
-/// The verdict filter chips, in toolbar order.
-const VERDICT_FILTERS: [(&str, VerdictFilter); 4] = [
-    ("all", VerdictFilter::All),
-    ("unrev", VerdictFilter::Unreviewed),
-    ("acc", VerdictFilter::Accepted),
-    ("rej", VerdictFilter::Rejected),
-];
 
 const CELL_MIN: f32 = 80.0;
 const CELL_MAX: f32 = 400.0;
@@ -106,6 +98,12 @@ pub struct DcsApp {
     tag_palette: Picker,
     /// Whether the tag palette is in remove mode (`Shift+T`) vs add mode (`T`).
     tag_palette_remove: bool,
+    /// The palette-path filter picker (`Filter: State…` / `Filter: Tag…`),
+    /// toggling one chip at a time.
+    filter_palette: Picker,
+    /// Which dimension the filter picker is editing: `true` = verdict state,
+    /// `false` = tags.
+    filter_palette_state: bool,
     /// Tag manager window visibility.
     show_tag_manager: bool,
     /// Per-tag name edit buffers while the manager is open (the `TextEdit`s need
@@ -152,6 +150,8 @@ impl DcsApp {
             palette: Picker::new("Command Palette"),
             tag_palette: Picker::new("Tags"),
             tag_palette_remove: false,
+            filter_palette: Picker::new("Filter"),
+            filter_palette_state: false,
             show_tag_manager: false,
             tag_edits: HashMap::new(),
             collapsed: HashSet::new(),
@@ -174,6 +174,7 @@ impl eframe::App for DcsApp {
         // Toolbar and status bar only exist once a project is open.
         if self.session.has_folder() {
             self.top_bar(ui, &ctx);
+            self.filter_bar(ui, &ctx);
             self.read_only_banner(ui);
             self.status_bar(ui);
         }
@@ -190,6 +191,7 @@ impl eframe::App for DcsApp {
         self.camera_zone_picker(&ctx);
         self.command_palette(&ctx);
         self.tag_palette(&ctx);
+        self.filter_palette(&ctx);
         self.tag_manager(&ctx);
         if self.debug {
             self.diagnostics(&ctx);
@@ -287,6 +289,14 @@ impl DcsApp {
             E::ToggleDiagnostics => self.debug = !self.debug,
             E::OpenZonePicker => self.zone_picker.open(),
             E::OpenCameraZonePicker => self.camera_zone_picker.open(),
+            E::OpenFilterStatePalette => {
+                self.filter_palette_state = true;
+                self.filter_palette.open_sticky();
+            }
+            E::OpenFilterTagPalette => {
+                self.filter_palette_state = false;
+                self.filter_palette.open_sticky();
+            }
             E::ShowMetadata => self.show_metadata = true,
             E::ShowAbout => self.show_about = true,
             E::OpenTagPalette => {

@@ -43,6 +43,11 @@ pub const BURST_SPAN: Color32 = Color32::from_rgb(74, 64, 46);
 /// The burst run's count label, a brighter tint of the span accent.
 pub const BURST_LABEL: Color32 = Color32::from_rgb(198, 172, 120);
 
+/// "You are filtered" accent — a muted slate marking the filter bar, its rule,
+/// and the `N of M` count, so a narrowed grid reads at a glance. A UI-state
+/// signal, deliberately cool and off to the side of the tag/verdict/burst hues.
+pub const FILTER_ACCENT: Color32 = Color32::from_rgb(96, 124, 148);
+
 pub fn apply(ctx: &Context) {
     let mut v = Visuals::dark();
     squareify(&mut v);

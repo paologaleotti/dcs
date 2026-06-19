@@ -49,6 +49,12 @@ impl Cull {
         self.verdicts.get(&id).copied().unwrap_or_default()
     }
 
+    /// The raw verdict map (absent entries are `Unreviewed`), borrowed for the
+    /// pure filter resolver. Only photos that moved off `Unreviewed` are present.
+    pub fn verdicts(&self) -> &HashMap<PhotoId, AcceptState> {
+        &self.verdicts
+    }
+
     /// Accepted/rejected tallies.
     pub fn counts(&self) -> VerdictCounts {
         let mut c = VerdictCounts::default();

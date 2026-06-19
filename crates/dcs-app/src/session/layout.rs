@@ -1,30 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use dcs_domain::cull::AcceptState;
+use dcs_domain::filter;
 use dcs_domain::grouping::{self, Axis, TimeGranularity};
 use dcs_domain::photo::PhotoId;
 use dcs_domain::sort::Sort;
 use dcs_domain::timezone;
 use time_tz::Tz;
 
-use super::{Session, VerdictFilter, VisibleGroup};
+use super::{Session, VisibleGroup};
 
 impl Session {
-    pub fn filter(&self) -> VerdictFilter {
-        self.filter
-    }
-
-    /// Switch the verdict view. Recomputes the visible order and rewinds the
-    /// background fill so any newly-visible photos decode.
-    pub fn set_filter(&mut self, filter: VerdictFilter) {
-        if self.filter == filter {
-            return;
-        }
-        self.filter = filter;
-        self.bg_cursor = 0;
-        self.rebuild_visible();
-    }
-
     /// The visible groups (post-filter spans) the grid draws headers from.
     pub fn groups(&self) -> &[VisibleGroup] {
         &self.visible_groups
@@ -107,9 +92,13 @@ impl Session {
     /// spans the grid headers read. Walks groups in order so spans and cells
     /// stay in lockstep; groups with no surviving members are omitted.
     pub(super) fn rebuild_visible(&mut self) {
-        let filter = self.filter;
         let photos = self.builder.photos();
-        let cull = &self.cull;
+        // No active filter is the common steady state — skip resolution entirely
+        // and let `passes` be just the raw-only gate, as cheap as before chips.
+        let pass_set: Option<HashSet<usize>> = self
+            .filter
+            .is_active()
+            .then(|| filter::resolve(photos, &self.filter, &self.filter_ctx()));
         let passes = |i: usize| {
             // v1 can't decode a RAW, so a RAW-only photo has nothing to show:
             // keep it in the pool (paired, persisted, ready for RAW decode later)
@@ -117,13 +106,8 @@ impl Session {
             if photos[i].is_raw_only() {
                 return false;
             }
-            let state = cull.state(photos[i].id);
-            match filter {
-                VerdictFilter::All => true,
-                VerdictFilter::Unreviewed => state == AcceptState::Unreviewed,
-                VerdictFilter::Accepted => state == AcceptState::Accepted,
-                VerdictFilter::Rejected => state == AcceptState::Rejected,
-            }
+            // No filter → everything passes the resolver; chips narrow via the set.
+            pass_set.as_ref().is_none_or(|set| set.contains(&i))
         };
         let mut visible = Vec::new();
         let mut spans = Vec::new();
