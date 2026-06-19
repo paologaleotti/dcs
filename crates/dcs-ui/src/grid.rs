@@ -241,6 +241,9 @@ pub fn show(
     if !zoomed {
         session.clear_hires();
     }
+    // Any derived bursts to paint? Gates the per-row span sweep off the hot path
+    // entirely in the common (bursts-off) case.
+    let bursts_on = session.burst_count() > 0;
     let focus = session.focus();
     // Drop collapse entries for titles no longer present (regroup/sort/filter
     // changed the group set) so the set can't grow without bound across changes.
@@ -322,6 +325,13 @@ pub fn show(
                         paint_header(ui, info, hrect, hovered);
                     }
                     Row::Cells { start, len } => {
+                        // The burst-span backdrop is one band per run, painted
+                        // before the cells so it reads continuous across the
+                        // inter-cell gaps. Only swept when bursts are actually
+                        // visible — the default path stays allocation-free.
+                        if bursts_on {
+                            paint_burst_spans(ui, session, *start, *len, origin.x, y, stride, cell);
+                        }
                         for c in 0..*len {
                             let idx = start + c;
                             let Some(info) = session.cell_info(idx) else {
@@ -662,6 +672,82 @@ fn tier_for(px: f32) -> u32 {
         .unwrap_or(TIERS.last().expect("TIERS is non-empty"))
 }
 
+/// Paint the burst-span backdrop for one grid row: one rounded band per run of
+/// consecutive cells sharing a burst id, spanning from the run's first cell left
+/// edge to its last cell right edge so it reads continuous across the inter-cell
+/// gaps. A run that wraps to the next row is painted as a segment per row.
+/// `c0` is the row's first display index; `len` its cell count.
+#[allow(clippy::too_many_arguments)]
+fn paint_burst_spans(
+    ui: &Ui,
+    session: &Session,
+    c0: usize,
+    len: usize,
+    origin_x: f32,
+    y: f32,
+    stride: f32,
+    cell: f32,
+) {
+    let p = ui.painter();
+    let left = |c: usize| origin_x + c as f32 * stride;
+    let burst_id = |c: usize| {
+        session
+            .cell_info(c0 + c)
+            .and_then(|i| i.burst)
+            .map(|b| b.id)
+    };
+    let mut c = 0;
+    while c < len {
+        let Some(id) = burst_id(c) else {
+            c += 1;
+            continue;
+        };
+        let mut j = c + 1;
+        while j < len && burst_id(j) == Some(id) {
+            j += 1;
+        }
+        let span = Rect::from_min_max(
+            Pos2::new(left(c), y),
+            Pos2::new(left(j - 1) + cell, y + cell),
+        );
+        p.rect_filled(span, 3.0, theme::BURST_SPAN);
+        c = j;
+    }
+}
+
+/// The burst run's label on its first cell — `burst#N (frames)`, a small mono
+/// pill gated to readable cell sizes like the RAW badge. Top-centre so it clears
+/// the RAW badge (top-left) and verdict glyph (bottom-right). `number` is the
+/// run's 1-based sheet ordinal.
+fn paint_burst_label(ui: &Ui, cell_rect: Rect, number: u32, len: usize) {
+    if cell_rect.width() < BADGE_MIN_CELL {
+        return;
+    }
+    // Naming the run ("burst#3") reads far clearer than a bare count, and the
+    // frame total rides along in parentheses.
+    let text = format!("burst#{number} ({len})");
+    let font = FontId::monospace((cell_rect.width() * 0.085).clamp(10.0, 13.0));
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.clone(), font.clone(), theme::BURST_LABEL);
+    let pad = 4.0;
+    let pill = Rect::from_min_size(
+        Pos2::new(
+            cell_rect.center().x - galley.size().x / 2.0 - pad,
+            cell_rect.top() + 4.0,
+        ),
+        Vec2::new(galley.size().x + pad * 2.0, galley.size().y + pad),
+    );
+    ui.painter().rect_filled(pill, 3.0, theme::BADGE_BG);
+    ui.painter().text(
+        pill.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        font,
+        theme::BURST_LABEL,
+    );
+}
+
 fn paint_cell(
     ui: &mut Ui,
     session: &mut Session,
@@ -670,7 +756,14 @@ fn paint_cell(
     focused: bool,
     cell_rect: Rect,
 ) {
-    ui.painter().rect_filled(cell_rect, 0.0, theme::CELL_EMPTY);
+    // A burst cell's letterbox margins show the span accent; others the neutral
+    // empty-cell gray. The span band behind the run is already painted.
+    let bg = if info.burst.is_some() {
+        theme::BURST_SPAN
+    } else {
+        theme::CELL_EMPTY
+    };
+    ui.painter().rect_filled(cell_rect, 0.0, bg);
 
     if !info.missing
         && let Some(tex) = textures.texture(ui, session, info.id)
@@ -696,6 +789,11 @@ fn paint_cell(
 
     paint_verdict_glyph(ui, cell_rect, info.state);
     paint_tag_strips(ui, cell_rect, &info.tag_colors);
+
+    // The run's first frame carries the burst label (id is 0-based → 1-based).
+    if let Some(b) = info.burst.filter(|b| b.first) {
+        paint_burst_label(ui, cell_rect, b.id + 1, b.len);
+    }
 
     // Selection first, focus on top and brighter — a focused cell that is also
     // selected reads as the focus.

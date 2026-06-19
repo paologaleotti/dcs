@@ -36,6 +36,7 @@ fn snapshot() -> ProjectSnapshot {
             shoot_zone: Some("Europe/Rome".to_string()),
             camera_zone: Some("Asia/Tokyo".to_string()),
             grid_zoom: Some(180.0),
+            show_bursts: Some(false),
         },
     }
 }
@@ -135,6 +136,7 @@ fn config_and_paths_round_trip() {
     let loaded = store.load(&dir).unwrap().unwrap();
     assert_eq!(loaded.config.shoot_zone.as_deref(), Some("Europe/Rome"));
     assert_eq!(loaded.config.grid_zoom, Some(180.0));
+    assert_eq!(loaded.config.show_bursts, Some(false));
     assert_eq!(
         loaded.photos[0].jpeg,
         Some(std::path::PathBuf::from("a.jpg"))

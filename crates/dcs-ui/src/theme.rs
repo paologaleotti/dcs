@@ -35,6 +35,14 @@ pub const VERDICT_ACCEPT: Color32 = Color32::from_rgb(90, 190, 110);
 /// Rejected verdict mark.
 pub const VERDICT_REJECT: Color32 = Color32::from_rgb(210, 90, 90);
 
+/// Burst span accent — the single muted, warm neutral painted behind a run of
+/// rapid-fire frames. One of the three meaning-bearing colors (tags, verdict,
+/// burst); kept low-saturation so it reads as a band, not a tag, and evokes the
+/// film rebate the design language leans on.
+pub const BURST_SPAN: Color32 = Color32::from_rgb(74, 64, 46);
+/// The burst run's count label, a brighter tint of the span accent.
+pub const BURST_LABEL: Color32 = Color32::from_rgb(198, 172, 120);
+
 pub fn apply(ctx: &Context) {
     let mut v = Visuals::dark();
     squareify(&mut v);

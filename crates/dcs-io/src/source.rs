@@ -238,10 +238,21 @@ fn read_meta(
         .and_then(|f| f.value.get_uint(0))
         .map(|n| Orientation::from_exif(n as u16))
         .unwrap_or_default();
+    // Subseconds make a 10 fps burst orderable below the 1 s resolution of
+    // `DateTimeOriginal`; folded into the capture instant so grouping, sort, and
+    // burst derivation all see one time. Absent subseconds leave it whole-second.
+    let subsec_nanos = exif
+        .get_field(exif::Tag::SubSecTimeOriginal, exif::In::PRIMARY)
+        .and_then(ascii_value)
+        .and_then(parse_subsec_nanos);
     let captured_at = exif
         .get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)
         .and_then(ascii_value)
-        .and_then(parse_exif_datetime);
+        .and_then(parse_exif_datetime)
+        .map(|dt| match subsec_nanos {
+            Some(ns) => dt.replace_nanosecond(ns).unwrap_or(dt),
+            None => dt,
+        });
     let captured_offset = exif
         .get_field(exif::Tag::OffsetTimeOriginal, exif::In::PRIMARY)
         .and_then(ascii_value)
@@ -322,6 +333,26 @@ fn parse_exif_datetime(value: &str) -> Option<PrimitiveDateTime> {
     PrimitiveDateTime::parse(value, fmt).ok()
 }
 
+fn parse_subsec_nanos(value: &str) -> Option<u32> {
+    // EXIF `SubSecTimeOriginal` is ASCII fractional-second digits ("12" = .12 s),
+    // NUL/space-padded. Read leading digits as a decimal fraction and scale to
+    // nanoseconds, right-padding so "12" → 120_000_000.
+    let digits: String = value
+        .trim_matches(|c: char| c.is_whitespace() || c == '\0')
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let frac = &digits[..digits.len().min(9)];
+    let mut nanos: u32 = frac.parse().ok()?;
+    for _ in frac.len()..9 {
+        nanos = nanos.checked_mul(10)?;
+    }
+    Some(nanos)
+}
+
 fn parse_exif_offset(value: &str) -> Option<UtcOffset> {
     // EXIF `OffsetTimeOriginal` is ASCII `"±HH:MM"` (e.g. `"+09:00"`), NUL-padded.
     let value = value.trim_matches(|c: char| c.is_whitespace() || c == '\0');
@@ -331,8 +362,26 @@ fn parse_exif_offset(value: &str) -> Option<UtcOffset> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_exif_datetime, parse_exif_offset};
+    use super::{parse_exif_datetime, parse_exif_offset, parse_subsec_nanos};
     use time::macros::{datetime, offset};
+
+    #[test]
+    fn parses_subseconds_as_a_fraction() {
+        // "12" is .12 s, not 12 ns — right-padded to nanoseconds.
+        assert_eq!(parse_subsec_nanos("12"), Some(120_000_000));
+        assert_eq!(parse_subsec_nanos("5"), Some(500_000_000));
+        assert_eq!(parse_subsec_nanos("123456789"), Some(123_456_789));
+    }
+
+    #[test]
+    fn subseconds_tolerate_padding_and_reject_empty() {
+        assert_eq!(parse_subsec_nanos("12\0"), Some(120_000_000));
+        assert_eq!(parse_subsec_nanos("  7 "), Some(700_000_000));
+        assert_eq!(parse_subsec_nanos(""), None);
+        assert_eq!(parse_subsec_nanos("\0"), None);
+        // Beyond nanosecond precision is truncated, not rounded.
+        assert_eq!(parse_subsec_nanos("1234567899"), Some(123_456_789));
+    }
 
     #[test]
     fn parses_standard_exif_datetime() {

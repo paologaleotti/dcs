@@ -99,6 +99,7 @@ impl Session {
             .collect();
         self.groups = groups;
         self.pool_revision = self.builder.revision();
+        self.derive_bursts();
         self.rebuild_visible();
     }
 

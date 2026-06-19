@@ -153,6 +153,23 @@ impl Session {
         self.dirty = true;
     }
 
+    /// Whether the grid paints the burst overlay. A persisted view preference;
+    /// defaults to off — bursts are an opt-in lens, not always-on chrome.
+    pub fn show_bursts(&self) -> bool {
+        self.config.show_bursts.unwrap_or(false)
+    }
+
+    /// Flip the burst overlay on/off; persists the preference and re-derives so
+    /// the change shows at once. Read-only projects don't persist it.
+    pub fn toggle_bursts(&mut self) {
+        if self.read_only {
+            return;
+        }
+        self.config.show_bursts = Some(!self.show_bursts());
+        self.dirty = true;
+        self.derive_bursts();
+    }
+
     /// The persisted IANA shoot timezone (freeze-critical).
     pub fn shoot_zone(&self) -> Option<&str> {
         self.config.shoot_zone.as_deref()

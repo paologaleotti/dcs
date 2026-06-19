@@ -176,6 +176,7 @@ impl Session {
             selected: self.sel.is_selected(photo.id),
             missing: photo.missing,
             tag_colors: self.tags.strip(photo.id),
+            burst: self.bursts.get(&photo.id).copied(),
         })
     }
 

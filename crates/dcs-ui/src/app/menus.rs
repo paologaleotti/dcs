@@ -188,6 +188,29 @@ impl DcsApp {
                         clicked = Some(AppAction::Quit);
                     }
                 });
+                ui.menu_button("View", |ui| {
+                    // The checkbox renders the live state; its change dispatches
+                    // the registry toggle (the local bool is just the indicator).
+                    let mut show_bursts = self.session.show_bursts();
+                    let time_sort = self.session.sort().key == dcs_app::SortKey::Time;
+                    if ui
+                        .checkbox(&mut show_bursts, "Show Bursts overlay")
+                        .on_hover_text("Burst overlay shows only under a time sort")
+                        .changed()
+                    {
+                        clicked = Some(AppAction::ToggleBursts);
+                        ui.close();
+                    }
+                    // The pref is on but a name sort suppresses the overlay — say so.
+                    if show_bursts && !time_sort {
+                        ui.label(RichText::new("needs time sort").small().weak());
+                    }
+                    ui.separator();
+                    if ui.button("Toggle Diagnostics").clicked() {
+                        clicked = Some(AppAction::ToggleDiagnostics);
+                        ui.close();
+                    }
+                });
                 ui.menu_button("Tags", |ui| {
                     let has_sel = self.session.selection_count() > 0;
                     if ui

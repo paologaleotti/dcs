@@ -13,7 +13,8 @@ dcs-io.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-# Resolving the system shoot-zone default (the IANA zone grouping needs).
+# Capture instants for burst derivation; system shoot-zone resolution.
+time.workspace = true
 time-tz.workspace = true
 
 [dev-dependencies]

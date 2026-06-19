@@ -81,6 +81,11 @@ pub struct ProjectConfig {
     /// Grid cell size in logical pixels — the Grid view's zoom.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grid_zoom: Option<f32>,
+    /// Whether the grid paints the burst overlay (span accents + labels). A view
+    /// preference like `grid_zoom`, not a derived value — `None` means the
+    /// default (off). The derivation tuning (gap/min) stays ephemeral.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_bursts: Option<bool>,
 }
 
 /// The app-facing payload: what `dcs-app` hands down to save and gets back on

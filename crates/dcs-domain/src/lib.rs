@@ -6,6 +6,7 @@
 //!
 //! Bottom of the dependency tree — depends on no internal crate.
 
+pub mod burst;
 pub mod command;
 pub mod cull;
 pub mod export;

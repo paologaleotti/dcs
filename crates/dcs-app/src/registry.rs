@@ -36,6 +36,9 @@ pub enum AppAction {
     ZoomIn,
     ZoomOut,
     ToggleDiagnostics,
+    /// Toggle the grid's burst overlay (span accents + labels). A persisted view
+    /// preference.
+    ToggleBursts,
     Accept,
     Reject,
     /// Open the tag palette to add/create a named tag on the selection.
@@ -116,6 +119,7 @@ impl AppAction {
             AppAction::ZoomIn => "zoom-in",
             AppAction::ZoomOut => "zoom-out",
             AppAction::ToggleDiagnostics => "toggle-diagnostics",
+            AppAction::ToggleBursts => "toggle-bursts",
             AppAction::Accept => "accept",
             AppAction::Reject => "reject",
             AppAction::OpenTagPalette => "open-tag-palette",
@@ -253,6 +257,16 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
         &mut e,
         AppAction::ToggleDiagnostics,
         "Toggle Diagnostics",
+        Category::View,
+    );
+    push(
+        &mut e,
+        AppAction::ToggleBursts,
+        if session.show_bursts() {
+            "Hide Bursts overlay"
+        } else {
+            "Show Bursts overlay"
+        },
         Category::View,
     );
 
@@ -407,6 +421,10 @@ impl Session {
             AppAction::ZoomIn => ActionEffect::ZoomIn,
             AppAction::ZoomOut => ActionEffect::ZoomOut,
             AppAction::ToggleDiagnostics => ActionEffect::ToggleDiagnostics,
+            AppAction::ToggleBursts => {
+                self.toggle_bursts();
+                ActionEffect::None
+            }
             AppAction::Accept => {
                 self.accept();
                 ActionEffect::None

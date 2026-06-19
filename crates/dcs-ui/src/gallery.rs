@@ -440,7 +440,21 @@ fn paint_filmstrip(
                 let Some(info) = session.cell_info(idx) else {
                     continue;
                 };
-                ui.painter().rect_filled(slot, 0.0, theme::CELL_EMPTY);
+                // Burst thumbs sit on the span accent; a continuation frame also
+                // bridges the gap to its predecessor so the run reads as one span.
+                let slot_bg = if info.burst.is_some() {
+                    theme::BURST_SPAN
+                } else {
+                    theme::CELL_EMPTY
+                };
+                ui.painter().rect_filled(slot, 0.0, slot_bg);
+                if info.burst.is_some_and(|b| !b.first) && idx > 0 {
+                    let bridge = Rect::from_min_max(
+                        Pos2::new(slot.left() - STRIP_GAP, slot.top()),
+                        Pos2::new(slot.left(), slot.bottom()),
+                    );
+                    ui.painter().rect_filled(bridge, 0.0, theme::BURST_SPAN);
+                }
                 session.request_base(idx);
                 let view = session.thumb(info.id);
                 if let Some(tex) = textures.view_texture(ui, info.id, view) {
@@ -506,12 +520,14 @@ fn paint_strip_glyph(ui: &Ui, slot: Rect, state: AcceptState) {
         AcceptState::Rejected => theme::VERDICT_REJECT,
         AcceptState::Unreviewed => return,
     };
-    let s = 12.0;
+    // Sized to the thumb so the verdict reads at a glance, not a dot in the
+    // corner; a rounded backdrop lifts it off whatever pixels sit behind.
+    let s = slot.width() * 0.34;
     let box_rect = Rect::from_min_max(Pos2::new(slot.right() - s, slot.bottom() - s), slot.max);
-    ui.painter().rect_filled(box_rect, 0.0, theme::BADGE_BG);
+    ui.painter().rect_filled(box_rect, 3.0, theme::BADGE_BG);
     let c = box_rect.center();
-    let r = s * 0.28;
-    let stroke = Stroke::new(1.6, color);
+    let r = s * 0.3;
+    let stroke = Stroke::new((s * 0.13).max(2.0), color);
     match state {
         AcceptState::Accepted => {
             ui.painter().add(egui::Shape::line(

@@ -13,6 +13,7 @@
 //! about to paint (plus hi-res for the visible cells when zoomed), and reads
 //! back the best resident thumbnail per cell.
 
+mod burst;
 mod display;
 mod edit;
 mod group_ops;
@@ -24,6 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use dcs_domain::burst::BurstKnobs;
 use dcs_domain::grouping::{Axis, DerivedGroup, GroupKind, TimeGranularity};
 use dcs_domain::pairing::PoolBuilder;
 use dcs_domain::photo::PhotoId;
@@ -124,6 +126,25 @@ pub struct CellInfo {
     /// Tag colors for the bottom-edge strips (lowest-id tags first), up to
     /// [`crate::tags::MAX_STRIP`]; the grid splits the edge evenly among them.
     pub tag_colors: [Option<dcs_domain::tag::Color>; crate::tags::MAX_STRIP],
+    /// Burst membership for the span accent, `None` when the cell is in no
+    /// derived burst (or bursts are off / the axis is `tag`).
+    pub burst: Option<BurstMark>,
+}
+
+/// A cell's place in a derived burst, for the grid's span accent. The accent is
+/// a single neutral color; `id` only distinguishes runs that sit adjacent in the
+/// display so their spans can be told apart. `first` carries the run's label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BurstMark {
+    /// Per-session run identifier — adjacent runs differ, nothing more.
+    pub id: u32,
+    /// Frames in the run, for the first cell's count label.
+    pub len: usize,
+    /// The run's leading frame (chronologically): carries the label, caps the
+    /// span's left edge.
+    pub first: bool,
+    /// The run's trailing frame: caps the span's right edge.
+    pub last: bool,
 }
 
 /// Capture time for the gallery caption. `adjusted` is the time in the travel
@@ -186,6 +207,15 @@ pub struct Session {
     /// `Auto` resolved against the current data, cached at regroup so the toolbar
     /// label doesn't re-scan the pool (and re-read the system zone) every frame.
     resolved_gran: Option<TimeGranularity>,
+    /// Burst derivation knobs — a derived display setting, ephemeral, never
+    /// persisted. Adjusting re-derives `bursts` instantly.
+    burst_knobs: BurstKnobs,
+    /// Derived burst membership by photo, recomputed at regroup and on a knob
+    /// change. Empty under the tag axis or when bursts are off.
+    bursts: HashMap<PhotoId, BurstMark>,
+    /// Number of derived bursts across all groups — the live count the knobs UI
+    /// shows.
+    burst_count: usize,
     /// Owned verdict store. Reset per folder (ids restart).
     cull: Cull,
     /// Owned tag store: defs + photo↔tag assignments. Reset per folder.
@@ -273,6 +303,9 @@ impl Session {
             axis: Axis::Time(TimeGranularity::Auto),
             sort: Sort::default(),
             resolved_gran: None,
+            burst_knobs: BurstKnobs::default(),
+            bursts: HashMap::new(),
+            burst_count: 0,
             cull: Cull::new(),
             tags: TagStore::new(),
             history: History::new(),
@@ -322,6 +355,8 @@ impl Session {
         self.groups = Vec::new();
         self.visible_groups = Vec::new();
         self.resolved_gran = None;
+        self.bursts = HashMap::new();
+        self.burst_count = 0;
         self.sel = Selection::new();
         self.filter = VerdictFilter::All;
         // Abandon any running export from the previous folder (its handle drops).
