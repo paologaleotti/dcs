@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use time::{Date, OffsetDateTime, PrimitiveDateTime, UtcOffset};
+use time::{Date, OffsetDateTime};
 use time_tz::Tz;
 
 use crate::photo::{Photo, PhotoId};
@@ -161,7 +161,9 @@ pub fn resolve_auto(
     let mut single = true;
     for p in photos {
         let Some(naive) = p.captured_at else { continue };
-        let date = attributed_instant(naive, p.captured_offset, camera_zone, display_zone).date();
+        let date =
+            timezone::attributed_instant(naive, p.captured_offset, camera_zone, display_zone)
+                .date();
         match first {
             None => first = Some(date),
             Some(d) if d != date => {
@@ -263,7 +265,7 @@ fn time_groups(
             undated.push(i);
             continue;
         };
-        let at = attributed_instant(naive, p.captured_offset, camera_zone, display_zone);
+        let at = timezone::attributed_instant(naive, p.captured_offset, camera_zone, display_zone);
         let key = bucket_key(at, granularity);
         let slot = *index.entry(key).or_insert_with(|| {
             buckets.push((key, Vec::new()));
@@ -303,19 +305,6 @@ fn time_groups(
         });
     }
     groups
-}
-
-/// The capture instant in display-zone wall-clock: anchor the naive EXIF time to
-/// its source (EXIF offset, else camera zone), then convert into the display zone.
-/// This is the time every time-group bucket and title is derived from.
-fn attributed_instant(
-    naive: PrimitiveDateTime,
-    captured_offset: Option<UtcOffset>,
-    camera_zone: &Tz,
-    display_zone: &Tz,
-) -> OffsetDateTime {
-    let instant = timezone::source_instant(naive, captured_offset, camera_zone);
-    timezone::adjusted(instant, display_zone)
 }
 
 fn bucket_key(at: OffsetDateTime, granularity: TimeGranularity) -> BucketKey {

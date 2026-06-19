@@ -727,23 +727,21 @@ fn paint_burst_label(ui: &Ui, cell_rect: Rect, number: u32, len: usize) {
     // frame total rides along in parentheses.
     let text = format!("burst#{number} ({len})");
     let font = FontId::monospace((cell_rect.width() * 0.085).clamp(10.0, 13.0));
-    let galley = ui
-        .painter()
-        .layout_no_wrap(text.clone(), font.clone(), theme::BURST_LABEL);
-    let pad = 4.0;
+    // Lay the text out once, then draw the galley directly — `Painter::text`
+    // would re-shape the same string a second time.
+    let galley = ui.painter().layout_no_wrap(text, font, theme::BURST_LABEL);
+    let pad = Vec2::new(4.0, 2.0);
     let pill = Rect::from_min_size(
         Pos2::new(
-            cell_rect.center().x - galley.size().x / 2.0 - pad,
+            cell_rect.center().x - galley.size().x / 2.0 - pad.x,
             cell_rect.top() + 4.0,
         ),
-        Vec2::new(galley.size().x + pad * 2.0, galley.size().y + pad),
+        galley.size() + pad * 2.0,
     );
     ui.painter().rect_filled(pill, 3.0, theme::BADGE_BG);
-    ui.painter().text(
-        pill.center(),
-        egui::Align2::CENTER_CENTER,
-        text,
-        font,
+    ui.painter().galley(
+        pill.center() - galley.size() / 2.0,
+        galley,
         theme::BURST_LABEL,
     );
 }

@@ -250,7 +250,11 @@ fn read_meta(
         .and_then(ascii_value)
         .and_then(parse_exif_datetime)
         .map(|dt| match subsec_nanos {
-            Some(ns) => dt.replace_nanosecond(ns).unwrap_or(dt),
+            // `parse_subsec_nanos` caps at 9 fractional digits, so `ns` is always
+            // in `0..1_000_000_000` — a valid nanosecond, never a replace failure.
+            Some(ns) => dt
+                .replace_nanosecond(ns)
+                .expect("subsecond nanos are capped to a valid 0..1e9 range"),
             None => dt,
         });
     let captured_offset = exif

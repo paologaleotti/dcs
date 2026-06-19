@@ -83,19 +83,16 @@ pub fn derive_bursts(
 /// No trailing digits yields 0 — such frames keep their incoming order.
 pub fn file_seq(name: &str) -> FileSeq {
     let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
-    let digits: String = stem
+    // Trailing ASCII digits are one byte each, so their count is the byte offset
+    // of the run's start — slice and parse it in place, no allocation.
+    let digit_count = stem
         .chars()
         .rev()
         .take_while(|c| c.is_ascii_digit())
-        .collect();
-    // Reverse back and parse; a very long digit run that overflows falls back to
-    // 0 rather than panicking — ordering is best-effort, never load-bearing.
-    digits
-        .chars()
-        .rev()
-        .collect::<String>()
-        .parse()
-        .unwrap_or(0)
+        .count();
+    // A run too long to fit a `FileSeq` falls back to 0 rather than panicking —
+    // ordering is best-effort, never load-bearing.
+    stem[stem.len() - digit_count..].parse().unwrap_or(0)
 }
 
 /// Close a candidate run `[start, end)`: keep it only if it meets the frame

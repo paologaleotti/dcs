@@ -48,9 +48,12 @@ impl Session {
     pub fn caption_time(&self, display_index: usize) -> Option<CaptionTime> {
         let photo = self.photo_at(display_index)?;
         let naive = photo.captured_at?;
-        let instant =
-            timezone::source_instant(naive, photo.captured_offset, self.resolve_camera_zone());
-        let adjusted = timezone::adjusted(instant, self.resolve_display_zone());
+        let adjusted = timezone::attributed_instant(
+            naive,
+            photo.captured_offset,
+            self.resolve_camera_zone(),
+            self.resolve_display_zone(),
+        );
         let adjusted_str = format!(
             "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
             adjusted.year(),

@@ -56,3 +56,19 @@ pub fn source_instant(
 pub fn adjusted(instant: OffsetDateTime, display_zone: &Tz) -> OffsetDateTime {
     instant.to_timezone(display_zone)
 }
+
+/// The capture instant in display-zone wall-clock: anchor the naive EXIF time to
+/// its source ([`source_instant`]), then convert into the display zone
+/// ([`adjusted`]). The one derivation behind every time-group bucket, the gallery
+/// caption, and burst ordering — so they can never disagree on a frame's instant.
+pub fn attributed_instant(
+    naive: PrimitiveDateTime,
+    captured_offset: Option<UtcOffset>,
+    camera_zone: &Tz,
+    display_zone: &Tz,
+) -> OffsetDateTime {
+    adjusted(
+        source_instant(naive, captured_offset, camera_zone),
+        display_zone,
+    )
+}

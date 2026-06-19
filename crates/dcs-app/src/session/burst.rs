@@ -68,10 +68,8 @@ impl Session {
                 .filter_map(|&i| {
                     let p = &photos[i];
                     let naive = p.captured_at?;
-                    let instant = timezone::adjusted(
-                        timezone::source_instant(naive, p.captured_offset, camera),
-                        display,
-                    );
+                    let instant =
+                        timezone::attributed_instant(naive, p.captured_offset, camera, display);
                     Some((p.id, instant, burst::file_seq(&p.file_name())))
                 })
                 .collect();
