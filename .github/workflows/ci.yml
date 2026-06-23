@@ -21,6 +21,11 @@ jobs:
   check:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    # The model is always embedded (build.rs bakes it in), so compiling dcs-io
+    # needs the source files. Point build.rs at the cached copy instead of letting
+    # it download on every run.
+    env:
+      DCS_MODEL_DIR: ${{ github.workspace }}/model
     strategy:
       # Run all three to completion even if one fails, so a platform-specific
       # break is never masked by an early exit on another.
@@ -55,6 +60,33 @@ jobs:
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
+
+      # build.rs embeds the model, so it needs the source files. Resolve the pin,
+      # restore from cache, download once per revision, and hand the dir to build.rs.
+      - name: Resolve pinned model revision
+        id: model
+        shell: bash
+        run: |
+          rev=$(tr -d '[:space:]' < crates/dcs-io/model_revision.txt)
+          test -n "$rev" || { echo "could not read model_revision.txt"; exit 1; }
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Cache embedded model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: model
+          key: siglip-${{ steps.model.outputs.rev }}
+
+      - name: Download embedded model (cache miss)
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p model
+          base="https://huggingface.co/google/siglip-base-patch16-384/resolve/${{ steps.model.outputs.rev }}"
+          for f in config.json tokenizer.json model.safetensors; do
+            curl -fSL --retry 3 "$base/$f" -o "model/$f"
+          done
 
       - name: Format check
         run: cargo fmt --all --check

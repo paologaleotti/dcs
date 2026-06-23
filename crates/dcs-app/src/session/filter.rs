@@ -134,20 +134,72 @@ impl Session {
         self.replace_filter(filter);
     }
 
-    /// Add a search chip. **Scaffold:** until an embedding model fills
-    /// `search_sets`, this chip matches nothing. Each query gets its own group, so
-    /// multiple searches AND together. No-op on a blank or duplicate query.
+    /// Chain a search chip: append it to the single shared search group (OR by
+    /// default, flippable to AND in the filter bar), so multiple searches combine
+    /// instead of each spawning its own AND group. No-op on a blank or duplicate
+    /// query. The Shift+Enter path; matches fill in when the query embeds.
     pub fn add_search_chip(&mut self, query: String) {
         let query = query.trim().to_string();
         if query.is_empty() || self.has_search_chip(&query) {
             return;
         }
         let mut filter = self.filter.clone();
+        match filter.groups.iter_mut().find(|g| is_all_search(g)) {
+            Some(group) => group.chips.push(FilterChip::Search(query)),
+            None => filter.groups.push(FilterGroup {
+                op: ChipOp::Or,
+                chips: vec![FilterChip::Search(query)],
+            }),
+        }
+        self.replace_filter(filter);
+    }
+
+    /// Replace the search with a single query — the plain-Enter path: drop every
+    /// existing search chip (and its resolved sets), then add this one. Leaves
+    /// verdict/tag groups intact. No-op on a blank query.
+    pub fn set_search_chip(&mut self, query: String) {
+        let query = query.trim().to_string();
+        if query.is_empty() {
+            return;
+        }
+        let mut filter = self.filter.clone();
+        for group in &mut filter.groups {
+            group.chips.retain(|c| !matches!(c, FilterChip::Search(_)));
+        }
+        filter.groups.retain(|g| !g.chips.is_empty());
+        // Only this query matters now; stale resolved sets/vecs go.
+        self.search_sets.clear();
+        self.search_vecs.clear();
         filter.groups.push(FilterGroup {
             op: ChipOp::Or,
             chips: vec![FilterChip::Search(query)],
         });
         self.replace_filter(filter);
+    }
+
+    /// Drop every active search chip and its resolved sets — used when AI search is
+    /// turned off so a leftover `Search` chip (now backed by nothing) can't blank
+    /// the grid. Leaves verdict/tag chips intact. No-op when no search is active.
+    pub(super) fn clear_search_chips(&mut self) {
+        if !self.has_any_search_chip() {
+            return;
+        }
+        let mut filter = self.filter.clone();
+        for group in &mut filter.groups {
+            group.chips.retain(|c| !matches!(c, FilterChip::Search(_)));
+        }
+        filter.groups.retain(|g| !g.chips.is_empty());
+        self.search_sets.clear();
+        self.search_vecs.clear();
+        self.replace_filter(filter);
+    }
+
+    fn has_any_search_chip(&self) -> bool {
+        self.filter
+            .groups
+            .iter()
+            .flat_map(|g| &g.chips)
+            .any(|c| matches!(c, FilterChip::Search(_)))
     }
 
     /// Remove the chip at `chip` in group `group`; drop the group if it empties.
@@ -160,9 +212,14 @@ impl Session {
         if chip >= g.chips.len() {
             return;
         }
-        g.chips.remove(chip);
+        let removed = g.chips.remove(chip);
         if g.chips.is_empty() {
             filter.groups.remove(group);
+        }
+        // Drop the resolved set/vec for a removed search so it doesn't linger.
+        if let FilterChip::Search(query) = removed {
+            self.search_sets.remove(&query);
+            self.search_vecs.remove(&query);
         }
         self.replace_filter(filter);
     }
@@ -241,6 +298,15 @@ fn is_verdict_group(group: &FilterGroup) -> bool {
 /// A non-empty group whose chips are all tags — the shared tag-chip group.
 fn is_all_tags(group: &FilterGroup) -> bool {
     !group.chips.is_empty() && group.chips.iter().all(|c| matches!(c, FilterChip::Tag(_)))
+}
+
+/// A non-empty group whose chips are all searches — the shared search group.
+fn is_all_search(group: &FilterGroup) -> bool {
+    !group.chips.is_empty()
+        && group
+            .chips
+            .iter()
+            .all(|c| matches!(c, FilterChip::Search(_)))
 }
 
 fn verdict_state(view: VerdictFilter) -> Option<AcceptState> {

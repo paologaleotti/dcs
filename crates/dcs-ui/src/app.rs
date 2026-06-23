@@ -118,6 +118,17 @@ pub struct DcsApp {
     export: ExportDialog,
     /// Last time we refreshed the project lock; throttles the heartbeat.
     last_heartbeat: Option<Instant>,
+    /// The AI-search text field's backing buffer (needs to persist across frames).
+    /// Submitting it adds a `Search` chip and clears the buffer. Shared by the
+    /// toolbar field and the keyboard-first search dialog.
+    search_input: String,
+    /// The `Filter: Search…` dialog (⌘F / palette) is open.
+    search_dialog_open: bool,
+    /// Focus the dialog's field on the frame it opens.
+    search_dialog_focus: bool,
+    /// The dialog's own text buffer, separate from the toolbar field so the two
+    /// don't mirror each other or clobber each other's unsubmitted text.
+    search_dialog_input: String,
 }
 
 impl DcsApp {
@@ -158,6 +169,10 @@ impl DcsApp {
             grid_ctx: None,
             export: ExportDialog::default(),
             last_heartbeat: None,
+            search_input: String::new(),
+            search_dialog_open: false,
+            search_dialog_focus: false,
+            search_dialog_input: String::new(),
         }
     }
 }
@@ -192,6 +207,7 @@ impl eframe::App for DcsApp {
         self.command_palette(&ctx);
         self.tag_palette(&ctx);
         self.filter_palette(&ctx);
+        self.search_dialog(&ctx);
         self.tag_manager(&ctx);
         if self.debug {
             self.diagnostics(&ctx);
@@ -296,6 +312,15 @@ impl DcsApp {
             E::OpenFilterTagPalette => {
                 self.filter_palette_state = false;
                 self.filter_palette.open_sticky();
+            }
+            E::OpenSearchPalette => {
+                // Only reset the buffer when opening fresh, so re-pressing ⌘F while
+                // it's already open doesn't wipe what you've typed.
+                if !self.search_dialog_open {
+                    self.search_dialog_input.clear();
+                }
+                self.search_dialog_open = true;
+                self.search_dialog_focus = true;
             }
             E::ShowMetadata => self.show_metadata = true,
             E::ShowAbout => self.show_about = true,

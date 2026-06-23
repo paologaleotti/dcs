@@ -16,6 +16,7 @@ pub mod fuzzy;
 pub mod grouping;
 pub mod pairing;
 pub mod photo;
+pub mod search;
 pub mod sort;
 pub mod tag;
 pub mod thumb;

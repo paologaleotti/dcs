@@ -6,6 +6,7 @@
 //! Depends DOWN on dcs-domain only.
 
 pub mod cache;
+pub mod embedding;
 pub mod export;
 pub mod imaging;
 pub mod lock;

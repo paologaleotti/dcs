@@ -21,6 +21,13 @@ extended-description = "A digital contact sheet: scan a folder of photos, cull a
 name = "dcs"
 path = "src/main.rs"
 
+[features]
+# Pass-through GPU backends. `cuda` is opt-in: build with `--features cuda` on an
+# Nvidia machine with the CUDA toolkit installed. `metal` is auto-enabled on macOS
+# (see the target-specific dependency below), so Mac builds get GPU for free.
+metal = ["dcs-app/metal"]
+cuda = ["dcs-app/cuda"]
+
 [dependencies]
 dcs-app.workspace = true
 dcs-domain.workspace = true
@@ -28,3 +35,8 @@ dcs-domain.workspace = true
 egui.workspace = true
 eframe.workspace = true
 rfd.workspace = true
+
+# Apple Metal needs no external toolkit and ships with macOS, so enable it by
+# default there — embedding indexing runs on the GPU out of the box.
+[target.'cfg(target_os = "macos")'.dependencies]
+dcs-app = { workspace = true, features = ["metal"] }

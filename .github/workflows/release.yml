@@ -15,6 +15,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # The embedding model is always baked into the binary (build.rs), so AI search
+  # works offline with zero setup. It's fetched once per pinned revision and
+  # cached; build.rs verifies its SHA-256 and fp16-converts it.
+  MODEL_REPO: google/siglip-base-patch16-384
 
 permissions:
   # Needed only for the tag path, to create/update the GitHub Release.
@@ -60,10 +64,52 @@ jobs:
         with:
           key: release-${{ matrix.name }}
 
+      # The pinned model revision lives in crates/dcs-io/model_revision.txt — read it here so the cache
+      # key and download URLs can never drift from what the build expects.
+      - name: Resolve pinned model revision
+        id: model
+        shell: bash
+        run: |
+          rev=$(tr -d '[:space:]' < crates/dcs-io/model_revision.txt)
+          test -n "$rev" || { echo "could not read model_revision.txt"; exit 1; }
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Cache embedded model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: model
+          key: siglip-${{ steps.model.outputs.rev }}
+
+      - name: Download embedded model (cache miss)
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p model
+          base="https://huggingface.co/${MODEL_REPO}/resolve/${{ steps.model.outputs.rev }}"
+          for f in config.json tokenizer.json model.safetensors; do
+            curl -fSL --retry 3 "$base/$f" -o "model/$f"
+          done
+
       # The release profile uses fat LTO + one codegen unit — slow to link,
-      # but this is the shipped artifact, so it gets the full optimization.
+      # but this is the shipped artifact, so it gets the full optimization. The
+      # model is read from DCS_MODEL_DIR (no download in build.rs), verified, and
+      # embedded.
       - name: Build release binary
-        run: cargo build --release --locked --bin dcs
+        shell: bash
+        env:
+          DCS_MODEL_DIR: ${{ github.workspace }}/model
+        run: cargo build --release --locked -p dcs-ui --bin dcs
+
+      # The release binary bundles the SigLIP model (Apache-2.0), so its
+      # attribution + license text must accompany the distribution.
+      - name: Stage third-party notices
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp THIRD_PARTY_NOTICES.md dist/
+          curl -fSL --retry 3 https://www.apache.org/licenses/LICENSE-2.0.txt \
+            -o dist/LICENSE-Apache-2.0.txt
 
       # --- Portable archive (every platform) ---
 

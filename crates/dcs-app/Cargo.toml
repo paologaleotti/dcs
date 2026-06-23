@@ -16,6 +16,13 @@ thiserror.workspace = true
 # Capture instants for burst derivation; system shoot-zone resolution.
 time.workspace = true
 time-tz.workspace = true
+# Channels to the background AI enable/load worker.
+crossbeam-channel.workspace = true
+
+[features]
+# Forwarded to dcs-io; see its manifest. Lets the binary pick a GPU backend.
+metal = ["dcs-io/metal"]
+cuda = ["dcs-io/cuda"]
 
 [dev-dependencies]
 # Real JPEGs for end-to-end decode/cache tests.

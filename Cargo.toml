@@ -37,6 +37,20 @@ walkdir = "2"
 blake3 = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }
 crossbeam-channel = "0.5"
+# Local CLIP-style embedding inference for AI search (dcs-io only). Pure Rust,
+# no C deps — keeps the binary small and cross-platform trivial.
+candle-core = "0.10"
+candle-nn = "0.10"
+candle-transformers = "0.10"
+# SigLIP uses a SentencePiece tokenizer (not CLIP BPE); load tokenizer.json with
+# the HF tokenizers crate. default-features off avoids the http/onig pulls.
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
+# Build-time only (dcs-io build.rs): fetch (rustls TLS, no OpenSSL C dep), verify,
+# and fp16-convert the model so it can be baked into the binary.
+ureq = "2"
+sha2 = "0.10"
+safetensors = "0.7"
+half = "2"
 rfd = "0.15"
 egui = "0.34.3"
 # wgpu backend → Metal on macOS, Vulkan/DX12 elsewhere. Unlike the glow

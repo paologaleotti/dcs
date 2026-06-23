@@ -86,6 +86,11 @@ pub struct ProjectConfig {
     /// default (off). The derivation tuning (gap/min) stays ephemeral.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_bursts: Option<bool>,
+    /// Whether AI search is enabled for this project. `None`/`Some(false)` = off
+    /// (opt-in). A per-project preference like `show_bursts`, persisted, not
+    /// derived — the embeddings themselves stay in the disposable cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_search_enabled: Option<bool>,
 }
 
 /// The app-facing payload: what `dcs-app` hands down to save and gets back on

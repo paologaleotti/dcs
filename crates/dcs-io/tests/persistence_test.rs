@@ -37,6 +37,7 @@ fn snapshot() -> ProjectSnapshot {
             camera_zone: Some("Asia/Tokyo".to_string()),
             grid_zoom: Some(180.0),
             show_bursts: Some(false),
+            ai_search_enabled: Some(true),
         },
     }
 }
@@ -137,6 +138,7 @@ fn config_and_paths_round_trip() {
     assert_eq!(loaded.config.shoot_zone.as_deref(), Some("Europe/Rome"));
     assert_eq!(loaded.config.grid_zoom, Some(180.0));
     assert_eq!(loaded.config.show_bursts, Some(false));
+    assert_eq!(loaded.config.ai_search_enabled, Some(true));
     assert_eq!(
         loaded.photos[0].jpeg,
         Some(std::path::PathBuf::from("a.jpg"))

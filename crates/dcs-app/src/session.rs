@@ -19,6 +19,7 @@ mod edit;
 mod filter;
 mod group_ops;
 mod layout;
+mod search;
 mod store;
 mod tag;
 
@@ -28,11 +29,13 @@ use std::sync::{Arc, Mutex};
 
 use dcs_domain::burst::BurstKnobs;
 use dcs_domain::filter::Filter;
+use dcs_domain::fingerprint::ContentFingerprint;
 use dcs_domain::grouping::{Axis, DerivedGroup, GroupKind, TimeGranularity};
 use dcs_domain::pairing::PoolBuilder;
 use dcs_domain::photo::PhotoId;
 use dcs_domain::sort::Sort;
 use dcs_io::cache::{SharedCache, SqliteCache};
+use dcs_io::embedding::Embedder;
 use dcs_io::export::ExportHandle;
 use dcs_io::imaging::{ThumbDecoder, ThumbDecoderPool};
 use dcs_io::lock::{self, LockOutcome, ProjectLock};
@@ -45,6 +48,7 @@ use dcs_io::undo_log::{self, UndoLog};
 use serde_json::Value;
 use thiserror::Error;
 
+use self::search::AiInit;
 use crate::cull::Cull;
 use crate::export::ExportStatus;
 use crate::history::History;
@@ -171,6 +175,23 @@ pub enum VerdictFilter {
     Rejected,
 }
 
+/// Where AI search stands. Drives the search UI: a gate to enable, progress while
+/// the model loads, an indexing count while photos embed, then live.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum AiStatus {
+    /// Not enabled — the opt-in gate is shown.
+    #[default]
+    Disabled,
+    /// Loading the (embedded) model into memory.
+    Loading,
+    /// Model ready; embedding the folder in the background.
+    Indexing { done: usize, total: usize },
+    /// Every photo embedded — search is fully populated.
+    Ready,
+    /// Enabling failed (model load). Carries a message for the UI.
+    Error(String),
+}
+
 /// A derived group as the grid sees it after the verdict filter: its title +
 /// kind, where its surviving cells begin in the visible display order, and how
 /// many show out of its total. Empty-after-filter groups are omitted, so the UI
@@ -234,6 +255,24 @@ pub struct Session {
     /// fills. Empty in v1 (no model), so `Search` chips match nothing. Never
     /// persisted; reset per folder.
     search_sets: HashMap<String, HashSet<PhotoId>>,
+    /// Query text → its embedding, kept so an active search re-ranks against newly
+    /// indexed photos without re-encoding the text. Cleared per folder.
+    search_vecs: HashMap<String, Vec<f32>>,
+    /// Local embedding model, once enabled and loaded. `None` until the user opts
+    /// in. Drives whether search does anything.
+    embedder: Option<Box<dyn Embedder>>,
+    /// In-flight enable (model load) on a background thread; polled in `tick`.
+    ai_init: Option<AiInit>,
+    /// In-memory search index: photo → embedding, seeded from the cache on open and
+    /// grown by the background sweep. Derived, never persisted.
+    embeddings: HashMap<PhotoId, Vec<f32>>,
+    /// Maps an embed result (keyed by fingerprint) back to its `PhotoId`. Rebuilt
+    /// when the sweep starts; stable for the folder session.
+    fp_to_id: HashMap<ContentFingerprint, PhotoId>,
+    /// Whether the embedding sweep has fired for this folder. Gates the sweep to
+    /// once, after thumbnails warm; reset per `open_folder`.
+    index_started: bool,
+    ai_status: AiStatus,
     scan: Option<ScanHandle>,
     decoder: ThumbDecoderPool,
     /// Cheap 256 px grid thumbnails (disk-cached).
@@ -321,6 +360,13 @@ impl Session {
             sel: Selection::new(),
             filter: Filter::default(),
             search_sets: HashMap::new(),
+            search_vecs: HashMap::new(),
+            embedder: None,
+            ai_init: None,
+            embeddings: HashMap::new(),
+            fp_to_id: HashMap::new(),
+            index_started: false,
+            ai_status: AiStatus::Disabled,
             scan: None,
             decoder: ThumbDecoderPool::new(),
             base: ThumbCache::new(BASE_CACHE_BYTES),
@@ -370,6 +416,14 @@ impl Session {
         self.sel = Selection::new();
         self.filter = Filter::default();
         self.search_sets.clear();
+        self.search_vecs.clear();
+        // Keep the loaded embedder across folders (the model is global); drop only
+        // the per-folder index so the new folder re-seeds from its own cache. The
+        // per-project enabled flag (from config, below) decides the status.
+        self.embeddings.clear();
+        self.fp_to_id.clear();
+        self.index_started = false;
+        self.ai_status = AiStatus::Disabled;
         // Abandon any running export from the previous folder (its handle drops).
         self.export_handle = None;
         self.export_status = None;
@@ -416,6 +470,12 @@ impl Session {
         self.root = Some(root.clone());
         self.remember_recent(&root);
 
+        // Honor the per-project AI-search preference: load (or reuse) the embedder
+        // now, but defer the index sweep to `maybe_start_indexing` (after thumbs).
+        if self.ai_enabled() {
+            self.start_embedder();
+        }
+
         self.rebuild_visible();
         self.scan = Some(scan(root, self.cache.clone()));
     }
@@ -459,6 +519,12 @@ impl Session {
             }
             self.absorb_thumb(id, tier, image);
         }
+        // Absorb AI progress first (a model that finished loading this frame, any
+        // embeddings that landed), then consider starting the sweep — so a
+        // just-ready embedder can index this frame, not next.
+        self.poll_ai();
+        // Indexing is the lowest priority: only sweep once every thumbnail is warm.
+        self.maybe_start_indexing();
         self.poll_export();
     }
 

@@ -335,6 +335,9 @@ impl DcsApp {
         // only RAW-only photos that v1 can't display (no filter to blame).
         let no_folder = self.session.pool_len() == 0;
         let filtered_out = !no_folder && self.session.is_filtered();
+        // A filter hides everything *because the search is still resolving* — show
+        // progress, not a false "no matches".
+        let searching = filtered_out && self.session.is_search_pending();
         let mut open_clicked = false;
         let mut clear_clicked = false;
         // A top spacer of ~half the leftover height centers the fixed-size block.
@@ -364,6 +367,17 @@ impl DcsApp {
                         .monospace()
                         .size(11.0)
                         .color(theme::HAIRLINE),
+                );
+            } else if searching {
+                // A search chip is active but its results aren't in yet (model
+                // loading/indexing, or the query is still embedding).
+                pad(ui, 40.0);
+                ui.add(egui::Spinner::new());
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("searching…")
+                        .monospace()
+                        .color(theme::TEXT_DIM),
                 );
             } else if filtered_out {
                 // Pool has photos; the active filter hides them all.

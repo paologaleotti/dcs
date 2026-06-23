@@ -58,6 +58,28 @@ pub trait FingerprintCache {
     fn store(&self, path: &str, mtime: i64, size: u64, fingerprint: &ContentFingerprint);
 }
 
+/// Per-photo embedding store, keyed by content fingerprint **and** model id so a
+/// model swap invalidates cleanly rather than returning stale-dimension vectors.
+/// Disposable like the rest of the cache: any read failure degrades to a miss.
+pub trait EmbeddingCache {
+    /// The cached embedding for a photo under `model_id`, if present.
+    fn get_embedding(&self, key: &ContentFingerprint, model_id: &str) -> Option<Vec<f32>>;
+
+    /// Store (or replace) a photo's embedding under `model_id`. Failures are
+    /// swallowed — the cache is rebuildable.
+    fn put_embedding(&self, key: &ContentFingerprint, model_id: &str, vec: &[f32]);
+
+    /// Every `(fingerprint, embedding)` stored for `model_id`. Loaded once on
+    /// folder open to seed the in-memory search index. A read failure yields an
+    /// empty vec (the sweep just recomputes).
+    fn all_embeddings(&self, model_id: &str) -> Vec<(ContentFingerprint, Vec<f32>)>;
+
+    /// Drop dead rows: every row under a *different* model (the model was swapped)
+    /// and every `model_id` row whose fingerprint isn't in `keep` (the photo left
+    /// the pool). Keeps the table proportional to the live folder. Best-effort.
+    fn prune_embeddings(&self, model_id: &str, keep: &HashSet<ContentFingerprint>);
+}
+
 /// Two-tier thumbnail blob store keyed by content fingerprint.
 pub trait ThumbCache {
     /// The encoded thumbnail blob for a photo at a tier, if resident. Marks it
@@ -136,7 +158,13 @@ impl SqliteCache {
                  last_used   INTEGER NOT NULL,
                  PRIMARY KEY (content_key, tier)
              );
-             CREATE INDEX IF NOT EXISTS thumbs_lru ON thumbs (last_used);",
+             CREATE INDEX IF NOT EXISTS thumbs_lru ON thumbs (last_used);
+             CREATE TABLE IF NOT EXISTS embeddings (
+                 content_key BLOB NOT NULL,
+                 model_id    TEXT NOT NULL,
+                 vec         BLOB NOT NULL,
+                 PRIMARY KEY (content_key, model_id)
+             );",
         )
         .map_err(db)?;
         Ok(SqliteCache {
@@ -266,6 +294,100 @@ impl ThumbCache for SqliteCache {
             self.evict_to_cap();
         }
     }
+}
+
+impl EmbeddingCache for SqliteCache {
+    fn get_embedding(&self, key: &ContentFingerprint, model_id: &str) -> Option<Vec<f32>> {
+        let blob: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT vec FROM embeddings WHERE content_key = ?1 AND model_id = ?2",
+                params![key.as_bytes().as_slice(), model_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten();
+        blob.map(|b| floats_from_le(&b))
+    }
+
+    fn put_embedding(&self, key: &ContentFingerprint, model_id: &str, vec: &[f32]) {
+        let _ = self.conn.execute(
+            "INSERT INTO embeddings (content_key, model_id, vec) VALUES (?1, ?2, ?3)
+             ON CONFLICT(content_key, model_id) DO UPDATE SET vec = ?3",
+            params![key.as_bytes().as_slice(), model_id, floats_to_le(vec)],
+        );
+    }
+
+    fn all_embeddings(&self, model_id: &str) -> Vec<(ContentFingerprint, Vec<f32>)> {
+        let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT content_key, vec FROM embeddings WHERE model_id = ?1")
+        else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map(params![model_id], |r| {
+            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+        }) else {
+            return Vec::new();
+        };
+        rows.flatten()
+            .filter_map(|(key, vec)| {
+                let bytes: [u8; 32] = key.try_into().ok()?;
+                Some((ContentFingerprint::from_bytes(bytes), floats_from_le(&vec)))
+            })
+            .collect()
+    }
+
+    fn prune_embeddings(&self, model_id: &str, keep: &HashSet<ContentFingerprint>) {
+        // Rows under any other model are dead (the model was swapped).
+        let _ = self.conn.execute(
+            "DELETE FROM embeddings WHERE model_id != ?1",
+            params![model_id],
+        );
+        // Current-model rows whose fingerprint left the pool are orphans.
+        let dead: Vec<Vec<u8>> = {
+            let Ok(mut stmt) = self
+                .conn
+                .prepare("SELECT content_key FROM embeddings WHERE model_id = ?1")
+            else {
+                return;
+            };
+            let Ok(rows) = stmt.query_map(params![model_id], |r| r.get::<_, Vec<u8>>(0)) else {
+                return;
+            };
+            rows.flatten()
+                .filter(|bytes| match <[u8; 32]>::try_from(bytes.as_slice()) {
+                    Ok(b) => !keep.contains(&ContentFingerprint::from_bytes(b)),
+                    Err(_) => true, // unparseable key → dead
+                })
+                .collect()
+        };
+        for key in dead {
+            let _ = self.conn.execute(
+                "DELETE FROM embeddings WHERE content_key = ?1 AND model_id = ?2",
+                params![key, model_id],
+            );
+        }
+    }
+}
+
+/// Pack an embedding into a little-endian byte blob for storage.
+fn floats_to_le(vec: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(vec.len() * 4);
+    for &f in vec {
+        out.extend_from_slice(&f.to_le_bytes());
+    }
+    out
+}
+
+/// Unpack a little-endian byte blob back into an embedding. A trailing partial
+/// element (corrupt row) is ignored — the store is disposable.
+fn floats_from_le(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
 }
 
 fn tier_code(tier: ThumbTier) -> i64 {

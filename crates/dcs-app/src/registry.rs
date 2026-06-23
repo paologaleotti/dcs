@@ -48,6 +48,8 @@ pub enum AppAction {
     OpenFilterStatePalette,
     /// Open a picker to toggle tag filters one at a time (palette path).
     OpenFilterTagPalette,
+    /// Open the AI-search entry dialog (keyboard-first text search).
+    OpenSearchPalette,
     /// Remove the chip at `(group, chip)` from the active filter — the chip ✕.
     RemoveFilterChip {
         group: usize,
@@ -144,6 +146,7 @@ impl AppAction {
             AppAction::ToggleFilterTag(_) => "filter-tag-toggle",
             AppAction::OpenFilterStatePalette => "filter-state-palette",
             AppAction::OpenFilterTagPalette => "filter-tag-palette",
+            AppAction::OpenSearchPalette => "filter-search-palette",
             AppAction::RemoveFilterChip { .. } => "filter-remove-chip",
             AppAction::ToggleFilterGroupOp(_) => "filter-toggle-op",
             AppAction::ClearFilters => "filter-clear",
@@ -194,6 +197,8 @@ pub enum ActionEffect {
     OpenFilterTagPalette,
     /// Open the picker to toggle verdict filters.
     OpenFilterStatePalette,
+    /// Open the AI-search text-entry dialog.
+    OpenSearchPalette,
     ShowMetadata,
     ShowAbout,
     CollapseAllGroups,
@@ -272,7 +277,7 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
         push(
             &mut e,
             AppAction::ClearRecents,
-            "Clear Recents",
+            "Delete recent projects history",
             Category::File,
         );
     }
@@ -316,6 +321,14 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
             &mut e,
             AppAction::OpenFilterTagPalette,
             "Filter: Tag…",
+            Category::View,
+        );
+    }
+    if session.ai_enabled() {
+        push(
+            &mut e,
+            AppAction::OpenSearchPalette,
+            "Filter: Search…",
             Category::View,
         );
     }
@@ -493,6 +506,15 @@ impl Session {
             }
             AppAction::OpenFilterStatePalette => ActionEffect::OpenFilterStatePalette,
             AppAction::OpenFilterTagPalette => ActionEffect::OpenFilterTagPalette,
+            // Only meaningful when AI search is on; otherwise the dialog couldn't do
+            // anything, so the shortcut is a silent no-op.
+            AppAction::OpenSearchPalette => {
+                if self.ai_enabled() {
+                    ActionEffect::OpenSearchPalette
+                } else {
+                    ActionEffect::None
+                }
+            }
             AppAction::RemoveFilterChip { group, chip } => {
                 self.remove_filter_chip(group, chip);
                 ActionEffect::None

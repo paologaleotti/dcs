@@ -64,6 +64,10 @@ impl DcsApp {
                         clicked = Some(a);
                     }
 
+                    ui.separator();
+                    micro_label(ui, "SEARCH");
+                    self.search_box(ui);
+
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         // Diagnostics toggle lives in the command palette (⌘P), not
                         // the toolbar — it's a dev affordance, not a daily control.
@@ -95,6 +99,91 @@ impl DcsApp {
             self.enter_gallery();
         } else if switch_grid && self.view == ViewMode::Gallery {
             self.exit_gallery();
+        }
+    }
+
+    /// The AI-search control in the toolbar. Shape follows [`dcs_app::AiStatus`]:
+    /// an opt-in gate, load progress, then a live search field (with a
+    /// quiet indexing count while the background sweep finishes).
+    fn search_box(&mut self, ui: &mut Ui) {
+        use dcs_app::AiStatus;
+        match self.session.ai_status().clone() {
+            AiStatus::Disabled => {
+                if ui
+                    .button(RichText::new("Enable AI search").monospace())
+                    .on_hover_text("Turn on local AI search — find photos by what's in them")
+                    .clicked()
+                {
+                    self.session.enable_ai_search();
+                }
+            }
+            AiStatus::Loading => {
+                ui.add(egui::Spinner::new());
+                ui.label(
+                    RichText::new("loading model…")
+                        .monospace()
+                        .color(theme::TEXT_DIM),
+                );
+            }
+            AiStatus::Indexing { done, total } => {
+                self.search_field(ui);
+                ui.label(
+                    RichText::new(format!("indexing {done}/{total}"))
+                        .font(FontId::monospace(11.0))
+                        .color(theme::TEXT_DIM),
+                );
+                self.disable_search_button(ui);
+            }
+            AiStatus::Ready => {
+                self.search_field(ui);
+                self.disable_search_button(ui);
+            }
+            AiStatus::Error(message) => {
+                if ui
+                    .button(
+                        RichText::new("AI search failed — retry")
+                            .monospace()
+                            .color(theme::TEXT_DIM),
+                    )
+                    .on_hover_text(message)
+                    .clicked()
+                {
+                    self.session.enable_ai_search();
+                }
+            }
+        }
+    }
+
+    /// The live search text field. Enter **replaces** the current search;
+    /// Shift+Enter **chains** an OR'd term. Clears the buffer on submit.
+    fn search_field(&mut self, ui: &mut Ui) {
+        let response = ui
+            .add(
+                egui::TextEdit::singleline(&mut self.search_input)
+                    .hint_text("search photos…")
+                    .desired_width(150.0)
+                    .font(FontId::monospace(12.0)),
+            )
+            .on_hover_text("Enter replaces the search · Shift+Enter adds a term");
+        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            let chain = ui.input(|i| i.modifiers.shift);
+            let query = std::mem::take(&mut self.search_input);
+            if chain {
+                self.session.append_search(query);
+            } else {
+                self.session.run_search(query);
+            }
+        }
+    }
+
+    /// A quiet "turn AI search off for this project" affordance next to the field.
+    fn disable_search_button(&mut self, ui: &mut Ui) {
+        if ui
+            .small_button(RichText::new("off").monospace().color(theme::TEXT_DIM))
+            .on_hover_text("Disable AI search for this project")
+            .clicked()
+        {
+            self.session.disable_ai_search();
         }
     }
 
@@ -131,7 +220,7 @@ impl DcsApp {
                             }
                         }
                         ui.separator();
-                        if ui.button("Clear Recents").clicked() {
+                        if ui.button("Delete recent projects history").clicked() {
                             clicked = Some(AppAction::ClearRecents);
                             ui.close();
                         }

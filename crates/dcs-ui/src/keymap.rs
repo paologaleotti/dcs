@@ -89,6 +89,7 @@ const KEYMAP: &[(AppAction, Chord)] = &[
     (AppAction::Undo, cmd(Key::Z)),
     (AppAction::Redo, cmd_shift(Key::Z)),
     (AppAction::OpenFolder, cmd(Key::O)),
+    (AppAction::OpenSearchPalette, cmd(Key::F)),
     (AppAction::ZoomIn, plain(Key::Plus)),
     (AppAction::ZoomIn, plain(Key::Equals)),
     (AppAction::ZoomOut, plain(Key::Minus)),

@@ -1,10 +1,75 @@
 use dcs_domain::fingerprint::ContentFingerprint;
 use dcs_io::cache::{
-    DEFAULT_THUMB_CAP_BYTES, FingerprintCache, SqliteCache, ThumbCache, ThumbTier,
+    DEFAULT_THUMB_CAP_BYTES, EmbeddingCache, FingerprintCache, SqliteCache, ThumbCache, ThumbTier,
 };
 
 fn fp(seed: u8) -> ContentFingerprint {
     ContentFingerprint::from_bytes([seed; 32])
+}
+
+const MODEL: &str = "siglip-base-patch16-224";
+
+#[test]
+fn embedding_round_trips_exact() {
+    let cache = SqliteCache::in_memory(DEFAULT_THUMB_CAP_BYTES).unwrap();
+    let vec = vec![0.0, 1.0, -1.5, 2.25, f32::MIN_POSITIVE];
+    cache.put_embedding(&fp(1), MODEL, &vec);
+    assert_eq!(cache.get_embedding(&fp(1), MODEL), Some(vec));
+}
+
+#[test]
+fn embedding_miss_returns_none() {
+    let cache = SqliteCache::in_memory(DEFAULT_THUMB_CAP_BYTES).unwrap();
+    assert_eq!(cache.get_embedding(&fp(1), MODEL), None);
+}
+
+#[test]
+fn embedding_is_keyed_by_model_id() {
+    let cache = SqliteCache::in_memory(DEFAULT_THUMB_CAP_BYTES).unwrap();
+    cache.put_embedding(&fp(1), MODEL, &[1.0, 2.0]);
+    cache.put_embedding(&fp(1), "other-model", &[9.0]);
+    assert_eq!(cache.get_embedding(&fp(1), MODEL), Some(vec![1.0, 2.0]));
+    assert_eq!(cache.get_embedding(&fp(1), "other-model"), Some(vec![9.0]));
+}
+
+#[test]
+fn embedding_upserts_on_conflict() {
+    let cache = SqliteCache::in_memory(DEFAULT_THUMB_CAP_BYTES).unwrap();
+    cache.put_embedding(&fp(1), MODEL, &[1.0]);
+    cache.put_embedding(&fp(1), MODEL, &[2.0, 3.0]);
+    assert_eq!(cache.get_embedding(&fp(1), MODEL), Some(vec![2.0, 3.0]));
+}
+
+#[test]
+fn prune_embeddings_drops_orphans_and_stale_models() {
+    use std::collections::HashSet;
+    let cache = SqliteCache::in_memory(DEFAULT_THUMB_CAP_BYTES).unwrap();
+    cache.put_embedding(&fp(1), MODEL, &[1.0]);
+    cache.put_embedding(&fp(2), MODEL, &[2.0]); // will be orphaned (not in keep)
+    cache.put_embedding(&fp(3), MODEL, &[3.0]);
+    cache.put_embedding(&fp(9), "old-model", &[9.0]); // stale model
+
+    let keep: HashSet<_> = [fp(1), fp(3)].into_iter().collect();
+    cache.prune_embeddings(MODEL, &keep);
+
+    let mut got = cache.all_embeddings(MODEL);
+    got.sort_by_key(|(f, _)| *f.as_bytes());
+    assert_eq!(got, vec![(fp(1), vec![1.0]), (fp(3), vec![3.0])]);
+    // The other model's rows are gone entirely.
+    assert!(cache.all_embeddings("old-model").is_empty());
+}
+
+#[test]
+fn all_embeddings_filters_by_model_and_returns_pairs() {
+    let cache = SqliteCache::in_memory(DEFAULT_THUMB_CAP_BYTES).unwrap();
+    cache.put_embedding(&fp(1), MODEL, &[1.0, 0.0]);
+    cache.put_embedding(&fp(2), MODEL, &[0.0, 1.0]);
+    cache.put_embedding(&fp(3), "other-model", &[5.0]);
+
+    let mut got = cache.all_embeddings(MODEL);
+    got.sort_by_key(|(f, _)| *f.as_bytes());
+    assert_eq!(got, vec![(fp(1), vec![1.0, 0.0]), (fp(2), vec![0.0, 1.0])]);
+    assert!(cache.all_embeddings("missing-model").is_empty());
 }
 
 #[test]

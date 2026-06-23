@@ -30,3 +30,26 @@ rusqlite.workspace = true
 
 # threading: one-directional channels
 crossbeam-channel.workspace = true
+
+# AI search: local CLIP-style embedding inference. The SigLIP model is always
+# baked into the binary by build.rs (no runtime download). Hidden behind the
+# `Embedder`/`EmbeddingCache` traits; nothing here leaks above dcs-io.
+candle-core.workspace = true
+candle-nn.workspace = true
+candle-transformers.workspace = true
+tokenizers.workspace = true
+
+[features]
+# GPU acceleration for embedding inference. `metal` (Apple, no external toolkit)
+# is auto-enabled on macOS by the binary crate; `cuda` (Nvidia) is opt-in since it
+# needs the CUDA toolkit at build time. Absent either, inference runs on the CPU.
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+
+# build.rs always fetches (pinned), verifies the SHA-256 of, and fp16-converts the
+# model into OUT_DIR for `include_bytes!`. Set DCS_MODEL_DIR to build offline.
+[build-dependencies]
+ureq.workspace = true
+sha2.workspace = true
+safetensors.workspace = true
+half.workspace = true

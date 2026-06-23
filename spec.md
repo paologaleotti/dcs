@@ -297,7 +297,7 @@ One hidden `.dcs/` directory at the imported root (subfolders covered):
   compacted at save, bounded by an entry cap; corruption costs only undo
   history, never owned state.
 - **`cache.sqlite3`** — the disposable store: thumbnails, fingerprints,
-  (future) embeddings. Delete it, it rebuilds; corruption can never cost
+  search embeddings. Delete it, it rebuilds; corruption can never cost
   user state.
 
 Crash safety, backups, locking: Part B §10b.
@@ -458,7 +458,8 @@ missing/unreadable handling + fingerprint identity · time/tag/none
 grouping, smart day, timezone (IANA), derived bursts · explicit sort,
 zoom, bricks, square cells · tags + palette + simple tag manager
 (rename/recolor/delete) + merge-via-rename ·
-A/X/unreviewed + AND/OR filters + solo · registry → keys + `Cmd+P` +
+A/X/unreviewed + AND/OR filters + solo · **local AI semantic text search
+(§11b): embedded SigLIP, per-project opt-in** · registry → keys + `Cmd+P` +
 two context menus · gallery + filmstrip + 1:1 · durable undo/redo ·
 `.dcs/` sidecar (project.json + undo.log + cache.sqlite3) with `views`
 array · flexible copy-only export engine (§6) including export-rejected +
@@ -476,15 +477,13 @@ manager ships in v1) · empty-grid menu · verdict sort · recents.
 - **Board view** — freeform canvas: drag anywhere, overlap, resize;
   curated membership; per-board positions; multiple boards; rejected
   photos placed stay, dimmed. Architecture ready: Part B §8.
-- **AI auto-tagging (zero-shot, local).** Small image–text embedding
-  model (MobileCLIP/SigLIP class, CPU) scores photos against a
-  *user-defined vocabulary*, multi-label with a confidence knob.
-  Rules: **propose, don't assign** (suggestion layer + crystallize to
-  confirm — derived-vs-owned holds); feeds on the 256 px cache tier (no
-  extra decode); **embeddings cached** so vocabulary changes recompute
-  only the text side (instant re-tag); opt-in model download, inference
-  fully local. Embeddings also unlock text search and embedding-based
-  near-duplicate detection.
+- **AI auto-tagging (zero-shot, local).** Reuses the embedding index already
+  built for search (§11b): scores photos against a *user-defined vocabulary*,
+  multi-label with a confidence knob. Rules: **propose, don't assign**
+  (suggestion layer + crystallize to confirm — derived-vs-owned holds);
+  **embeddings cached** so vocabulary changes recompute only the text side
+  (instant re-tag); inference fully local. **Embedding-based near-duplicate
+  detection** rides the same vectors. (Text search itself is **done** — §11b.)
 - Sheet export (WYSIWYG; pairs with the board) · map view · composed
   grouping · RAW decode/develop · loupe compare · XMP sidecars (write) ·
   develop/convert + resize/watermark on export · watch-folder ·
@@ -533,6 +532,7 @@ manager ships in v1) · empty-grid menu · verdict sort · recents.
 | 36 | **Export = pure planner in `dcs-domain` (`plan_export` → `ExportPlan`) + dumb executor in `dcs-io`; `dcs-app` is the thin trigger. The dialog preview *is* the plan, so "reads true aloud" is structural. `dcs-domain` owns its own error enums; domain failures never leak from io (§6.9, §9)** |
 | 37 | **Cross-platform is first-class (non-negotiable #5): Windows, macOS, Linux all run *well*, not just compile. Paths via `Path`/`PathBuf` only (never string-split on `/`); config/cache under each OS's standard dirs; atomic save + lock-file semantics validated on all three filesystems; primary modifier ⌘ on macOS, Ctrl elsewhere; system timezone + GPU backend (Metal/Vulkan/DX12 via wgpu) work per platform. CI = build + test matrix on all three; a single-platform regression blocks release.** |
 | 38 | **`1–9` color-tag keys dropped (confusing); tags are named, via `T`/`Shift+T`. Tag colors auto-assign from a curated distinct-hue cycle, golden-angle past it (unlimited distinct colors). A **simple tag manager** (list + rename/recolor/delete, undoable) ships in v1 as the centralized place to manage tags — the prior "full manager deferred" line is superseded; only the *advanced* manager (bulk merge UI, reorder) stays v1.1.** |
+| 39 | **AI semantic text search ships in v1 (§11b): local SigLIP embeddings via `candle`, the model **embedded in the binary** (pinned + SHA-256-verified + fp16 by `build.rs`; no runtime download). Per-project opt-in, persisted; indexing is lowest-priority (after thumbnails). The index is derived/disposable (cache table); ranking is pure in `dcs-domain`; the `Search` filter chip is no longer a scaffold. Auto-tagging + near-dup reuse the same index but stay v1.1 (§11c).** |
 
 ---
 
@@ -562,7 +562,8 @@ dcs-domain  PURE core: types + pure functions. no I/O, no async, no egui
 - **dcs-io:** `imaging` (decode, embedded preview, orientation, thumb
   cache, prefetch), `source` (scan, EXIF incl. subseconds, content
   fingerprint, progressive import stream, missing-file detection),
-  `persistence` (versioned DTOs — serde structs + a version field,
+  `embedding` (local SigLIP inference behind the `Embedder` trait; candle +
+  GPU/CPU hidden here — §11b), `persistence` (versioned DTOs — serde structs + a version field,
   **derive everything, no hand-written mapper universe**; `views` array
   with unknown-kind preservation; `undo.log` append/compact). The
   **export executor** lives here too but is *dumb*: it walks a finished
@@ -685,10 +686,10 @@ pub fn derive_bursts(frames: &[(PhotoId, OffsetDateTime, FileSeq)], k: BurstKnob
 
 // Filters: AND across groups, OR within a group (#13)
 pub enum ChipOp { And, Or }
-pub enum Chip { Verdict(AcceptState), Tag(TagId), Search(String) }  // Search = scaffold; matches inject at resolve, empty until embeddings land
+pub enum Chip { Verdict(AcceptState), Tag(TagId), Search(String) }  // Search = AI semantic search (§11b); matching set injected at resolve from the embedding index
 pub struct FilterGroup { op: ChipOp, chips: Vec<Chip> }   // op = within-group
 pub struct Filter { groups: Vec<FilterGroup> }            // groups AND-combined
-// Owned membership (verdicts/tags) and the future search sets are injected via a
+// Owned membership (verdicts/tags) and the search sets are injected via a
 // borrowed FilterCtx, so resolution stays pure and arrows point down. An empty
 // filter matches everything; RAW-only exclusion is the caller's gate, not here.
 pub fn resolve(photos: &[Photo], f: &Filter, ctx: &FilterCtx) -> HashSet<usize>;
@@ -739,15 +740,45 @@ pub fn plan_export(pool: &Pool, tags: &Tags, groups: &[DerivedGroup], req: &Expo
 // dcs-io then executes: walk plan.ops, copy (.part→fsync→rename), progress, cancel.
 ```
 
-## 11b. AI tagging — accommodation (future)
+## 11b. AI semantic search (implemented)
 
-Nothing in v1 changes; the seams exist. The job is a `dcs-io` background
-consumer of the thumb cache; embeddings = a new disposable table in
-`cache.sqlite3` (`fingerprint → vec<f32>`); suggestions are derived
-state in `dcs-app` (never persisted); confirmation emits ordinary
-`CreateTag`/`AssignTag` commands through the registry, riding undo.
-Runtime: `candle` first, `ort` if speed demands. Model ships separately
-or downloads opt-in.
+Free-text search — type "temple", get temple photos — via CLIP-style image–text
+embeddings, fully local and offline. The image and the query land in one shared
+vector space; matches are the photo vectors nearest the query vector.
+
+- **Model:** SigLIP `base-patch16-384` (768-dim), run with `candle`. **Always
+  embedded in the binary** — `build.rs` fetches a pinned commit
+  (`crates/dcs-io/model_revision.txt`), verifies its SHA-256, converts fp32 → fp16,
+  and `include_bytes!`s it. No runtime download. `DCS_MODEL_DIR` builds offline.
+- **Layering:** inference lives in `dcs-io` behind the `Embedder` trait; candle and
+  the tokenizer never leak above it. The ranking math is pure in
+  `dcs-domain::search` (cosine + relative/absolute floors + cap). `dcs-app`
+  orchestrates; only `Vec<f32>` crosses up.
+- **Compute:** GPU auto-selected — Metal (macOS, default) / CUDA (`--features cuda`)
+  / CPU fallback; F16 on GPU (probe-then-fallback to F32). Decode + preprocess on
+  rayon, batched single forward.
+- **Storage:** embeddings = a disposable table in `cache.sqlite3`
+  (`(content_key, model_id) → vec<f32>`), keyed by content **and** model so a swap
+  invalidates cleanly. Pruned to the live pool on open. ~3 KB/photo.
+- **Priority:** indexing is the lowest-priority background sweep — it starts only
+  after the scan settles **and** every thumbnail is warm, so photo loading always
+  wins. Per-project, **opt-in and persisted** (`ProjectConfig.ai_search_enabled` —
+  the only owned bit). A folder epoch tags requests so stale cross-folder results
+  are dropped.
+- **Query:** prompt-ensemble text encode → cosine rank → matching `PhotoId` set
+  injected into the filter's `Search` chip. Enter replaces the search, Shift+Enter
+  chains an OR'd term (one shared search group); also reachable via the command
+  palette (`Filter: Search…`) and ⌘F.
+- **Derived-vs-owned:** the in-memory index and match sets are derived (never
+  persisted); search emits no `Command` (no undo impact).
+
+## 11c. AI auto-tagging & near-duplicates (future)
+
+Both reuse the embedding index above; the seams exist. Auto-tagging is a `dcs-app`
+suggestion layer (derived, never persisted); confirmation emits ordinary
+`CreateTag`/`AssignTag` commands through the registry, riding undo — vocabulary
+changes recompute only the text side. Near-duplicate detection ranks photo vectors
+against each other.
 
 ## 12. Open technical decisions
 

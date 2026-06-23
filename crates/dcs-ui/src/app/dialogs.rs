@@ -25,6 +25,74 @@ impl DcsApp {
         });
     }
 
+    /// The keyboard-first AI-search dialog (⌘F / `Filter: Search…`). A centered
+    /// text field that works like the toolbar search: Enter **replaces** the
+    /// current search, Shift+Enter **adds** an OR'd term. Esc or the close button
+    /// dismisses it.
+    pub(super) fn search_dialog(&mut self, ctx: &egui::Context) {
+        if !self.search_dialog_open {
+            return;
+        }
+        let mut open = true;
+        let mut replace = false;
+        let mut chain = false;
+        egui::Window::new("Search photos")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, -80.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new("Find photos by what's in them")
+                        .monospace()
+                        .color(theme::TEXT_DIM)
+                        .size(12.0),
+                );
+                ui.add_space(6.0);
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.search_dialog_input)
+                        .hint_text("e.g. temple, beach, sunset")
+                        .desired_width(280.0)
+                        .font(FontId::monospace(14.0)),
+                );
+                if self.search_dialog_focus {
+                    resp.request_focus();
+                    self.search_dialog_focus = false;
+                }
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    if ui.input(|i| i.modifiers.shift) {
+                        chain = true;
+                    } else {
+                        replace = true;
+                    }
+                }
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new("Enter: replace · Shift+Enter: add")
+                        .monospace()
+                        .color(theme::HAIRLINE)
+                        .size(11.0),
+                );
+            });
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            open = false;
+        }
+        if replace {
+            let query = std::mem::take(&mut self.search_dialog_input);
+            self.session.run_search(query);
+            self.search_dialog_open = false;
+        } else if chain {
+            // Add the term but keep the dialog open (refocused) to chain more —
+            // unless this same frame also closed it (Esc / ×).
+            let query = std::mem::take(&mut self.search_dialog_input);
+            self.session.append_search(query);
+            self.search_dialog_open = open;
+            self.search_dialog_focus = true;
+        } else {
+            self.search_dialog_open = open;
+        }
+    }
+
     pub(super) fn about_window(&mut self, ctx: &egui::Context) {
         if !self.show_about {
             return;

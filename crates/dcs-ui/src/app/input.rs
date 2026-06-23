@@ -66,8 +66,8 @@ impl DcsApp {
             // count), so they stay out of the registry.
             ViewMode::Grid => {
                 self.handle_grid_keys(ctx);
-                // Space / F open the focused photo in the gallery.
-                if ctx.input(|i| i.key_pressed(Key::Space) || i.key_pressed(Key::F)) {
+                // Space opens the focused photo in the gallery.
+                if ctx.input(|i| i.key_pressed(Key::Space)) {
                     self.enter_gallery();
                 }
             }

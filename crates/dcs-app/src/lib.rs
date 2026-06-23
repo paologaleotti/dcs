@@ -18,7 +18,7 @@ mod util;
 pub use export::{ExportScope, ExportStatus};
 pub use registry::{ActionEffect, ActionEntry, AppAction, Category, catalog};
 pub use session::{
-    BurstMark, CaptionTime, CellInfo, ImportProgress, SaveError, Session, VerdictFilter,
+    AiStatus, BurstMark, CaptionTime, CellInfo, ImportProgress, SaveError, Session, VerdictFilter,
     VisibleGroup,
 };
 pub use thumb_cache::ThumbView;

@@ -37,6 +37,17 @@ impl Session {
             .count()
     }
 
+    /// Photos that will actually be embedded for AI search — displayable minus
+    /// missing placeholders (no pixels to embed). The honest denominator for the
+    /// "indexing N/M" status, matching what [`Session::index_pool`] enqueues.
+    pub(super) fn embeddable_count(&self) -> usize {
+        self.builder
+            .photos()
+            .iter()
+            .filter(|p| !p.missing && !p.is_raw_only())
+            .count()
+    }
+
     /// Photo at a display position in the current visible order.
     pub fn photo_at(&self, display_index: usize) -> Option<&Photo> {
         let &pool_index = self.visible.get(display_index)?;
