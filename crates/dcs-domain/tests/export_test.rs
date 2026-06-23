@@ -181,6 +181,46 @@ fn rename_cascades_on_basename_collisions() {
 }
 
 #[test]
+fn case_only_collisions_are_renamed_not_overwritten() {
+    // `a.JPG` and `a.jpg` are one filename on the default Windows (NTFS) and
+    // macOS (APFS) filesystems; the planner must treat them as a collision so the
+    // dumb executor never overwrites the first copy.
+    let photos = [
+        photo(1, Some("/src/x/a.JPG"), None),
+        photo(2, Some("/src/y/a.jpg"), None),
+    ];
+    let req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
+    let plan = plan_export(&items(&photos), Path::new("/src"), &req).unwrap();
+
+    assert_eq!(plan.ops.len(), 2);
+    assert_eq!(plan.ops[0].dest, dest(&["a.JPG"]));
+    assert_eq!(
+        plan.ops[1].dest,
+        dest(&["a-1.jpg"]),
+        "the case-clash is renamed, not emitted as a second a.jpg"
+    );
+    assert_eq!(plan.collisions, 1);
+}
+
+#[test]
+fn case_only_collisions_are_skipped_under_skip_policy() {
+    let photos = [
+        photo(1, Some("/src/x/IMG.JPG"), None),
+        photo(2, Some("/src/y/img.jpg"), None),
+    ];
+    let req = request(FileSelection::Jpeg, Layout::Together, Collision::Skip);
+    let plan = plan_export(&items(&photos), Path::new("/src"), &req).unwrap();
+
+    assert_eq!(
+        plan.ops.len(),
+        1,
+        "the case-clash is skipped, never overwritten"
+    );
+    assert_eq!(plan.ops[0].dest, dest(&["IMG.JPG"]));
+    assert_eq!(plan.collisions, 1);
+}
+
+#[test]
 fn skip_policy_drops_colliding_files() {
     let photos = [
         photo(1, Some("/src/x/a.JPG"), None),

@@ -251,9 +251,9 @@ pub struct Session {
     /// within). Derived display state, never persisted; empty = show everything.
     /// The verdict toggle is sugar over the lone-verdict group within it.
     filter: Filter,
-    /// Search query → matching photos, the seam a future embedding consumer
-    /// fills. Empty in v1 (no model), so `Search` chips match nothing. Never
-    /// persisted; reset per folder.
+    /// Search query → matching photos, populated by the AI semantic-search
+    /// embedding index. A query absent here (not yet ranked) matches nothing.
+    /// Never persisted; reset per folder.
     search_sets: HashMap<String, HashSet<PhotoId>>,
     /// Query text → its embedding, kept so an active search re-ranks against newly
     /// indexed photos without re-encoding the text. Cleared per folder.

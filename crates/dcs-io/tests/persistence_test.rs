@@ -178,6 +178,28 @@ fn newer_version_is_refused_not_guessed() {
 }
 
 #[test]
+fn newer_version_is_refused_even_when_a_backup_exists() {
+    // Regression: a newer-version main file must propagate UnsupportedVersion,
+    // not silently fall back to a stale backup (which a later save would clobber).
+    let dir = tempdir();
+    let store = JsonProjectStore;
+    store.save(&dir, &snapshot()).unwrap(); // writes main
+    store.save(&dir, &snapshot()).unwrap(); // leaves a valid .bak
+
+    // A newer build then rewrote the main file with a version this build can't read.
+    std::fs::write(
+        dir.join("project.json"),
+        r#"{"version":999,"photos":[],"next_id":0,"views":[]}"#,
+    )
+    .unwrap();
+
+    match store.load(&dir) {
+        Err(PersistError::UnsupportedVersion(999)) => {}
+        other => panic!("must refuse a newer version even with a backup present, got {other:?}"),
+    }
+}
+
+#[test]
 fn save_rotates_a_backup_and_leaves_no_temp() {
     let dir = tempdir();
     let store = JsonProjectStore;

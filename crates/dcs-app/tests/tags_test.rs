@@ -159,6 +159,24 @@ fn from_state_rebuilds_indexes_and_ignores_orphan_assignments() {
 }
 
 #[test]
+fn from_state_reconciles_a_stale_next_id_against_def_ids() {
+    // A hand-edited or stale `next_tag_id` smaller than an existing def id must
+    // be reconciled, or the next create would allocate an id that overwrites a
+    // live definition. Mirrors `insert_def`'s runtime self-heal.
+    let defs = vec![dcs_domain::tag::Tag {
+        id: TagId(5),
+        name: "kept".into(),
+        color: palette_color(1),
+    }];
+    let store = TagStore::from_state(defs, Vec::new(), 0); // next_id deliberately stale
+    assert_eq!(
+        store.next_id(),
+        6,
+        "next_id must clear the largest persisted def id"
+    );
+}
+
+#[test]
 fn forget_scrubs_photos_from_every_tag() {
     let (mut s, ids) = store_with(&["a", "b"]);
     s.apply_assign(ids[0], &[PhotoId(1)]);

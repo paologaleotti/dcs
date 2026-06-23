@@ -66,7 +66,11 @@ fn walk(root: &Path, tx: &Sender<ScannedFile>, cache: Option<&SharedCache>) {
     // parallel. Sort order is derived, so arrival order doesn't matter.
     let files: Vec<(PathBuf, FileKind)> = WalkDir::new(root)
         .into_iter()
-        .filter_entry(|e| !is_hidden(e.path()))
+        // The hidden filter must skip the root itself: importing a folder whose
+        // own name starts with a dot (e.g. `.archive`) is legitimate and must not
+        // prune the whole walk. Only descendants (the `.dcs` sidecar, dotfiles)
+        // are filtered.
+        .filter_entry(|e| e.depth() == 0 || !is_hidden(e.path()))
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file())
         // Import both JPEG and RAW so a JPEG+RAW pair merges into one photo and a

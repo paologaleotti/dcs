@@ -97,6 +97,14 @@ pub struct SqliteCache {
     conn: Connection,
     thumb_cap_bytes: u64,
     tick: AtomicU64,
+    /// Running estimate of total thumb-blob bytes, so the hot `put` path can skip
+    /// the full-table `SUM(LENGTH(blob))` scan while comfortably under cap (during
+    /// an import that scan ran on every insert — O(n²) over the folder, under the
+    /// shared lock). May transiently over-count — a blob replaced via UPSERT isn't
+    /// subtracted — which only makes eviction trigger a touch early; the real SUM
+    /// reconciles it whenever the cap is approached. Seeded from the true total at
+    /// open.
+    thumb_bytes_est: AtomicU64,
 }
 
 impl SqliteCache {
@@ -167,11 +175,17 @@ impl SqliteCache {
              );",
         )
         .map_err(db)?;
-        Ok(SqliteCache {
+        let cache = SqliteCache {
             conn,
             thumb_cap_bytes,
             tick: AtomicU64::new(1),
-        })
+            thumb_bytes_est: AtomicU64::new(0),
+        };
+        // Seed the estimate from the real total (0 for a fresh db, the resident
+        // total for an existing one) so eviction accounting starts accurate.
+        let initial = cache.thumb_bytes();
+        cache.thumb_bytes_est.store(initial, Ordering::Relaxed);
+        Ok(cache)
     }
 
     /// Every content key with a stored blob at `tier`. The caller intersects
@@ -291,7 +305,17 @@ impl ThumbCache for SqliteCache {
             ],
         );
         if stored.is_ok() {
-            self.evict_to_cap();
+            // Bump the running estimate; only pay for the real SUM + eviction when
+            // it says we may be over cap. The common import insert stays scan-free.
+            let est = self
+                .thumb_bytes_est
+                .fetch_add(blob.len() as u64, Ordering::Relaxed)
+                + blob.len() as u64;
+            if est > self.thumb_cap_bytes {
+                self.evict_to_cap();
+                self.thumb_bytes_est
+                    .store(self.thumb_bytes(), Ordering::Relaxed);
+            }
         }
     }
 }

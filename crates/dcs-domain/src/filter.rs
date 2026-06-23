@@ -3,8 +3,8 @@
 //! visible set. Pure and derived: never persisted, recomputed on demand.
 //!
 //! Verdict and tag membership live in owned stores up in `dcs-app`; search
-//! matches come from a future embedding consumer. All are injected via
-//! [`FilterCtx`], so resolution stays pure and the layer arrows point down.
+//! matches come from the embedding index (AI semantic search). All are injected
+//! via [`FilterCtx`], so resolution stays pure and the layer arrows point down.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -19,9 +19,9 @@ pub enum FilterChip {
     Verdict(AcceptState),
     /// Photos carrying this tag.
     Tag(TagId),
-    /// Photos matching a search query. **Scaffold:** the matching set is injected
-    /// at resolve time and is empty until an embedding model lands — a `Search`
-    /// chip matches nothing today.
+    /// Photos matching an AI semantic-search query. The matching set is computed
+    /// by the embedding index up in `dcs-app` and injected at resolve time via
+    /// [`FilterCtx::search`]; an unknown query (not yet ranked) matches nothing.
     Search(String),
 }
 
@@ -57,14 +57,14 @@ impl Filter {
 }
 
 /// Borrowed membership inputs, injected so resolution stays pure. Verdicts and
-/// tags are owned stores in `dcs-app`; `search` is filled by a future embedding
-/// consumer and is empty in v1.
+/// tags are owned stores in `dcs-app`; `search` is the AI semantic-search index
+/// (also in `dcs-app`), empty only until a query has been ranked.
 pub struct FilterCtx<'a> {
     /// Per-photo verdict; an absent entry is `Unreviewed`.
     pub verdicts: &'a HashMap<PhotoId, AcceptState>,
     /// Per-photo tag membership — the same borrow `grouping::tag_groups` takes.
     pub photo_tags: &'a HashMap<PhotoId, BTreeSet<TagId>>,
-    /// Search query → matching photos. Empty in v1 (no model).
+    /// Search query → matching photos, from the embedding index.
     pub search: &'a HashMap<String, HashSet<PhotoId>>,
 }
 

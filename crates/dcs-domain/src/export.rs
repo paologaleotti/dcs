@@ -162,7 +162,7 @@ pub fn plan_export(
 
     let mut ops: Vec<ExportOp> = Vec::new();
     let mut skipped: Vec<SkippedPhoto> = Vec::new();
-    let mut claimed: HashSet<PathBuf> = HashSet::new();
+    let mut claimed: HashSet<String> = HashSet::new();
     let mut collisions = 0usize;
 
     for (seq, item) in items.iter().enumerate() {
@@ -298,11 +298,12 @@ fn place(
     stem: &str,
     ext: &str,
     collision: Collision,
-    claimed: &mut HashSet<PathBuf>,
+    claimed: &mut HashSet<String>,
 ) -> Option<PathBuf> {
     let first = folder.join(join_name(stem, ext));
-    if !claimed.contains(&first) {
-        claimed.insert(first.clone());
+    // `insert` returns false when the normalized key is already taken — that is a
+    // collision even if the byte-exact path differs only in case.
+    if claimed.insert(collision_key(&first)) {
         return Some(first);
     }
     match collision {
@@ -311,14 +312,26 @@ fn place(
             // Cascade `-1`, `-2`, … until a free name is found.
             for n in 1.. {
                 let candidate = folder.join(join_name(&format!("{stem}-{n}"), ext));
-                if !claimed.contains(&candidate) {
-                    claimed.insert(candidate.clone());
+                if claimed.insert(collision_key(&candidate)) {
                     return Some(candidate);
                 }
             }
             unreachable!("the rename cascade always finds a free name")
         }
     }
+}
+
+/// Normalized key for collision detection. Filenames on the default Windows
+/// (NTFS) and macOS (APFS) filesystems are case-insensitive, so two ops whose
+/// dest paths differ only in case (`a.JPG` vs `a.jpg`) would otherwise both be
+/// emitted and the second would silently overwrite the first when the dumb
+/// executor copies them — breaking "never overwrite". Case-folding the whole
+/// path makes the planner treat them as a collision on every platform. This is
+/// deliberately conservative: on a case-sensitive filesystem it may rename an
+/// avoidable clash, but it can never overwrite. Unicode normalization
+/// (NFC vs NFD, which APFS also folds) is a known remaining gap.
+fn collision_key(path: &Path) -> String {
+    path.to_string_lossy().to_lowercase()
 }
 
 /// The filename stem for an op: the template expansion when one is set, else the

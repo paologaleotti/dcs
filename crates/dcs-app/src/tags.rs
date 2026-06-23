@@ -45,6 +45,11 @@ impl TagStore {
             tag_photos: HashMap::new(),
             next_id,
         };
+        // Reconcile the counter against the defs so a stale or hand-edited
+        // `next_tag_id` (smaller than an existing def id) can't allocate a TagId
+        // that overwrites a live definition. Mirrors `insert_def`'s self-heal.
+        let max_def = store.defs.keys().map(|t| t.0 + 1).max().unwrap_or(0);
+        store.next_id = store.next_id.max(max_def);
         for (photo, tags) in assignments {
             for tag in tags {
                 // Only honour assignments whose tag still has a definition.

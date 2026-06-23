@@ -92,7 +92,15 @@ impl Session {
     /// spans the grid headers read. Walks groups in order so spans and cells
     /// stay in lockstep; groups with no surviving members are omitted.
     pub(super) fn rebuild_visible(&mut self) {
+        // Capture which photo the cursor sits on *before* the order changes, so
+        // focus follows the photo across a re-sort/regroup/filter rather than
+        // jumping to whatever new photo lands at the old numeric index.
         let photos = self.builder.photos();
+        let id_at =
+            |idx: Option<usize>| idx.and_then(|i| self.visible.get(i)).map(|&p| photos[p].id);
+        let prev_focus_id = id_at(self.sel.focus());
+        let prev_anchor_id = id_at(self.sel.anchor());
+
         // No active filter is the common steady state — skip resolution entirely
         // and let `passes` be just the raw-only gate, as cheap as before chips.
         let pass_set: Option<HashSet<usize>> = self
@@ -127,7 +135,9 @@ impl Session {
         }
         self.visible = visible;
         self.visible_groups = spans;
-        self.sel.clamp_focus(self.visible.len());
+        let new_order: Vec<PhotoId> = self.visible.iter().map(|&i| photos[i].id).collect();
+        self.sel
+            .remap_focus(prev_focus_id, prev_anchor_id, &new_order);
     }
 
     /// Resolve the display (shoot) zone for derivation: the configured IANA zone,

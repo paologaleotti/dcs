@@ -109,6 +109,38 @@ fn cache_prefilter_records_fingerprints() {
     assert_eq!(guard.lookup("a.jpg", mtime, meta.len()), Some(fp_first));
 }
 
+#[test]
+fn dot_named_root_still_scans_its_files() {
+    // A root folder whose own name starts with a dot (e.g. dragging in
+    // `.archive`) is a legitimate import: the hidden filter must skip the root
+    // and only prune descendants, or the whole walk returns empty.
+    let parent = tempdir();
+    let root = parent.join(".archive");
+    std::fs::create_dir_all(&root).unwrap();
+    write(&root.join("a.jpg"), b"inside a dot root");
+
+    let files = scan_all(&root, None);
+    assert_eq!(
+        files.len(),
+        1,
+        "a dot-named root must still surface its files"
+    );
+    assert!(files[0].path.ends_with("a.jpg"));
+}
+
+#[test]
+fn hidden_descendants_are_still_pruned() {
+    let dir = tempdir();
+    write(&dir.join("visible.jpg"), b"shown");
+    let hidden = dir.join(".dcs");
+    std::fs::create_dir_all(&hidden).unwrap();
+    write(&hidden.join("cached.jpg"), b"sidecar junk");
+
+    let files = scan_all(&dir, None);
+    assert_eq!(files.len(), 1, "the .dcs sidecar and dotfiles stay pruned");
+    assert!(files[0].path.ends_with("visible.jpg"));
+}
+
 fn tempdir() -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

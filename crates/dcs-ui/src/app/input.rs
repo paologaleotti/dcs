@@ -83,7 +83,10 @@ impl DcsApp {
             self.exit_gallery();
             return;
         }
-        if ctx.input(|i| i.key_pressed(Key::Z)) {
+        // Bare `Z` only — the registry runs first and binds Cmd+Z / Cmd+Shift+Z
+        // to undo/redo, so without the modifier guard those would also flip the
+        // 1:1 zoom as a side effect.
+        if ctx.input(|i| i.key_pressed(Key::Z) && !i.modifiers.command && !i.modifiers.shift) {
             self.gallery_full = !self.gallery_full;
         }
         let prev = ctx.input(|i| i.key_pressed(Key::ArrowLeft) || i.key_pressed(Key::ArrowUp));

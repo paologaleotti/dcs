@@ -161,6 +161,10 @@ impl ProjectStore for JsonProjectStore {
         match read_snapshot(&main) {
             Ok(Some(s)) => Ok(Some(s)),
             Ok(None) => read_snapshot(&backup), // main absent → try the backup
+            // A newer, unknown version is refused, never guessed: falling back to
+            // a stale backup here would load old owned state and then clobber the
+            // newer file on the next save. Only genuine corruption falls back.
+            Err(PersistError::UnsupportedVersion(v)) => Err(PersistError::UnsupportedVersion(v)),
             Err(_) if backup.exists() => read_snapshot(&backup), // main torn → backup
             Err(e) => Err(e),
         }

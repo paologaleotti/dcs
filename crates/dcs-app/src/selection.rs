@@ -30,6 +30,34 @@ impl Selection {
         self.focus
     }
 
+    /// Display index of the selection-range anchor, if any.
+    pub fn anchor(&self) -> Option<usize> {
+        self.anchor
+    }
+
+    /// Relocate the focus + anchor cursors by `PhotoId` after the visible order
+    /// changed (re-sort, regroup, filter). Keeps the cursor on the *same photo*
+    /// instead of on whatever now sits at the old numeric index. A photo no
+    /// longer in the order falls back to clamping its old index into range.
+    pub fn remap_focus(
+        &mut self,
+        focus_id: Option<PhotoId>,
+        anchor_id: Option<PhotoId>,
+        order: &[PhotoId],
+    ) {
+        if order.is_empty() {
+            self.focus = None;
+            self.anchor = None;
+            return;
+        }
+        let resolve = |id: Option<PhotoId>, fallback: Option<usize>| {
+            id.and_then(|id| order.iter().position(|&p| p == id))
+                .or_else(|| fallback.map(|f| f.min(order.len() - 1)))
+        };
+        self.focus = resolve(focus_id, self.focus);
+        self.anchor = resolve(anchor_id, self.anchor);
+    }
+
     pub fn is_selected(&self, id: PhotoId) -> bool {
         self.selected.contains(&id)
     }
@@ -160,10 +188,15 @@ impl Selection {
     /// to the visible order so the visible-only rule holds.
     pub fn selected_or_focused(&self, order: &[PhotoId]) -> Vec<PhotoId> {
         if !self.selected.is_empty() {
+            // Dedup while preserving display order: under the tag axis a
+            // multi-tagged photo's id appears in `order` once per band it
+            // projects into, and a selected photo must be counted (and targeted)
+            // exactly once — spec §2.8 "tag projections count once".
+            let mut seen = HashSet::new();
             return order
                 .iter()
                 .copied()
-                .filter(|id| self.selected.contains(id))
+                .filter(|id| self.selected.contains(id) && seen.insert(*id))
                 .collect();
         }
         match self.focus {

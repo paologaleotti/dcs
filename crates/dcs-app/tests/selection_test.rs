@@ -134,6 +134,65 @@ fn selection_is_visible_only_and_deduped() {
 }
 
 #[test]
+fn remap_focus_follows_the_photo_across_a_reorder() {
+    // After a re-sort the same photo sits at a different index; the cursor must
+    // stay on that photo, not jump to whatever now occupies the old index.
+    let o = order();
+    let mut sel = Selection::new();
+    sel.select_only(4, &o); // focus + anchor on photo id 4
+    assert_eq!(sel.focus(), Some(4));
+
+    // The order reverses (e.g. time asc → desc): id 4 is now near the end.
+    let reversed: Vec<PhotoId> = o.iter().rev().copied().collect();
+    let focus_id = Some(PhotoId(4));
+    sel.remap_focus(focus_id, focus_id, &reversed);
+
+    assert_eq!(
+        reversed[sel.focus().unwrap()],
+        PhotoId(4),
+        "cursor stays on id 4"
+    );
+    assert_eq!(sel.anchor(), sel.focus(), "anchor follows too");
+}
+
+#[test]
+fn remap_focus_clamps_when_the_photo_is_filtered_out() {
+    let o = order();
+    let mut sel = Selection::new();
+    sel.select_only(7, &o);
+
+    // A filter shrinks the order and drops id 7; focus falls back to a clamped
+    // index rather than dangling out of range.
+    let shrunk: Vec<PhotoId> = [0u32, 1, 2].into_iter().map(PhotoId).collect();
+    let gone = Some(PhotoId(7));
+    sel.remap_focus(gone, gone, &shrunk);
+
+    let f = sel.focus().expect("focus stays set");
+    assert!(f < shrunk.len(), "clamped into the new range");
+}
+
+#[test]
+fn tag_axis_projection_duplicates_are_counted_once() {
+    // Under the tag axis a multi-tagged photo's id appears in the display order
+    // once per band it projects into. A selected photo must be targeted (and
+    // counted) exactly once — spec §2.8 "tag projections count once".
+    let projected: Vec<PhotoId> = [0u32, 1, 3, 2, 3].into_iter().map(PhotoId).collect();
+    let mut sel = Selection::new();
+    sel.select_all_visible(&projected);
+
+    let targets: Vec<u32> = sel
+        .selected_or_focused(&projected)
+        .into_iter()
+        .map(|p| p.0)
+        .collect();
+    assert_eq!(
+        targets,
+        vec![0, 1, 3, 2],
+        "the photo projected into two bands appears once, in display order"
+    );
+}
+
+#[test]
 fn click_then_shift_click_selects_the_range() {
     let o = order();
     let mut sel = Selection::new();

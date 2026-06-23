@@ -152,6 +152,36 @@ fn lru_evicts_oldest_when_over_cap() {
 }
 
 #[test]
+fn staying_under_cap_evicts_nothing() {
+    // The running-byte estimate must not over-evict: three small blobs well under
+    // a generous cap all survive (the put hot path now skips the SUM scan).
+    let cache = SqliteCache::in_memory(DEFAULT_THUMB_CAP_BYTES).unwrap();
+    let blob = [0u8; 100];
+    cache.put(&fp(1), ThumbTier::Grid, &blob);
+    cache.put(&fp(2), ThumbTier::Grid, &blob);
+    cache.put(&fp(3), ThumbTier::Grid, &blob);
+
+    assert!(cache.get(&fp(1), ThumbTier::Grid).is_some());
+    assert!(cache.get(&fp(2), ThumbTier::Grid).is_some());
+    assert!(cache.get(&fp(3), ThumbTier::Grid).is_some());
+    assert_eq!(cache.thumb_bytes(), 300);
+}
+
+#[test]
+fn replacing_a_blob_still_evicts_to_cap() {
+    // UPSERT-replacing the same key repeatedly inflates the running estimate;
+    // eviction must still keep the real total within cap (the estimate reconciles).
+    let cache = SqliteCache::in_memory(250).unwrap();
+    let blob = [0u8; 100];
+    for _ in 0..10 {
+        cache.put(&fp(1), ThumbTier::Grid, &blob); // same key, replaced each time
+    }
+    cache.put(&fp(2), ThumbTier::Grid, &blob);
+    cache.put(&fp(3), ThumbTier::Grid, &blob);
+    assert!(cache.thumb_bytes() <= 250, "real total stays within cap");
+}
+
+#[test]
 fn cached_keys_lists_only_the_requested_tier() {
     let cache = SqliteCache::in_memory(DEFAULT_THUMB_CAP_BYTES).unwrap();
     cache.put(&fp(1), ThumbTier::Grid, b"a");
