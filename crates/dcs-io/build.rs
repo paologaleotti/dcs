@@ -186,8 +186,12 @@ fn convert_fp16(src: &Path, dest: &Path) {
     let tmp = dest.with_extension("part");
     safetensors::tensor::serialize_to_file(views, None, &tmp).expect("write fp16 safetensors");
     // Fsync before rename, like the download path — otherwise a crash can leave a
-    // torn fp16 file that the next build's `exists()` check would trust.
-    std::fs::File::open(&tmp)
+    // torn fp16 file that the next build's `exists()` check would trust. Reopen
+    // with write access: Windows' FlushFileBuffers (sync_all) needs a writable
+    // handle and fails with "Access is denied" on a read-only `File::open`.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&tmp)
         .and_then(|f| f.sync_all())
         .expect("fsync fp16 safetensors");
     std::fs::rename(&tmp, dest).expect("rename fp16 safetensors");
