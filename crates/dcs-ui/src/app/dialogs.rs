@@ -125,6 +125,39 @@ impl DcsApp {
         self.show_about = open;
     }
 
+    /// The keyboard-shortcuts reference: a two-column key → action grid built
+    /// from the one binding source in `keymap`, so it never drifts from the live
+    /// keys.
+    pub(super) fn shortcuts_window(&mut self, ctx: &egui::Context) {
+        if !self.show_shortcuts {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Keyboard Shortcuts")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                egui::Grid::new("shortcuts-grid")
+                    .num_columns(2)
+                    .spacing([24.0, 6.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for shortcut in crate::keymap::shortcuts() {
+                            ui.label(
+                                RichText::new(shortcut.keys)
+                                    .monospace()
+                                    .color(theme::TEXT_DIM),
+                            );
+                            ui.label(RichText::new(shortcut.description).monospace().size(12.0));
+                            ui.end_row();
+                        }
+                    });
+            });
+        self.show_shortcuts = open;
+    }
+
     /// Full metadata for the focused photo (`I`): a labelled two-column grid of
     /// every known fact — gear, capture times, both timezones, and file paths.
     pub(super) fn metadata_window(&mut self, ctx: &egui::Context) {

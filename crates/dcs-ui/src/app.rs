@@ -84,6 +84,8 @@ pub struct DcsApp {
     dirty_since: Option<Instant>,
     /// About window visibility.
     show_about: bool,
+    /// Keyboard-shortcuts reference window visibility.
+    show_shortcuts: bool,
     /// Photo metadata window visibility (`I`); reads the focused photo each frame.
     show_metadata: bool,
     /// Shoot-timezone (display) picker — a keyboard-first fuzzy quick-pick (the
@@ -155,6 +157,7 @@ impl DcsApp {
             scroll_to_focus: false,
             dirty_since: None,
             show_about: false,
+            show_shortcuts: false,
             show_metadata: false,
             zone_picker: Picker::new("Travel timezone"),
             camera_zone_picker: Picker::new("Camera timezone"),
@@ -200,6 +203,7 @@ impl eframe::App for DcsApp {
         self.autosave(&ctx);
         self.heartbeat(&ctx);
         self.about_window(&ctx);
+        self.shortcuts_window(&ctx);
         self.metadata_window(&ctx);
         self.export_dialog(&ctx);
         self.zone_picker(&ctx);
@@ -322,8 +326,26 @@ impl DcsApp {
                 self.search_dialog_open = true;
                 self.search_dialog_focus = true;
             }
+            E::EnterGrid => {
+                if self.view == ViewMode::Gallery {
+                    self.exit_gallery();
+                }
+            }
+            E::EnterGallery => {
+                if self.view == ViewMode::Grid {
+                    self.enter_gallery();
+                }
+            }
+            E::ToggleGallery => {
+                if self.view == ViewMode::Gallery {
+                    self.exit_gallery();
+                } else {
+                    self.enter_gallery();
+                }
+            }
             E::ShowMetadata => self.show_metadata = true,
             E::ShowAbout => self.show_about = true,
+            E::ShowShortcuts => self.show_shortcuts = true,
             E::OpenTagPalette => {
                 self.tag_palette_remove = false;
                 self.tag_palette.open();

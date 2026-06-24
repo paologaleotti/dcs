@@ -23,6 +23,13 @@ impl DcsApp {
             }
             return;
         }
+        // The shortcuts reference is a plain modal too: Esc closes it.
+        if self.show_shortcuts {
+            if ctx.input(|i| i.key_pressed(Key::Escape)) {
+                self.show_shortcuts = false;
+            }
+            return;
+        }
         // The tag manager owns the keyboard while open (it has text fields); Esc
         // closes it, grid keys inert behind it.
         if self.show_tag_manager {
@@ -63,23 +70,18 @@ impl DcsApp {
         }
         match self.view {
             // Grid geometry keys are a pure UI concern (they need the column
-            // count), so they stay out of the registry.
-            ViewMode::Grid => {
-                self.handle_grid_keys(ctx);
-                // Space opens the focused photo in the gallery.
-                if ctx.input(|i| i.key_pressed(Key::Space)) {
-                    self.enter_gallery();
-                }
-            }
+            // count), so they stay out of the registry. Space (open gallery) is a
+            // registry binding, dispatched above.
+            ViewMode::Grid => self.handle_grid_keys(ctx),
             ViewMode::Gallery => self.handle_gallery_keys(ctx),
         }
     }
 
-    /// Gallery keys: `←`/`↑` previous, `→`/`↓` next over the visible
-    /// order; `Z` toggles fit ↔ 1:1; `Space`/`Esc` return to the grid. `A`/`X`/
-    /// undo already routed through the registry.
+    /// Gallery keys: `←`/`↑` previous, `→`/`↓` next over the visible order; `Z`
+    /// toggles fit ↔ 1:1; `Esc` returns to the grid. Space (toggle gallery),
+    /// `A`/`X`, and undo are registry bindings, dispatched before this runs.
     fn handle_gallery_keys(&mut self, ctx: &egui::Context) {
-        if ctx.input(|i| i.key_pressed(Key::Escape) || i.key_pressed(Key::Space)) {
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.exit_gallery();
             return;
         }

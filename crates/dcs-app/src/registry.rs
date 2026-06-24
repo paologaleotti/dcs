@@ -40,6 +40,14 @@ pub enum AppAction {
     /// Toggle the grid's burst overlay (span accents + labels). A persisted view
     /// preference.
     ToggleBursts,
+    /// Switch to the grid view mode (no-op if already there).
+    EnterGrid,
+    /// Switch to the gallery view mode on the focused photo (no-op if already
+    /// there, or the pool is empty).
+    EnterGallery,
+    /// Gallery-specific toggle (the `Space` binding), not a generic mode flip, so
+    /// it stays valid as more view modes are added.
+    ToggleGallery,
     /// Toggle one verdict in/out of the filter (multi-select: acc + rej, …).
     ToggleVerdictFilter(AcceptState),
     /// Toggle a tag in/out of the filter (the filter dropdown's tag checkboxes).
@@ -103,6 +111,8 @@ pub enum AppAction {
     /// Reveal the focused photo's file in the OS file manager.
     RevealSelection,
     About,
+    /// Open the keyboard-shortcuts reference window.
+    Shortcuts,
     Quit,
 }
 
@@ -150,6 +160,9 @@ impl AppAction {
             AppAction::ZoomOut => "zoom-out",
             AppAction::ToggleDiagnostics => "toggle-diagnostics",
             AppAction::ToggleBursts => "toggle-bursts",
+            AppAction::EnterGrid => "enter-grid",
+            AppAction::EnterGallery => "enter-gallery",
+            AppAction::ToggleGallery => "toggle-gallery",
             AppAction::ToggleVerdictFilter(AcceptState::Unreviewed) => "filter-verdict-unrev",
             AppAction::ToggleVerdictFilter(AcceptState::Accepted) => "filter-verdict-acc",
             AppAction::ToggleVerdictFilter(AcceptState::Rejected) => "filter-verdict-rej",
@@ -184,6 +197,7 @@ impl AppAction {
             AppAction::RevealFolder => "reveal-folder",
             AppAction::RevealSelection => "reveal-selection",
             AppAction::About => "about",
+            AppAction::Shortcuts => "shortcuts",
             AppAction::Quit => "quit",
         }
     }
@@ -204,6 +218,9 @@ pub enum ActionEffect {
     ZoomIn,
     ZoomOut,
     ToggleDiagnostics,
+    EnterGrid,
+    EnterGallery,
+    ToggleGallery,
     OpenZonePicker,
     OpenCameraZonePicker,
     /// Open the picker to toggle tag filters.
@@ -214,6 +231,7 @@ pub enum ActionEffect {
     OpenSearchPalette,
     ShowMetadata,
     ShowAbout,
+    ShowShortcuts,
     CollapseAllGroups,
     ExpandAllGroups,
     /// Open the export dialog (it owns the staged settings + live preview).
@@ -300,8 +318,16 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
     push_filter(&mut e, "View: Unreviewed", VerdictFilter::Unreviewed, f);
     push_filter(&mut e, "View: Accepted", VerdictFilter::Accepted, f);
     push_filter(&mut e, "View: Rejected", VerdictFilter::Rejected, f);
-    push(&mut e, AppAction::ZoomIn, "Zoom In", Category::View);
-    push(&mut e, AppAction::ZoomOut, "Zoom Out", Category::View);
+    if session.photo_count() > 0 {
+        push(
+            &mut e,
+            AppAction::ToggleGallery,
+            "Open / Close Gallery",
+            Category::View,
+        );
+        push(&mut e, AppAction::ZoomIn, "Zoom In", Category::View);
+        push(&mut e, AppAction::ZoomOut, "Zoom Out", Category::View);
+    }
     push(
         &mut e,
         AppAction::ToggleDiagnostics,
@@ -469,6 +495,12 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
         Category::Edit,
     );
 
+    push(
+        &mut e,
+        AppAction::Shortcuts,
+        "Keyboard Shortcuts",
+        Category::App,
+    );
     push(&mut e, AppAction::About, "About dcs", Category::App);
     push(&mut e, AppAction::Quit, "Quit", Category::App);
 
@@ -525,6 +557,9 @@ impl Session {
                 self.toggle_bursts();
                 ActionEffect::None
             }
+            AppAction::EnterGrid => ActionEffect::EnterGrid,
+            AppAction::EnterGallery => ActionEffect::EnterGallery,
+            AppAction::ToggleGallery => ActionEffect::ToggleGallery,
             AppAction::ToggleVerdictFilter(state) => {
                 self.toggle_verdict_filter(state);
                 ActionEffect::None
@@ -628,6 +663,7 @@ impl Session {
                 ActionEffect::None
             }
             AppAction::About => ActionEffect::ShowAbout,
+            AppAction::Shortcuts => ActionEffect::ShowShortcuts,
             AppAction::Quit => ActionEffect::Quit,
         }
     }

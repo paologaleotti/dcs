@@ -8,9 +8,6 @@ impl DcsApp {
     pub(super) fn top_bar(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         // Dispatch after the closure so the registry stays the only mutation path.
         let mut clicked: Option<dcs_app::AppAction> = None;
-        // View-mode switch is UI-only (not a registry action); applied post-panel.
-        let mut switch_grid = false;
-        let mut switch_gallery = false;
         egui::Panel::top("top")
             .frame(
                 egui::Frame::default()
@@ -21,6 +18,7 @@ impl DcsApp {
                 // Center every item on the row's vertical axis so the small section
                 // labels line up with the taller chips.
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    let has_photos = self.session.photo_count() > 0;
                     micro_label(ui, "MODE");
                     if ui
                         .selectable_label(
@@ -29,17 +27,22 @@ impl DcsApp {
                         )
                         .clicked()
                     {
-                        switch_grid = true;
+                        clicked = Some(dcs_app::AppAction::EnterGrid);
                     }
+                    // Gallery needs a photo to open, so grey it out on an empty
+                    // sheet — matching the View menu and `enter_gallery`'s guard.
                     if ui
-                        .selectable_label(
-                            self.view == ViewMode::Gallery,
-                            RichText::new("gallery").monospace(),
-                        )
-                        .on_hover_text("Open the focused photo big (Space)")
+                        .add_enabled_ui(has_photos, |ui| {
+                            ui.selectable_label(
+                                self.view == ViewMode::Gallery,
+                                RichText::new("gallery").monospace(),
+                            )
+                            .on_hover_text("Open the focused photo big (Space)")
+                        })
+                        .inner
                         .clicked()
                     {
-                        switch_gallery = true;
+                        clicked = Some(dcs_app::AppAction::EnterGallery);
                     }
 
                     ui.separator();
@@ -97,11 +100,6 @@ impl DcsApp {
             });
         if let Some(action) = clicked {
             self.dispatch(action, ctx);
-        }
-        if switch_gallery && self.view == ViewMode::Grid {
-            self.enter_gallery();
-        } else if switch_grid && self.view == ViewMode::Gallery {
-            self.exit_gallery();
         }
     }
 
@@ -273,6 +271,27 @@ impl DcsApp {
                         clicked = Some(AppAction::RevealFolder);
                         ui.close();
                     }
+                    if ui
+                        .add_enabled(
+                            self.session.focus().is_some(),
+                            egui::Button::new("Reveal Photo in File Manager"),
+                        )
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::RevealSelection);
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.session.has_rejected(),
+                            egui::Button::new("Reveal Rejected in File Manager"),
+                        )
+                        .on_hover_text("Open the rejected photos in your file manager")
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::RevealRejected);
+                        ui.close();
+                    }
                     ui.separator();
                     if ui.button("Quit").clicked() {
                         clicked = Some(AppAction::Quit);
@@ -327,6 +346,67 @@ impl DcsApp {
                     }
                 });
                 ui.menu_button("View", |ui| {
+                    let has_photos = self.session.photo_count() > 0;
+                    if ui
+                        .selectable_label(self.view == ViewMode::Grid, "Grid")
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::EnterGrid);
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled_ui(has_photos, |ui| {
+                            ui.selectable_label(self.view == ViewMode::Gallery, "Gallery")
+                        })
+                        .inner
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::EnterGallery);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(has_photos, egui::Button::new("Zoom In"))
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::ZoomIn);
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(has_photos, egui::Button::new("Zoom Out"))
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::ZoomOut);
+                        ui.close();
+                    }
+                    ui.separator();
+                    let grouped = self.session.axis() != dcs_app::Axis::None;
+                    if ui
+                        .add_enabled(grouped, egui::Button::new("Collapse All Groups"))
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::CollapseAllGroups);
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(grouped, egui::Button::new("Expand All Groups"))
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::ExpandAllGroups);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(
+                            self.session.focus().is_some(),
+                            egui::Button::new("Photo Info"),
+                        )
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::ShowMetadata);
+                        ui.close();
+                    }
+                    ui.separator();
                     // The checkbox renders the live state; its change dispatches
                     // the registry toggle (the local bool is just the indicator).
                     let mut show_bursts = self.session.show_bursts();
@@ -399,6 +479,11 @@ impl DcsApp {
                     }
                 });
                 ui.menu_button("Help", |ui| {
+                    if ui.button("Keyboard Shortcuts").clicked() {
+                        clicked = Some(AppAction::Shortcuts);
+                        ui.close();
+                    }
+                    ui.separator();
                     if ui.button("About dcs").clicked() {
                         clicked = Some(AppAction::About);
                         ui.close();
