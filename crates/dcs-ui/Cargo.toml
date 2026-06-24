@@ -6,14 +6,30 @@ license.workspace = true
 repository.workspace = true
 description = "dcs — a fast, keyboard-first digital contact sheet for scanning, culling, and tagging photos."
 
-# Linux .deb packaging (cargo-deb). The binary lands in /usr/bin; runtime
-# library deps are resolved automatically from the linked shared objects.
-[package.metadata.deb]
-maintainer = "Paolo Galeotti <paologaleotti2002@gmail.com>"
-section = "graphics"
-priority = "optional"
-depends = "$auto"
-extended-description = "A digital contact sheet: scan a folder of photos, cull and tag them keyboard-first, and export — non-destructively."
+# Distributable packaging (cargo-packager). One tool, all platforms: .app/.dmg
+# (macOS), NSIS installer (Windows), AppImage + .deb (Linux). Formats are chosen
+# per-OS on the CI runner via `--formats`; icons/desktop entries are generated
+# from the fields below. macOS signing + notarization are driven entirely by
+# APPLE_* env vars in CI (no config here), and are skipped when those are unset.
+[package.metadata.packager]
+product-name = "dcs"
+identifier = "io.quinck.dcs"
+category = "Photography"
+authors = ["Paolo Galeotti <paologaleotti2002@gmail.com>"]
+# Paths resolve relative to this manifest. cargo-packager selects per platform:
+# .icns (macOS), .ico (Windows), .png (Linux).
+icons = ["../../assets/icon.icns", "../../assets/icon.ico", "../../assets/icon.png"]
+# The binary embeds the Apache-2.0 SigLIP weights, so its attribution travels
+# with every package.
+resources = ["../../THIRD_PARTY_NOTICES.md"]
+
+[package.metadata.packager.macos]
+minimum-system-version = "11.0"
+
+# Runtime libraries egui/winit/rfd link against on Linux. AppImage bundles them;
+# the .deb declares them so apt resolves them on install.
+[package.metadata.packager.deb]
+depends = ["libgtk-3-0", "libxkbcommon0", "libwayland-client0"]
 
 # egui binary: view modes (grid, gallery; board later) + ephemeral UI
 # state. Top of the tree. Depends DOWN on dcs-app + dcs-domain. (§9)

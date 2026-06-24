@@ -1,8 +1,12 @@
 name: Release
 
-# Build distributable binaries on every push to `release` (downloadable as
-# workflow artifacts) and publish a GitHub Release with the same assets on a
-# version tag (`v*`). One matrix covers all three platforms (spec §1 #5).
+# Build distributable installers + portable archives on every push to `release`
+# (downloadable as workflow artifacts) and publish a GitHub Release with the same
+# assets on a version tag (`v*`). One matrix covers all three platforms (spec §1 #5).
+#
+# Packaging is done by cargo-packager: .dmg (macOS), NSIS installer (Windows),
+# AppImage + .deb (Linux). It packages a prebuilt binary — it does not compile —
+# so each job builds the release binary first, then packages target/release/dcs.
 on:
   push:
     branches: [release]
@@ -34,10 +38,13 @@ jobs:
         include:
           - os: ubuntu-latest
             name: linux-x86_64
+            formats: deb appimage
           - os: macos-latest
             name: macos-arm64
+            formats: dmg
           - os: windows-latest
             name: windows-x86_64
+            formats: nsis
     steps:
       - uses: actions/checkout@v4
 
@@ -46,6 +53,9 @@ jobs:
       - name: Install NASM
         uses: ilammy/setup-nasm@v1
 
+      # Dev headers eframe/winit/rfd link against to build on Linux. AppImage
+      # tooling needs FUSE at runtime; rather than install libfuse2 (renamed on
+      # 24.04), we run appimagetool with APPIMAGE_EXTRACT_AND_RUN=1 (set below).
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -91,78 +101,59 @@ jobs:
             curl -fSL --retry 3 "$base/$f" -o "model/$f"
           done
 
-      # The release profile uses fat LTO + one codegen unit — slow to link,
-      # but this is the shipped artifact, so it gets the full optimization. The
-      # model is read from DCS_MODEL_DIR (no download in build.rs), verified, and
-      # embedded.
+      # The release profile uses fat LTO + one codegen unit — slow to link, but
+      # this is the shipped artifact, so it gets the full optimization. The model
+      # is read from DCS_MODEL_DIR (no download in build.rs), verified, embedded.
       - name: Build release binary
         shell: bash
         env:
           DCS_MODEL_DIR: ${{ github.workspace }}/model
         run: cargo build --release --locked -p dcs-ui --bin dcs
 
+      - name: Install cargo-packager
+        shell: bash
+        run: cargo install cargo-packager --locked
+
+      # Package the prebuilt binary into the platform's installer(s). On macOS the
+      # APPLE_* env vars drive code-signing (cert imported from APPLE_CERTIFICATE
+      # into a temp keychain) and notarization; all are optional — when a secret is
+      # unset the value is empty and cargo-packager produces an unsigned build that
+      # Gatekeeper will warn on. Set the repo secrets to ship a signed, notarized app.
+      - name: Package
+        shell: bash
+        env:
+          # appimagetool is itself an AppImage; self-extract instead of mounting
+          # via FUSE, which isn't available on the runner. No-op off Linux.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        # --out-dir is resolved relative to the package manifest, not the cwd, so
+        # pass an absolute path to land artifacts in the workspace-root dist/ that
+        # the staging/archive/upload steps below read from.
+        run: cargo packager --release --formats ${{ matrix.formats }} --out-dir "$GITHUB_WORKSPACE/dist"
+
       # The release binary bundles the SigLIP model (Apache-2.0), so its
       # attribution + license text must accompany the distribution.
       - name: Stage third-party notices
         shell: bash
         run: |
-          mkdir -p dist
           cp THIRD_PARTY_NOTICES.md dist/
           curl -fSL --retry 3 https://www.apache.org/licenses/LICENSE-2.0.txt \
             -o dist/LICENSE-Apache-2.0.txt
 
-      # --- Portable archive (every platform) ---
-
+      # Portable archive: the raw binary for users who don't want an installer.
       - name: Package archive (unix)
         if: runner.os != 'Windows'
-        run: |
-          mkdir -p dist
-          tar -czf "dist/dcs-${{ matrix.name }}.tar.gz" -C target/release dcs
+        run: tar -czf "dist/dcs-${{ matrix.name }}.tar.gz" -C target/release dcs
 
       - name: Package archive (windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Compress-Archive -Path target/release/dcs.exe -DestinationPath "dist/dcs-${{ matrix.name }}.zip"
-
-      # --- Installers (best-effort, per platform) ---
-
-      # macOS: wrap the binary in a minimal .app and disk-image it with the
-      # built-in hdiutil (no extra tooling). Unsigned — Gatekeeper will warn
-      # until the app is code-signed/notarized (a future step with a cert).
-      - name: Build .dmg (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          APP="build/dcs.app"
-          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          cp target/release/dcs "$APP/Contents/MacOS/dcs"
-          cat > "$APP/Contents/Info.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>CFBundleName</key><string>dcs</string>
-            <key>CFBundleDisplayName</key><string>dcs</string>
-            <key>CFBundleIdentifier</key><string>io.quinck.dcs</string>
-            <key>CFBundleExecutable</key><string>dcs</string>
-            <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>${GITHUB_REF_NAME}</string>
-            <key>CFBundleVersion</key><string>${GITHUB_REF_NAME}</string>
-            <key>LSMinimumSystemVersion</key><string>11.0</string>
-            <key>NSHighResolutionCapable</key><true/>
-          </dict>
-          </plist>
-          PLIST
-          hdiutil create -volname dcs -srcfolder build -ov -format UDZO "dist/dcs-${{ matrix.name }}.dmg"
-
-      # Linux: a .deb via cargo-deb. Runtime library deps are resolved from the
-      # linked shared objects (depends = "$auto" in dcs-ui/Cargo.toml).
-      - name: Build .deb (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          cargo install cargo-deb --locked
-          cargo deb -p dcs-ui --no-build --output "dist/dcs-${{ matrix.name }}.deb"
+        run: Compress-Archive -Path target/release/dcs.exe -DestinationPath "dist/dcs-${{ matrix.name }}.zip"
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4

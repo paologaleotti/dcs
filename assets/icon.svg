@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- dcs app icon: a contact sheet reduced to its essence — four 3:2 photo
+       frames, one marked amber (the grease-pencil "select" of culling). Dark,
+       minimal, one accent. Construction follows icon conventions: 2x2 grid
+       centered on the canvas with generous safe-area padding, harmonized corner
+       radii, single focal point. Pure shapes (no fonts) → renders identically
+       everywhere and stays legible down to 32px. -->
+  <defs>
+    <clipPath id="squircle">
+      <!-- continuous-curvature superellipse (Apple-style), corner radius ~ 224 -->
+      <path d="M512 40
+               C 723 40 829 40 901 112
+               C 984 195 984 301 984 512
+               C 984 723 984 829 912 901
+               C 829 984 723 984 512 984
+               C 301 984 195 984 123 912
+               C 40 829 40 723 40 512
+               C 40 301 40 195 112 123
+               C 195 40 301 40 512 40 Z"/>
+    </clipPath>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2c2c33"/>
+      <stop offset="1" stop-color="#15151a"/>
+    </linearGradient>
+  </defs>
+
+  <g clip-path="url(#squircle)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+
+    <!-- 2x2 contact-sheet frames; the top-right is the marked select -->
+    <g fill="#f2efe7">
+      <rect x="275" y="343" width="208" height="140" rx="32"/>
+      <rect x="541" y="343" width="208" height="140" rx="32" fill="#f5a623"/>
+      <rect x="275" y="541" width="208" height="140" rx="32"/>
+      <rect x="541" y="541" width="208" height="140" rx="32"/>
+    </g>
+  </g>
+</svg>
