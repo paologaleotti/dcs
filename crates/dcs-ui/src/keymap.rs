@@ -61,6 +61,10 @@ pub fn shortcuts() -> Vec<Shortcut> {
         description: "Open command palette",
     });
     rows.push(Shortcut {
+        keys: "?".to_string(),
+        description: "Keyboard shortcuts",
+    });
+    rows.push(Shortcut {
         keys: "↑ ↓ ← →".to_string(),
         description: "Move focus",
     });

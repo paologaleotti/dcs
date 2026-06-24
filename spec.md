@@ -89,7 +89,9 @@ place.
   so DST mid-trip survives — see decision #7 and open question #5)
   applied to all derivation (cameras get left on home time). Set from
   settings or the palette; the sheet regroups live; EXIF untouched;
-  default = system zone.
+  default = system zone. A separate **camera timezone** (also IANA,
+  pickable, default system) anchors a naive EXIF timestamp that lacks an
+  offset before it is converted into the shoot zone.
 - **Granularity:** `auto` | `smart day` | `hour` | `day` | `week`.
   `smart day` = neutral time-of-day buckets by default (early · morning ·
   midday · afternoon · late afternoon · evening · night); the
@@ -169,25 +171,34 @@ deferred.
   OR within a group** — e.g. `(accepted) AND (temples OR shrines)`. A
   per-chip-group AND/OR toggle is visible; default is the common case
   above. Same rules drive export scope.
-- **Solo** = filter to one group/tag; other headers stay as muted
-  ghosts. Active filters always visible as removable chips.
+- **Solo** *(deferred to v1.1, decision #41)* = filter to one group/tag;
+  other headers stay as muted ghosts. Active filters always visible as
+  removable chips.
+- **Tag results:** batch-apply a tag to everything the current filter
+  resolves to — opens the tag palette over the filtered set (filter bar /
+  command palette / Tags menu). When the filter is a *lone search* chip,
+  a one-click *"tag all as `<query>`"* also appears, reusing an existing
+  same-name tag or creating one. Ordinary undoable `AssignTag`/`CreateTag`.
 - **Esc never clears filters.** Filters are dismissed only by explicit
   chip-X (see §2.12).
 
 ### 2.10 Command surfaces
 
-One **command registry**, three surfaces:
+One **command registry**, four surfaces:
 
-1. **Keys** (`?` overlay): `←↑→↓` move focus · `Shift+arrows` extend
-   selection · `Space` open focused photo in gallery · `A`/`X` ·
-   `1–9` colors · `T`/`Shift+T` tag/untag · `S` solo · `F` gallery ·
-   `Z` 1:1 · `F2` crystallize/rename · `Ctrl+A` select visible ·
-   `Ctrl+Z`/`+Shift` undo/redo · `Esc`.
+1. **Keys** (Help → Keyboard Shortcuts reference; `?`-overlay binding is a
+   target): `←↑→↓` move focus · `Shift+arrows` extend selection · `Space`
+   open/close gallery · `A`/`X` · `T`/`Shift+T` tag/untag · `S` solo ·
+   `F` gallery · `Z` 1:1 · `I` photo info · `F2` crystallize/rename ·
+   `Ctrl+A` select visible · `Ctrl+F` search · `Ctrl+Z`/`+Shift`
+   undo/redo · `Esc`.
 2. **Palette `Cmd/Ctrl+P`:** fuzzy over every command; rows show
    bindings; acts on the selection.
 3. **Context menus on two surfaces only:** photo/selection and headers.
-   Menus mirror the registry — nothing exists only in a menu or only on
-   a key.
+4. **Top menu bar:** `File · Edit · View · Tags · Help`.
+
+   Every surface mirrors the registry — nothing exists only in a menu or
+   only on a key, and state-gating is identical across them.
 
 ### 2.11 Cell anatomy — fixed layer budget
 
@@ -225,7 +236,8 @@ visible).
   design). **Filmstrip** docked below: thumbs of the visible order,
   current centered, auto-scrolls, click-to-jump, verdict glyphs + burst
   spans visible, collapsible. Corner caption: name, adjusted time, type,
-  group, tags.
+  group, tags. Right-click → **copy the photo to the clipboard** (the
+  decoded frame on screen; a UI-only side effect, not a registry command).
 
 Three orthogonal controls: zoom (view) · group/tag (structure) ·
 gallery (judging). Resist a fourth.
@@ -270,7 +282,8 @@ darkroom tool, not a web app.
 ## 4. Entry, import, files on disk
 
 - **Entry:** an empty window with one action — **Open folder…** (or
-  drag a folder in). Recents/reopen-last: deferred.
+  drag a folder in), plus a **recent-projects** list (`Open Recent`,
+  global, stored outside any project). Reopen-last: deferred.
 - Read-only import; basename pairing; one EXIF pass (time + subseconds
   + GPS + orientation). A **content fingerprint** is computed per file at
   import (see §5) — identity is keyed on it from day one, even though the
@@ -463,14 +476,17 @@ A/X/unreviewed + AND/OR filters + solo · **local AI semantic text search
 two context menus · gallery + filmstrip + 1:1 · durable undo/redo ·
 `.dcs/` sidecar (project.json + undo.log + cache.sqlite3) with `views`
 array · flexible copy-only export engine (§6) including export-rejected +
-reveal-rejected.
+reveal-rejected · recent-projects list (`Open Recent`) · tag-results
+(batch-tag the filtered set) · copy-photo-to-clipboard (gallery).
 
 ### Deferred (v1.1)
 
 GPS axis (data already collected) · move export · named export presets ·
 rename re-link UI via content fingerprint (identity already keyed on it) ·
 advanced tag manager (bulk merge UI, reorder; the simple rename/recolor/delete
-manager ships in v1) · empty-grid menu · verdict sort · recents.
+manager ships in v1) · empty-grid menu · verdict sort · **solo** (filter to one
+group/tag with ghosted others, the `S` key, and the `SoloGroup` export scope —
+deferred to v1.1, decision #41).
 
 ### Future
 
@@ -515,7 +531,7 @@ manager ships in v1) · empty-grid menu · verdict sort · recents.
 | 19 | Export: copy-only, never overwrite, honest skip counts; **flexible staged engine (§6)** |
 | 20 | Gallery: key parity, visible order, filmstrip, 1:1 in v1 |
 | 21 | Square cells, contain-fit, EXIF orientation auto |
-| 22 | One registry → keys, palette, two context menus |
+| 22 | One registry → keys, palette, two context menus, **and a top menu bar (File/Edit/View/Tags/Help)**; every surface mirrors the registry with identical state-gating, nothing lives in only one |
 | 23 | Missing/unreadable: placeholder + badge, state kept, reported |
 | 24 | `views` array in the project file from day one (board-ready) |
 | 25 | `.dcs/`: project.json + undo.log + cache.sqlite3; atomic saves + `.bak`; lock with take-over |
@@ -533,6 +549,8 @@ manager ships in v1) · empty-grid menu · verdict sort · recents.
 | 37 | **Cross-platform is first-class (non-negotiable #5): Windows, macOS, Linux all run *well*, not just compile. Paths via `Path`/`PathBuf` only (never string-split on `/`); config/cache under each OS's standard dirs; atomic save + lock-file semantics validated on all three filesystems; primary modifier ⌘ on macOS, Ctrl elsewhere; system timezone + GPU backend (Metal/Vulkan/DX12 via wgpu) work per platform. CI = build + test matrix on all three; a single-platform regression blocks release.** |
 | 38 | **`1–9` color-tag keys dropped (confusing); tags are named, via `T`/`Shift+T`. Tag colors auto-assign from a curated distinct-hue cycle, golden-angle past it (unlimited distinct colors). A **simple tag manager** (list + rename/recolor/delete, undoable) ships in v1 as the centralized place to manage tags — the prior "full manager deferred" line is superseded; only the *advanced* manager (bulk merge UI, reorder) stays v1.1.** |
 | 39 | **AI semantic text search ships in v1 (§11b): local SigLIP embeddings via `candle`, the model **embedded in the binary** (pinned + SHA-256-verified + fp16 by `build.rs`; no runtime download). Per-project opt-in, persisted; indexing is lowest-priority (after thumbnails). The index is derived/disposable (cache table); ranking is pure in `dcs-domain`; the `Search` filter chip is no longer a scaffold. Auto-tagging + near-dup reuse the same index but stay v1.1 (§11c).** |
+| 40 | **Shipped in v1, beyond the original cut: a global recent-projects list (`Open Recent`, stored outside any project — moved up from v1.1 deferral); `tag-results` (batch-tag everything the active filter resolves to, plus a one-click "tag all as `<query>`" for a lone search chip); copy-photo-to-clipboard from the gallery (UI-only, no registry command); a second IANA `camera timezone` to anchor offset-less EXIF; a persistent top menu bar as a fourth registry surface (#22).** |
+| 41 | **Solo deferred to v1.1.** Spec'd across §2.8/2.9/2.12 but unbuilt in v1; the `S` key, the solo filter (ghosted non-soloed headers), the Esc-chain solo tail, and the `SoloGroup` export scope all move to v1.1. The header *"select members"* affordance (which solo built on) ships independently. |
 
 ---
 

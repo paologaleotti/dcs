@@ -63,6 +63,13 @@ impl DcsApp {
             self.palette.open();
             return;
         }
+        // `?` opens the keyboard-shortcuts reference. Handled here, not in the
+        // keymap table: `?` arrives with Shift held, which the table's exact
+        // modifier match would reject.
+        if ctx.input(|i| i.key_pressed(Key::Questionmark)) {
+            self.dispatch(dcs_app::AppAction::Shortcuts, ctx);
+            return;
+        }
         // Verdict/undo and the rest of the registry work in both views, so route
         // them first — full key parity in the gallery.
         for action in keymap::actions_for_input(ctx) {
