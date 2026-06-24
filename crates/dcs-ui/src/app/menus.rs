@@ -69,17 +69,7 @@ impl DcsApp {
                     self.search_box(ui);
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        // Diagnostics toggle lives in the command palette (⌘P), not
-                        // the toolbar — it's a dev affordance, not a daily control.
-                        if ui.button("+").clicked() {
-                            clicked = Some(dcs_app::AppAction::ZoomIn);
-                        }
-                        if ui.button("−").clicked() {
-                            clicked = Some(dcs_app::AppAction::ZoomOut);
-                        }
-                        micro_label(ui, "ZOOM");
-
-                        ui.separator();
+                        // Added first so it anchors the far right of the row.
                         if ui
                             .add_enabled(
                                 self.session.pool_len() > 0,
@@ -88,6 +78,19 @@ impl DcsApp {
                             .clicked()
                         {
                             clicked = Some(dcs_app::AppAction::OpenExport);
+                        }
+
+                        // Zoom resizes grid cells — meaningless in the gallery, which
+                        // zooms one photo with `Z`.
+                        if self.view == ViewMode::Grid {
+                            ui.separator();
+                            if ui.button("+").clicked() {
+                                clicked = Some(dcs_app::AppAction::ZoomIn);
+                            }
+                            if ui.button("−").clicked() {
+                                clicked = Some(dcs_app::AppAction::ZoomOut);
+                            }
+                            micro_label(ui, "ZOOM");
                         }
                     });
                 });
@@ -110,8 +113,11 @@ impl DcsApp {
         match self.session.ai_status().clone() {
             AiStatus::Disabled => {
                 if ui
-                    .button(RichText::new("Enable AI search").monospace())
-                    .on_hover_text("Turn on local AI search — find photos by what's in them")
+                    .link(RichText::new("enable AI search").font(FontId::monospace(11.0)))
+                    .on_hover_text(
+                        "Index this project's photos locally so you can search by what's \
+                         in them — runs on your machine, nothing is uploaded.",
+                    )
                     .clicked()
                 {
                     self.session.enable_ai_search();
@@ -272,6 +278,54 @@ impl DcsApp {
                         clicked = Some(AppAction::Quit);
                     }
                 });
+                ui.menu_button("Edit", |ui| {
+                    if ui
+                        .add_enabled(self.session.can_undo(), egui::Button::new("Undo"))
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::Undo);
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(self.session.can_redo(), egui::Button::new("Redo"))
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::Redo);
+                        ui.close();
+                    }
+                    ui.separator();
+                    let has_photos = self.session.photo_count() > 0;
+                    let has_sel = self.session.selection_count() > 0;
+                    if ui
+                        .add_enabled(has_photos, egui::Button::new("Select All"))
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::SelectAll);
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(has_sel, egui::Button::new("Clear Selection"))
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::ClearSelection);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(has_sel, egui::Button::new("Accept Selection"))
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::Accept);
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(has_sel, egui::Button::new("Reject Selection"))
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::Reject);
+                        ui.close();
+                    }
+                });
                 ui.menu_button("View", |ui| {
                     // The checkbox renders the live state; its change dispatches
                     // the registry toggle (the local bool is just the indicator).
@@ -312,6 +366,24 @@ impl DcsApp {
                         .clicked()
                     {
                         clicked = Some(AppAction::OpenUntagPalette);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(
+                            self.session.is_filtered(),
+                            egui::Button::new("Tag Results…"),
+                        )
+                        .on_hover_text("Add a tag to every photo matching the active filter")
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::TagResults);
+                        ui.close();
+                    }
+                    if let Some(query) = self.session.single_search_query()
+                        && ui.button(format!("Tag Results as “{query}”")).clicked()
+                    {
+                        clicked = Some(AppAction::TagResultsAsSearch);
                         ui.close();
                     }
                     ui.separator();
@@ -388,6 +460,44 @@ impl DcsApp {
                             if cb.changed() || lbl.clicked() {
                                 picked = Some(AppAction::ToggleFilterTag(tag.id));
                             }
+                        });
+                    }
+                }
+
+                // The active search lives in the same chip model as verdicts/tags,
+                // so list it here too — deletable, mirroring its accent-bar pill.
+                let searches: Vec<(usize, usize, String)> = self
+                    .session
+                    .active_filter()
+                    .groups
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(gi, g)| {
+                        g.chips
+                            .iter()
+                            .enumerate()
+                            .filter_map(move |(ci, c)| match c {
+                                dcs_domain::filter::FilterChip::Search(q) => {
+                                    Some((gi, ci, q.clone()))
+                                }
+                                _ => None,
+                            })
+                    })
+                    .collect();
+                if !searches.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("SEARCH").small().weak());
+                    for (group, chip, query) in searches {
+                        ui.horizontal(|ui| {
+                            if ui
+                                .small_button(RichText::new("×").monospace())
+                                .on_hover_text("Remove this search")
+                                .clicked()
+                            {
+                                picked = Some(AppAction::RemoveFilterChip { group, chip });
+                            }
+                            ui.add_space(4.0);
+                            ui.label(RichText::new(query).monospace());
                         });
                     }
                 }

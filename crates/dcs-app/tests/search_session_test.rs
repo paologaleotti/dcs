@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::Duration;
 
-use dcs_app::{AiStatus, Session};
+use dcs_app::{AiStatus, Session, VerdictFilter};
 use dcs_domain::filter::FilterChip;
 use image::{Rgb, RgbImage};
 
@@ -146,6 +146,43 @@ fn disabling_ai_search_clears_active_search_chips() {
     session.disable_ai_search();
     assert!(!session.is_filtered(), "disable must clear search chips");
     assert!(search_queries(&session).is_empty());
+}
+
+#[test]
+fn single_search_query_reflects_a_lone_search_chip() {
+    let mut session = open_three("singleq");
+    assert_eq!(session.single_search_query(), None);
+
+    session.set_search_chip("temple".to_string());
+    assert_eq!(session.single_search_query(), Some("temple".to_string()));
+}
+
+#[test]
+fn single_search_query_none_when_chained_or_mixed() {
+    let mut session = open_three("mixedq");
+    // Two chained searches isn't a single search.
+    session.set_search_chip("temple".to_string());
+    session.add_search_chip("beach".to_string());
+    assert_eq!(session.single_search_query(), None);
+
+    // One search but a verdict chip alongside it isn't a single search either.
+    session.set_search_chip("temple".to_string());
+    session.set_filter(VerdictFilter::Accepted);
+    assert_eq!(session.single_search_query(), None);
+}
+
+#[test]
+fn tag_results_as_search_is_noop_without_a_single_search() {
+    let mut session = open_three("noopq");
+    // No filter at all → nothing to tag, and no tag is invented.
+    session.tag_results_as_search();
+    assert!(session.all_tags().is_empty());
+
+    // A chained search isn't a single search → still a no-op.
+    session.set_search_chip("temple".to_string());
+    session.add_search_chip("beach".to_string());
+    session.tag_results_as_search();
+    assert!(session.all_tags().is_empty());
 }
 
 #[test]

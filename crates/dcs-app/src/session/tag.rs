@@ -78,6 +78,36 @@ impl Session {
         }
     }
 
+    /// Tag every filtered photo with a tag named after the lone active search
+    /// query, reusing an existing same-name tag (case-insensitive) or creating
+    /// one. No-op when the filter isn't a single search, the project is
+    /// read-only, or nothing matches.
+    pub fn tag_results_as_search(&mut self) {
+        let Some(query) = self.single_search_query() else {
+            return;
+        };
+        let ids = self.visible_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let tags = self.all_tags();
+        let existing = tags
+            .iter()
+            .find(|t| t.name.eq_ignore_ascii_case(&query))
+            .map(|t| t.id);
+        let tag = match existing {
+            Some(id) => id,
+            None => {
+                let color = dcs_domain::tag::palette_color(tags.len() + 1);
+                match self.create_tag(query, color) {
+                    Some(id) => id,
+                    None => return,
+                }
+            }
+        };
+        self.assign_tag(tag, &ids);
+    }
+
     /// Remove a tag from the current selection (or the focused photo) — `Shift+T`.
     pub fn untag_selection(&mut self, tag: TagId) {
         let targets = self.selection_targets();

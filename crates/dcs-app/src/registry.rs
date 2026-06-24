@@ -80,6 +80,16 @@ pub enum AppAction {
     /// Select group `idx`, then open the untag palette to drop a tag from all
     /// its members.
     UntagGroup(usize),
+    /// Select every photo matching the active filter, then open the tag palette
+    /// so a tag lands on all of them — the filter bar's "tag results".
+    TagResults,
+    /// Tag every photo matching the active filter with a tag named after the
+    /// single active search query (reusing an existing same-name tag, else
+    /// creating one). The filter bar's one-click shortcut, shown only when the
+    /// filter is a lone search chip.
+    TagResultsAsSearch,
+    /// Select every photo currently in the grid (the filtered visible set).
+    SelectAll,
     ClearSelection,
     Undo,
     Redo,
@@ -160,6 +170,9 @@ impl AppAction {
             AppAction::RejectGroup(_) => "reject-group",
             AppAction::TagGroup(_) => "tag-group",
             AppAction::UntagGroup(_) => "untag-group",
+            AppAction::TagResults => "tag-results",
+            AppAction::TagResultsAsSearch => "tag-results-as-search",
+            AppAction::SelectAll => "select-all",
             AppAction::ClearSelection => "clear-selection",
             AppAction::Undo => "undo",
             AppAction::Redo => "redo",
@@ -339,11 +352,27 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
             "Filter: Clear",
             Category::View,
         );
+        push(
+            &mut e,
+            AppAction::TagResults,
+            "Tag Results…",
+            Category::Edit,
+        );
+        if let Some(query) = session.single_search_query() {
+            e.push(ActionEntry {
+                action: AppAction::TagResultsAsSearch,
+                title: format!("Tag Results as “{query}”"),
+                category: Category::Edit,
+            });
+        }
     }
 
     push_group_actions(&mut e, session);
     push_focused_group_actions(&mut e, session);
 
+    if session.photo_count() > 0 {
+        push(&mut e, AppAction::SelectAll, "Select All", Category::Edit);
+    }
     if session.selection_count() > 0 {
         push(
             &mut e,
@@ -557,6 +586,18 @@ impl Session {
             AppAction::UntagGroup(idx) => {
                 self.select_group(idx);
                 ActionEffect::OpenUntagPalette
+            }
+            AppAction::TagResults => {
+                self.select_all_visible();
+                ActionEffect::OpenTagPalette
+            }
+            AppAction::TagResultsAsSearch => {
+                self.tag_results_as_search();
+                ActionEffect::None
+            }
+            AppAction::SelectAll => {
+                self.select_all_visible();
+                ActionEffect::None
             }
             AppAction::ClearSelection => {
                 self.clear_selection();

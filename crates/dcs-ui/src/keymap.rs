@@ -82,6 +82,7 @@ const fn cmd_shift(key: Key) -> Chord {
 /// match wins), so list the canonical chord for an action first.
 const KEYMAP: &[(AppAction, Chord)] = &[
     (AppAction::Accept, plain(Key::A)),
+    (AppAction::SelectAll, cmd(Key::A)),
     (AppAction::Reject, plain(Key::X)),
     (AppAction::OpenTagPalette, plain(Key::T)),
     (AppAction::OpenUntagPalette, shift(Key::T)),

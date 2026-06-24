@@ -68,9 +68,9 @@ impl DcsApp {
                 }
                 ui.add_space(6.0);
                 ui.label(
-                    RichText::new("Enter: replace · Shift+Enter: add")
+                    RichText::new("Enter: new search · Shift+Enter: add a term")
                         .monospace()
-                        .color(theme::HAIRLINE)
+                        .color(theme::TEXT_DIM)
                         .size(11.0),
                 );
             });

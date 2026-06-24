@@ -271,7 +271,12 @@ pub fn show(
         });
 
     ui.spacing_mut().item_spacing = Vec2::ZERO;
-    let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
+    // Salt the scroll id with the folder epoch so a freshly opened folder gets a
+    // brand-new scroll area starting at the top, rather than inheriting the
+    // previous folder's offset (egui keys persisted offset by widget id).
+    let mut area = egui::ScrollArea::vertical()
+        .id_salt(session.folder_epoch())
+        .auto_shrink([false, false]);
     if let Some(target) = scroll_target {
         area = area.vertical_scroll_offset(target);
     }

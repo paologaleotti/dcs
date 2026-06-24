@@ -149,6 +149,26 @@ impl DcsApp {
                     {
                         clicked = Some(AppAction::ClearFilters);
                     }
+                    ui.add_space(8.0);
+                    // Tag the whole result set. Generic path opens the tag picker;
+                    // a lone search also gets a one-click "tag all as <query>".
+                    if ui
+                        .small_button(RichText::new("+ tag results").monospace())
+                        .on_hover_text("Add a tag to every photo matching this filter")
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::TagResults);
+                    }
+                    if let Some(query) = self.session.single_search_query()
+                        && ui
+                            .small_button(RichText::new(format!("+ tag all “{query}”")).monospace())
+                            .on_hover_text(format!(
+                                "Tag every result with a “{query}” tag (created if new)"
+                            ))
+                            .clicked()
+                    {
+                        clicked = Some(AppAction::TagResultsAsSearch);
+                    }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
                             RichText::new(format!(

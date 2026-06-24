@@ -12,6 +12,7 @@
 use dcs_app::{AppAction, Session};
 use dcs_domain::cull::AcceptState;
 use dcs_domain::tag::Color;
+use dcs_domain::thumb::ThumbImage;
 use egui::{Align2, Color32, FontId, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 
 use crate::context_menu::cell_menu;
@@ -110,7 +111,14 @@ pub fn show(
             // from the grid.
             session.set_focus(focus, false);
         }
-        frame_resp.context_menu(|ui| action = cell_menu(ui, session, focus));
+        frame_resp.context_menu(|ui| {
+            action = cell_menu(ui, session, focus);
+            ui.separator();
+            if ui.button("Copy image").clicked() {
+                copy_to_clipboard(ui, session, id);
+                ui.close();
+            }
+        });
     }
 
     let mut clicked = None;
@@ -129,6 +137,29 @@ pub fn show(
 struct StripResponse {
     clicked: Option<usize>,
     action: Option<AppAction>,
+}
+
+/// Copy the photo's currently-decoded pixels to the system clipboard, preferring
+/// the sharp gallery frame and falling back to the base thumb — the copy mirrors
+/// what's on screen. A UI-only side effect (egui owns the clipboard), so it never
+/// routes through the command registry; no app state changes, nothing to undo.
+fn copy_to_clipboard(ui: &Ui, session: &mut Session, id: dcs_domain::photo::PhotoId) {
+    // Each `.map` builds an owned ColorImage, ending the session borrow before
+    // `or_else` re-borrows it for the thumb fallback.
+    let color = session
+        .gallery_image(id)
+        .map(|v| to_color_image(v.image))
+        .or_else(|| session.thumb(id).map(|v| to_color_image(v.image)));
+    if let Some(color) = color {
+        ui.ctx().copy_image(color);
+    }
+}
+
+fn to_color_image(image: &ThumbImage) -> egui::ColorImage {
+    egui::ColorImage::from_rgba_unmultiplied(
+        [image.width as usize, image.height as usize],
+        &image.rgba,
+    )
 }
 
 /// The big frame: the resident gallery decode if ready, else the base thumb

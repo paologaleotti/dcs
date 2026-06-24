@@ -10,6 +10,17 @@ impl Session {
         &self.filter
     }
 
+    /// The query when the active filter is exactly one search chip — the filter
+    /// bar keys its one-click "tag all as <query>" shortcut off this. `None` when
+    /// unfiltered, chained with other chips, or running multiple searches.
+    pub fn single_search_query(&self) -> Option<String> {
+        let mut chips = self.filter.groups.iter().flat_map(|g| &g.chips);
+        match (chips.next(), chips.next()) {
+            (Some(FilterChip::Search(q)), None) => Some(q.clone()),
+            _ => None,
+        }
+    }
+
     /// Borrowed membership inputs for [`dcs_domain::filter::resolve`]: the owned
     /// verdict and tag stores plus the (v1-empty) search sets. One builder so the
     /// grid (`layout`) and export (`store`) resolve against identical inputs.

@@ -537,6 +537,13 @@ impl Session {
         self.root.is_some()
     }
 
+    /// A token that changes every time a new folder is opened (or re-scanned).
+    /// The grid salts its scroll-area id with this so a freshly opened folder
+    /// starts at the top instead of inheriting the previous folder's offset.
+    pub fn folder_epoch(&self) -> u64 {
+        self.epoch
+    }
+
     /// Re-scan the open folder: save first so the reload restores owned state,
     /// then reopen. New files appear, returned files reanimate, and removed
     /// files become missing placeholders.
