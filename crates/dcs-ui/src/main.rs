@@ -21,14 +21,22 @@ mod theme;
 use app::DcsApp;
 
 fn main() -> eframe::Result {
+    // `mut` is used on Windows/Linux to attach the runtime icon below; macOS
+    // never reassigns it (the bundle `.icns` is authoritative there).
+    #[cfg_attr(target_os = "macos", allow(unused_mut))]
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1200.0, 800.0])
         .with_maximized(true)
         .with_title("dcs - digital contact sheet");
 
-    // Runtime window/taskbar icon. Decoded from the same master the packaged
-    // app icons derive from; a bad embed is a build-time bug, never a panic in
-    // the field, so we degrade to the platform default icon on failure.
+    // Runtime window/taskbar icon for Windows and Linux. macOS is deliberately
+    // excluded: the Dock there shows the bundled `.icns` with the system's icon
+    // inset/mask, and setting a runtime icon overrides that with the raw bitmap
+    // (drawn full-bleed, no mask) so the icon visibly changes the moment the app
+    // launches. Letting the bundle icon rule keeps it consistent. Decoded from
+    // the same master the packaged icons derive from; a bad embed is a build-time
+    // bug, so we degrade to the platform default rather than panic in the field.
+    #[cfg(not(target_os = "macos"))]
     if let Ok(icon) =
         eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon-256.png"))
     {
