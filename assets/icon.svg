@@ -25,7 +25,10 @@
     </linearGradient>
   </defs>
 
-  <g clip-path="url(#squircle)">
+  <!-- ~10% macOS safe-area padding: the squircle is scaled to ~80% of the
+       canvas and centered, so the runtime dock tile (drawn edge-to-edge) sits at
+       the same size as the bundled .icns instead of reading oversized. -->
+  <g clip-path="url(#squircle)" transform="translate(71.68 71.68) scale(0.86)">
     <rect width="1024" height="1024" fill="url(#bg)"/>
 
     <!-- 2x2 contact-sheet frames; the top-right is the marked select -->
