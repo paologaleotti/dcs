@@ -16,6 +16,7 @@ pub struct ExportDialog {
     pub collision: Collision,
     pub template_on: bool,
     pub template: String,
+    pub sidecars: bool,
     pub dest: Option<PathBuf>,
 }
 
@@ -29,6 +30,7 @@ impl Default for ExportDialog {
             collision: Collision::Rename,
             template_on: false,
             template: String::new(),
+            sidecars: false,
             dest: None,
         }
     }
@@ -46,6 +48,7 @@ impl ExportDialog {
             layout: self.layout,
             collision: self.collision,
             template,
+            sidecars: self.sidecars,
         })
     }
 }

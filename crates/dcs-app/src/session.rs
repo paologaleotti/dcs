@@ -23,6 +23,7 @@ mod search;
 mod store;
 mod tag;
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -337,6 +338,10 @@ pub struct Session {
     export_handle: Option<ExportHandle>,
     /// Progress of the running or last-finished export, read by the dialog.
     export_status: Option<ExportStatus>,
+    /// Per-photo adjacent-sidecar paths, probed lazily at export time and memoized
+    /// so the dialog's per-frame re-plan doesn't re-stat the disk. Derived (file
+    /// facts, never persisted); cleared when a folder opens.
+    sidecar_cache: RefCell<HashMap<PhotoId, Vec<PathBuf>>>,
 }
 
 impl Session {
@@ -396,6 +401,7 @@ impl Session {
             mru: Vec::new(),
             export_handle: None,
             export_status: None,
+            sidecar_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -433,6 +439,7 @@ impl Session {
         self.gallery_edge.clear();
         self.bg_cursor = 0;
         self.imported.clear();
+        self.sidecar_cache.borrow_mut().clear();
         self.epoch += 1;
         self.dirty = false;
 

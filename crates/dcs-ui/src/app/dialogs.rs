@@ -341,6 +341,10 @@ impl DcsApp {
                                 )
                                 .on_hover_text("Copy each photo's RAW; skip photos with no RAW");
                             });
+                            ui.checkbox(&mut self.export.sidecars, "Include adjacent sidecars")
+                                .on_hover_text(
+                                    "Also copy XMP sidecars sitting next to each photo's files",
+                                );
                         });
 
                         section(ui, "Layout", |ui| {
@@ -382,9 +386,11 @@ impl DcsApp {
                                         .hint_text("{name}_{seq}"),
                                 );
                                 ui.label(
-                                    RichText::new("tokens: {name} {date} {time} {group} {seq}")
-                                        .small()
-                                        .color(theme::TEXT_DIM),
+                                    RichText::new(
+                                        "tokens: {name} {date} {time} {group} {seq} {tag}",
+                                    )
+                                    .small()
+                                    .color(theme::TEXT_DIM),
                                 );
                             }
                         });

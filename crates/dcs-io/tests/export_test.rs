@@ -29,11 +29,13 @@ fn op(source: PathBuf, dest: PathBuf, role: FileRole) -> ExportOp {
 fn plan(ops: Vec<ExportOp>, dest: PathBuf) -> ExportPlan {
     let jpeg_count = ops.iter().filter(|o| o.role == FileRole::Jpeg).count();
     let raw_count = ops.iter().filter(|o| o.role == FileRole::Raw).count();
+    let sidecar_count = ops.iter().filter(|o| o.role == FileRole::Sidecar).count();
     ExportPlan {
         ops,
         skipped: Vec::new(),
         jpeg_count,
         raw_count,
+        sidecar_count,
         collisions: 0,
         dest,
         summary: String::new(),

@@ -34,6 +34,38 @@ pub struct ScanHandle {
     done: Arc<AtomicBool>,
 }
 
+/// Sidecar extensions recognized next to a photo's files (lowercase, no dot).
+const SIDECAR_EXTENSIONS: &[&str] = &["xmp"];
+
+/// The sidecar files that exist next to `files` (a photo's JPEG/RAW paths),
+/// deduplicated and in discovery order. Recognizes both common conventions:
+/// `DSCF1.xmp` (shared stem) and `DSCF1.JPG.xmp` (full filename + sidecar ext).
+/// A pure stat probe — no content read; used at export time, not on the scan hot
+/// path, so a few `exists()` calls per in-scope photo are acceptable.
+pub fn adjacent_sidecars(files: &[&Path]) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = Vec::new();
+    for &file in files {
+        let Some(dir) = file.parent() else {
+            continue;
+        };
+        for ext in SIDECAR_EXTENSIONS {
+            let mut candidates: Vec<PathBuf> = Vec::new();
+            if let Some(stem) = file.file_stem() {
+                candidates.push(dir.join(format!("{}.{ext}", stem.to_string_lossy())));
+            }
+            if let Some(name) = file.file_name() {
+                candidates.push(dir.join(format!("{}.{ext}", name.to_string_lossy())));
+            }
+            for candidate in candidates {
+                if candidate.exists() && !found.contains(&candidate) {
+                    found.push(candidate);
+                }
+            }
+        }
+    }
+    found
+}
+
 /// Start scanning `root` on a worker thread. Returns immediately. When a
 /// `cache` is supplied, unchanged files (matching `(mtime, size)`) skip
 /// re-hashing — the import-budget pre-filter.

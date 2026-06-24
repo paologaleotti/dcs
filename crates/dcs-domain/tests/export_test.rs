@@ -52,6 +52,8 @@ fn items<'a>(photos: &'a [Photo]) -> Vec<ExportItem<'a>> {
         .map(|p| ExportItem {
             photo: p,
             group_title: None,
+            primary_tag: None,
+            sidecars: &[],
         })
         .collect()
 }
@@ -63,6 +65,7 @@ fn request(files: FileSelection, layout: Layout, collision: Collision) -> Export
         layout,
         collision,
         template: None,
+        sidecars: false,
     }
 }
 
@@ -251,6 +254,8 @@ fn group_as_folders_sanitizes_the_group_title() {
     let item = ExportItem {
         photo: &p,
         group_title: Some("Day 1 · 11/05/25"),
+        primary_tag: None,
+        sidecars: &[],
     };
     let req = request(
         FileSelection::Jpeg,
@@ -365,6 +370,8 @@ fn group_token_expands_and_falls_back_when_ungrouped() {
     let item = ExportItem {
         photo: &p,
         group_title: Some("Day 1 · 11/05/25"),
+        primary_tag: None,
+        sidecars: &[],
     };
     let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
     req.template = Some(NameTemplate("{group}_{name}".to_string()));
@@ -376,6 +383,167 @@ fn group_token_expands_and_falls_back_when_ungrouped() {
     let ungrouped = photo(2, Some("/src/b.JPG"), None);
     let plan = plan_export(&items(&[ungrouped]), Path::new("/src"), &req).unwrap();
     assert_eq!(plan.ops[0].dest, dest(&["Ungrouped_b.JPG"]));
+}
+
+#[test]
+fn tag_token_expands_and_falls_back_when_untagged() {
+    let p = photo(1, Some("/src/a.JPG"), None);
+    let tagged = ExportItem {
+        photo: &p,
+        group_title: None,
+        primary_tag: Some("temple"),
+        sidecars: &[],
+    };
+    let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
+    req.template = Some(NameTemplate("{tag}_{name}".to_string()));
+    let plan = plan_export(&[tagged], Path::new("/src"), &req).unwrap();
+    assert_eq!(plan.ops[0].dest, dest(&["temple_a.JPG"]));
+
+    // Untagged → the "untagged" fallback.
+    let plan = plan_export(
+        &items(&[photo(2, Some("/src/b.JPG"), None)]),
+        Path::new("/src"),
+        &req,
+    )
+    .unwrap();
+    assert_eq!(plan.ops[0].dest, dest(&["untagged_b.JPG"]));
+}
+
+#[test]
+fn sidecars_ride_into_the_primary_folder_when_opted_in() {
+    let p = photo(1, Some("/src/a.JPG"), None);
+    let xmp = PathBuf::from("/src/a.xmp");
+    let item = ExportItem {
+        photo: &p,
+        group_title: None,
+        primary_tag: None,
+        sidecars: std::slice::from_ref(&xmp),
+    };
+    let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
+    req.sidecars = true;
+    let plan = plan_export(&[item], Path::new("/src"), &req).unwrap();
+
+    assert_eq!(plan.ops.len(), 2);
+    assert_eq!(plan.ops[1].role, FileRole::Sidecar);
+    assert_eq!(plan.ops[1].dest, dest(&["a.xmp"]));
+    assert_eq!(plan.sidecar_count, 1);
+    assert!(plan.summary.contains("1 sidecar"));
+}
+
+#[test]
+fn sidecars_follow_the_template_rename_and_are_off_by_default() {
+    let p = photo(1, Some("/src/a.JPG"), None);
+    let xmp = PathBuf::from("/src/a.xmp");
+    let item = ExportItem {
+        photo: &p,
+        group_title: None,
+        primary_tag: None,
+        sidecars: std::slice::from_ref(&xmp),
+    };
+    // Off by default: the sidecar is ignored.
+    let off = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
+    assert_eq!(
+        plan_export(&[item], Path::new("/src"), &off)
+            .unwrap()
+            .ops
+            .len(),
+        1
+    );
+
+    // On + a template: the sidecar takes the renamed stem so the link survives.
+    let mut on = off.clone();
+    on.sidecars = true;
+    on.template = Some(NameTemplate("{seq}".to_string()));
+    let plan = plan_export(&[item], Path::new("/src"), &on).unwrap();
+    assert_eq!(plan.ops[0].dest, dest(&["0001.JPG"]));
+    assert_eq!(plan.ops[1].dest, dest(&["0001.xmp"]));
+}
+
+#[test]
+fn a_skipped_photo_leaves_no_orphan_sidecar() {
+    // RAW-only selection: the JPEG-only photo is skipped, so its sidecar must not
+    // ride along; the photo that does contribute a file carries its own.
+    let kept = photo(1, Some("/src/a.JPG"), Some("/src/a.RAF"));
+    let dropped = photo(2, Some("/src/b.JPG"), None);
+    let a_xmp = PathBuf::from("/src/a.xmp");
+    let b_xmp = PathBuf::from("/src/b.xmp");
+    let items = vec![
+        ExportItem {
+            photo: &kept,
+            group_title: None,
+            primary_tag: None,
+            sidecars: std::slice::from_ref(&a_xmp),
+        },
+        ExportItem {
+            photo: &dropped,
+            group_title: None,
+            primary_tag: None,
+            sidecars: std::slice::from_ref(&b_xmp),
+        },
+    ];
+    let mut req = request(FileSelection::Raw, Layout::Together, Collision::Rename);
+    req.sidecars = true;
+    let plan = plan_export(&items, Path::new("/src"), &req).unwrap();
+
+    let dests: Vec<&Path> = plan.ops.iter().map(|o| o.dest.as_path()).collect();
+    assert!(dests.contains(&dest(&["a.RAF"]).as_path()));
+    assert!(dests.contains(&dest(&["a.xmp"]).as_path()));
+    assert!(
+        !dests.contains(&dest(&["b.xmp"]).as_path()),
+        "skipped photo's sidecar must not copy"
+    );
+}
+
+#[test]
+fn sidecar_names_cascade_on_collision() {
+    let p1 = photo(1, Some("/src/x/a.JPG"), None);
+    let p2 = photo(2, Some("/src/y/a.JPG"), None);
+    let x1 = PathBuf::from("/src/x/a.xmp");
+    let x2 = PathBuf::from("/src/y/a.xmp");
+    let items = vec![
+        ExportItem {
+            photo: &p1,
+            group_title: None,
+            primary_tag: None,
+            sidecars: std::slice::from_ref(&x1),
+        },
+        ExportItem {
+            photo: &p2,
+            group_title: None,
+            primary_tag: None,
+            sidecars: std::slice::from_ref(&x2),
+        },
+    ];
+    let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
+    req.sidecars = true;
+    let plan = plan_export(&items, Path::new("/src"), &req).unwrap();
+
+    let dests: Vec<&Path> = plan.ops.iter().map(|o| o.dest.as_path()).collect();
+    assert!(dests.contains(&dest(&["a.xmp"]).as_path()));
+    assert!(dests.contains(&dest(&["a-1.xmp"]).as_path()));
+}
+
+#[test]
+fn sidecar_rides_into_the_split_jpeg_folder() {
+    let p = photo(1, Some("/src/a.JPG"), Some("/src/a.RAF"));
+    let xmp = PathBuf::from("/src/a.xmp");
+    let item = ExportItem {
+        photo: &p,
+        group_title: None,
+        primary_tag: None,
+        sidecars: std::slice::from_ref(&xmp),
+    };
+    let mut req = request(FileSelection::Both, Layout::SplitJpegRaw, Collision::Rename);
+    req.sidecars = true;
+    let plan = plan_export(&[item], Path::new("/src"), &req).unwrap();
+
+    // The sidecar follows the first emitted role (JPEG) into JPEG/.
+    let sidecar = plan
+        .ops
+        .iter()
+        .find(|o| o.role == FileRole::Sidecar)
+        .unwrap();
+    assert_eq!(sidecar.dest, dest(&["JPEG", "a.xmp"]));
 }
 
 #[test]

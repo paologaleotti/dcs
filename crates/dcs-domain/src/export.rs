@@ -6,9 +6,9 @@
 //! resulting `ExportPlan` verbatim and makes no choices of its own, so the
 //! dialog's live preview and the real run are the same artifact.
 //!
-//! Copy-only in v1; never overwrites. Tag-keyed scope, the `{tag}` token,
-//! and multi-tag flatten/duplicate land with the Tags slice — exclusive time
-//! groups need none of that here.
+//! Copy-only in v1; never overwrites. The `{tag}` token resolves to each
+//! photo's primary tag (first by band order); multi-tag flatten/duplicate
+//! placement stays deferred (v1.1).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -48,16 +48,18 @@ pub enum Collision {
 }
 
 /// The role a file plays — drives the `SplitJpegRaw` layout and the per-role
-/// counts in the dry-run sentence.
+/// counts in the dry-run sentence. `Sidecar` rides alongside its photo's primary
+/// file (same folder), carried only when the request opts in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileRole {
     Jpeg,
     Raw,
+    Sidecar,
 }
 
 /// An opt-in rename template: a token string over `{name}`, `{date}`,
-/// `{time}`, `{group}`, `{seq}`. Off by default (originals keep their names).
-/// The extension always comes from the source file, never the template.
+/// `{time}`, `{group}`, `{seq}`, `{tag}`. Off by default (originals keep their
+/// names). The extension always comes from the source file, never the template.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NameTemplate(pub String);
 
@@ -71,15 +73,23 @@ pub struct ExportRequest {
     pub layout: Layout,
     pub collision: Collision,
     pub template: Option<NameTemplate>,
+    /// Carry each photo's adjacent sidecars (e.g. XMP) alongside its files.
+    pub sidecars: bool,
 }
 
 /// One in-scope photo handed to the planner, with the context the layout and
 /// template need. `group_title` is the photo's current group (for
-/// `GroupAsFolders` and `{group}`); `None` when ungrouped.
+/// `GroupAsFolders` and `{group}`); `None` when ungrouped. `primary_tag` is the
+/// photo's lowest-id (earliest-created) tag, for the `{tag}` token; `None` when
+/// untagged.
 #[derive(Debug, Clone, Copy)]
 pub struct ExportItem<'a> {
     pub photo: &'a Photo,
     pub group_title: Option<&'a str>,
+    pub primary_tag: Option<&'a str>,
+    /// Adjacent sidecar files (e.g. XMP) the conductor found next to this photo's
+    /// files. Copied only when `ExportRequest::sidecars` is set; empty otherwise.
+    pub sidecars: &'a [PathBuf],
 }
 
 /// One decided copy operation: a concrete source → dest with its role. The
@@ -118,6 +128,7 @@ pub struct ExportPlan {
     pub skipped: Vec<SkippedPhoto>,
     pub jpeg_count: usize,
     pub raw_count: usize,
+    pub sidecar_count: usize,
     /// Ops whose dest had to change (rename policy) or that were dropped (skip
     /// policy) because the name was already taken — the "projected collisions".
     pub collisions: usize,
@@ -167,10 +178,15 @@ pub fn plan_export(
 
     for (seq, item) in items.iter().enumerate() {
         let roles = selected_roles(item.photo, request.files, &mut skipped);
+        // The folder of the photo's first copied file; sidecars ride into it.
+        let mut primary_folder: Option<PathBuf> = None;
         for (role, source) in roles {
             let stem = file_stem(item, request, role, seq);
             let ext = extension(source);
             let folder = destination_folder(&request.dest, request.layout, role, item, source_root);
+            if primary_folder.is_none() {
+                primary_folder = Some(folder.clone());
+            }
             match place(&folder, &stem, &ext, request.collision, &mut claimed) {
                 Some(dest) => {
                     if dest_was_renamed(&dest, &folder, &stem, &ext) {
@@ -186,6 +202,32 @@ pub fn plan_export(
                 None => collisions += 1,
             }
         }
+        // Sidecars only ride along when the photo actually contributed a file, so
+        // a skipped photo never leaves an orphan XMP behind.
+        if request.sidecars
+            && let Some(folder) = &primary_folder
+        {
+            for source in item.sidecars {
+                // Match the photo's stem (template-renamed or original) so the
+                // sidecar↔file link survives the copy; the extension stays the
+                // sidecar's own.
+                let stem = sidecar_stem(item, request, source, seq);
+                let ext = extension(source);
+                match place(folder, &stem, &ext, request.collision, &mut claimed) {
+                    Some(dest) => {
+                        if dest_was_renamed(&dest, folder, &stem, &ext) {
+                            collisions += 1;
+                        }
+                        ops.push(ExportOp {
+                            source: source.clone(),
+                            dest,
+                            role: FileRole::Sidecar,
+                        });
+                    }
+                    None => collisions += 1,
+                }
+            }
+        }
     }
 
     if ops.is_empty() {
@@ -194,20 +236,22 @@ pub fn plan_export(
 
     let jpeg_count = ops.iter().filter(|o| o.role == FileRole::Jpeg).count();
     let raw_count = ops.iter().filter(|o| o.role == FileRole::Raw).count();
-    let summary = summarize(ops.len(), jpeg_count, raw_count, request);
+    let sidecar_count = ops.iter().filter(|o| o.role == FileRole::Sidecar).count();
+    let summary = summarize(ops.len(), jpeg_count, raw_count, sidecar_count, request);
 
     Ok(ExportPlan {
         ops,
         skipped,
         jpeg_count,
         raw_count,
+        sidecar_count,
         collisions,
         dest: request.dest.clone(),
         summary,
     })
 }
 
-const TOKENS: [&str; 5] = ["name", "date", "time", "group", "seq"];
+const TOKENS: [&str; 6] = ["name", "date", "time", "group", "seq", "tag"];
 
 /// The files a photo contributes under the selection, in JPEG-then-RAW order.
 /// Records a skip when a single-role selection finds no matching file.
@@ -276,6 +320,9 @@ fn destination_folder(
         Layout::SplitJpegRaw => match role {
             FileRole::Jpeg => dest.join("JPEG"),
             FileRole::Raw => dest.join("RAW"),
+            FileRole::Sidecar => {
+                unreachable!("sidecars ride into the primary folder, never destination_folder")
+            }
         },
         Layout::GroupAsFolders => dest.join(sanitize(item.group_title.unwrap_or("Ungrouped"))),
         Layout::MirrorSource => {
@@ -350,6 +397,21 @@ fn role_source(photo: &Photo, role: FileRole) -> Option<&Path> {
     match role {
         FileRole::Jpeg => photo.files.jpeg.as_deref(),
         FileRole::Raw => photo.files.raw.as_deref(),
+        FileRole::Sidecar => {
+            unreachable!("sidecars carry their own source path, never resolved by role")
+        }
+    }
+}
+
+/// The stem for a sidecar op: the template expansion (so the sidecar follows its
+/// renamed photo) when a template is set, else the sidecar file's own stem.
+fn sidecar_stem(item: &ExportItem, request: &ExportRequest, source: &Path, seq: usize) -> String {
+    match &request.template {
+        Some(template) => expand_template(&template.0, item, seq),
+        None => source
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default(),
     }
 }
 
@@ -408,6 +470,7 @@ fn expand_token(token: &str, item: &ExportItem, seq: usize) -> String {
     match token {
         "name" => role_name_stem(item.photo),
         "group" => item.group_title.unwrap_or("Ungrouped").to_string(),
+        "tag" => item.primary_tag.unwrap_or("untagged").to_string(),
         "seq" => format!("{:04}", seq + 1),
         "date" => match item.photo.captured_at {
             Some(dt) => format!("{:04}{:02}{:02}", dt.year(), u8::from(dt.month()), dt.day()),
@@ -466,7 +529,13 @@ fn sanitize(name: &str) -> String {
 
 /// The dry-run sentence: verb, count, role breakdown, destination, layout,
 /// and collision policy — the same text the button and preview show.
-fn summarize(total: usize, jpeg: usize, raw: usize, request: &ExportRequest) -> String {
+fn summarize(
+    total: usize,
+    jpeg: usize,
+    raw: usize,
+    sidecar: usize,
+    request: &ExportRequest,
+) -> String {
     let dest = request.dest.display();
     let layout = match request.layout {
         Layout::Together => "one folder",
@@ -479,7 +548,9 @@ fn summarize(total: usize, jpeg: usize, raw: usize, request: &ExportRequest) -> 
         Collision::Rename => "rename on collision",
     };
     let files = if total == 1 { "file" } else { "files" };
-    format!(
-        "Copy {total} {files} ({jpeg} JPEG + {raw} RAW) into \"{dest}\", {layout}, {collision}."
-    )
+    let mut breakdown = format!("{jpeg} JPEG + {raw} RAW");
+    if sidecar > 0 {
+        breakdown.push_str(&format!(" + {sidecar} sidecar"));
+    }
+    format!("Copy {total} {files} ({breakdown}) into \"{dest}\", {layout}, {collision}.")
 }

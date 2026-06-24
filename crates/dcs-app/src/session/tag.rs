@@ -131,6 +131,17 @@ impl Session {
         self.tags.tags_of(photo)
     }
 
+    /// The photo's lowest-id tag — a stable, deterministic "primary" (ids are
+    /// monotonic, so this is the earliest-created tag on the photo), or `None`
+    /// when untagged. The `{tag}` export token's source.
+    pub fn primary_tag_name(&self, photo: PhotoId) -> Option<String> {
+        self.tags_of(photo)
+            .into_iter()
+            .min()
+            .and_then(|t| self.tag_def(t))
+            .map(|t| t.name)
+    }
+
     /// Whether a photo carries a tag.
     pub fn is_tagged(&self, tag: TagId, photo: PhotoId) -> bool {
         self.tags.is_assigned(tag, photo)

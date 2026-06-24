@@ -48,6 +48,7 @@ fn request(out: &Path, files: FileSelection, layout: Layout) -> ExportRequest {
         layout,
         collision: Collision::Rename,
         template: None,
+        sidecars: false,
     }
 }
 

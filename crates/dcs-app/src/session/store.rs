@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use dcs_domain::cull::AcceptState;
 use dcs_domain::export::{self, ExportItem, ExportPlan, ExportRequest};
-use dcs_domain::photo::PhotoId;
+use dcs_domain::photo::{Photo, PhotoId};
 use dcs_io::export::{ExportEvent, run_export};
 use dcs_io::persistence::{PhotoRecord, ProjectSnapshot, ProjectStore};
 use dcs_io::recents;
@@ -224,16 +224,53 @@ impl Session {
     ) -> Result<ExportPlan, dcs_domain::export::ExportError> {
         let photos = self.builder.photos();
         let title_of = self.group_titles();
-        let items: Vec<ExportItem> = self
-            .scope_indices(scope)
-            .into_iter()
-            .map(|i| ExportItem {
+        let indices = self.scope_indices(scope);
+        // Owned so the borrowed slices in each `ExportItem` outlive the planner
+        // call. `primary_tags` (each photo's lowest-id tag) drives the `{tag}`
+        // token; `sidecar_lists` carries each photo's adjacent sidecars, probed
+        // only when the request opts in.
+        let primary_tags: Vec<Option<String>> = indices
+            .iter()
+            .map(|&i| self.primary_tag_name(photos[i].id))
+            .collect();
+        let sidecar_lists: Vec<Vec<PathBuf>> = if request.sidecars {
+            indices
+                .iter()
+                .map(|&i| self.sidecars_for(&photos[i]))
+                .collect()
+        } else {
+            vec![Vec::new(); indices.len()]
+        };
+        let items: Vec<ExportItem> = indices
+            .iter()
+            .enumerate()
+            .map(|(k, &i)| ExportItem {
                 photo: &photos[i],
                 group_title: title_of.get(&i).copied(),
+                primary_tag: primary_tags[k].as_deref(),
+                sidecars: &sidecar_lists[k],
             })
             .collect();
         let root = self.root.as_deref().unwrap_or(Path::new(""));
         export::plan_export(&items, root, request)
+    }
+
+    /// The adjacent sidecar files for a photo, probed once per session and
+    /// memoized — the export dialog re-plans every frame, so the disk is stat-ed
+    /// only on the first miss per photo.
+    fn sidecars_for(&self, photo: &Photo) -> Vec<PathBuf> {
+        if let Some(hit) = self.sidecar_cache.borrow().get(&photo.id) {
+            return hit.clone();
+        }
+        let paths: Vec<&Path> = [photo.files.jpeg.as_deref(), photo.files.raw.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect();
+        let found = dcs_io::source::adjacent_sidecars(&paths);
+        self.sidecar_cache
+            .borrow_mut()
+            .insert(photo.id, found.clone());
+        found
     }
 
     /// How many photos `scope` resolves to — the dialog's live per-scope count.
