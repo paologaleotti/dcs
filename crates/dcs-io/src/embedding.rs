@@ -400,7 +400,7 @@ fn embed_text(loaded: &Loaded, query: &str) -> Option<Vec<f32>> {
 /// CPU and free of candle/device calls, so it's safe across rayon threads even on
 /// a GPU device. `None` on decode failure.
 fn decode_rgb(req: &EmbedRequest, size: usize) -> Option<Vec<u8>> {
-    let thumb = decode_thumbnail(&req.path, req.orientation, size as u32)?;
+    let thumb = decode_thumbnail(&req.path, req.orientation, size as u32, None)?;
     let img = RgbaImage::from_raw(thumb.width, thumb.height, thumb.rgba)?;
     Some(
         DynamicImage::ImageRgba8(img)

@@ -15,6 +15,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use dcs_domain::crops::CropEdit;
 use dcs_domain::cull::AcceptState;
 use dcs_domain::fingerprint::ContentFingerprint;
 use dcs_domain::photo::PhotoId;
@@ -49,7 +50,7 @@ pub enum PersistError {
 /// ones) so a rename-in-place reclaims its id even when unreviewed, and so a
 /// file that goes missing keeps its state and can be shown as a placeholder.
 /// Paths are relative to the project root — the folder is portable.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PhotoRecord {
     pub id: PhotoId,
     pub fingerprint: ContentFingerprint,
@@ -58,6 +59,11 @@ pub struct PhotoRecord {
     /// isn't written, so untagged photos stay compact.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<TagId>,
+    /// Owned crop + straighten, when the photo is cropped. Absent (the common
+    /// case) isn't written, so uncropped photos stay compact. Additive — a
+    /// pre-crop project file loads with this `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crop: Option<CropEdit>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jpeg: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -121,6 +127,15 @@ impl ProjectSnapshot {
     /// The `PhotoId → verdict` pairs used to seed the verdict store.
     pub fn verdicts(&self) -> Vec<(PhotoId, AcceptState)> {
         self.photos.iter().map(|p| (p.id, p.verdict)).collect()
+    }
+
+    /// The `PhotoId → CropEdit` pairs used to seed the crop store. Only cropped
+    /// photos appear.
+    pub fn crops(&self) -> Vec<(PhotoId, CropEdit)> {
+        self.photos
+            .iter()
+            .filter_map(|p| p.crop.map(|c| (p.id, c)))
+            .collect()
     }
 
     /// The tag definitions used to seed the tag store.

@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use crate::photo::{Photo, PhotoId};
+use crate::crops::CropEdit;
+use crate::photo::{Orientation, Photo, PhotoId};
 
 /// Which files of each photo to copy. `Jpeg`/`Raw` copy only that role
 /// and skip photos lacking it. `Both` copies the JPEG **and** the RAW, skipping
@@ -75,6 +76,10 @@ pub struct ExportRequest {
     pub template: Option<NameTemplate>,
     /// Carry each photo's adjacent sidecars (e.g. XMP) alongside its files.
     pub sidecars: bool,
+    /// When a photo is cropped, the export output is the cropped render. With
+    /// this on, the untouched original JPEG is *also* copied, into an
+    /// `originals/` subfolder under the destination root. Off by default.
+    pub include_uncropped_originals: bool,
 }
 
 /// One in-scope photo handed to the planner, with the context the layout and
@@ -90,15 +95,36 @@ pub struct ExportItem<'a> {
     /// Adjacent sidecar files (e.g. XMP) the conductor found next to this photo's
     /// files. Copied only when `ExportRequest::sidecars` is set; empty otherwise.
     pub sidecars: &'a [PathBuf],
+    /// The photo's committed crop, if any. When set, its JPEG op is a
+    /// `RenderCrop` rather than a plain copy.
+    pub crop: Option<CropEdit>,
 }
 
-/// One decided copy operation: a concrete source → dest with its role. The
-/// executor copies these verbatim; it never computes a path.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// How the executor materializes one op. `Copy` is the byte-for-byte atomic
+/// copy (the v1 default for everything). `RenderCrop` decodes the source,
+/// applies the straighten+crop, and re-encodes to the dest — the only op that
+/// touches pixels. The planner still decided the source, dest, and that this op
+/// renders; the executor makes no choice of its own.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OpKind {
+    Copy,
+    /// Decode, apply EXIF orientation then the crop, re-encode. Orientation
+    /// rides along because re-encoding drops the source's EXIF tag, so the
+    /// output must be upright in pixels.
+    RenderCrop {
+        edit: CropEdit,
+        orientation: Orientation,
+    },
+}
+
+/// One decided operation: a concrete source → dest with its role and kind. The
+/// executor runs these verbatim; it never computes a path or decides a kind.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExportOp {
     pub source: PathBuf,
     pub dest: PathBuf,
     pub role: FileRole,
+    pub kind: OpKind,
 }
 
 /// Why a photo contributed no file under the chosen selection — surfaced
@@ -122,7 +148,7 @@ pub struct SkippedPhoto {
 /// The fully-decided plan: the ordered ops, the skip report, the
 /// collision count, and the dry-run sentence. Everything the dialog shows and
 /// the executor runs comes from this one artifact.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExportPlan {
     pub ops: Vec<ExportOp>,
     pub skipped: Vec<SkippedPhoto>,
@@ -187,6 +213,14 @@ pub fn plan_export(
             if primary_folder.is_none() {
                 primary_folder = Some(folder.clone());
             }
+            // Only the JPEG carries the crop; the RAW (when present) copies as-is.
+            let kind = match (role, item.crop) {
+                (FileRole::Jpeg, Some(edit)) => OpKind::RenderCrop {
+                    edit,
+                    orientation: item.photo.orientation,
+                },
+                _ => OpKind::Copy,
+            };
             match place(&folder, &stem, &ext, request.collision, &mut claimed) {
                 Some(dest) => {
                     if dest_was_renamed(&dest, &folder, &stem, &ext) {
@@ -196,10 +230,31 @@ pub fn plan_export(
                         source: source.to_path_buf(),
                         dest,
                         role,
+                        kind,
                     });
                 }
                 // Skip policy hit a taken name: nothing copied, counted as a collision.
                 None => collisions += 1,
+            }
+            // With the opt-in, a cropped JPEG also drops its untouched original
+            // into an `originals/` subfolder under the destination root — a plain
+            // copy, run through the same collision machinery.
+            if request.include_uncropped_originals && matches!(kind, OpKind::RenderCrop { .. }) {
+                let folder = request.dest.join("originals");
+                match place(&folder, &stem, &ext, request.collision, &mut claimed) {
+                    Some(dest) => {
+                        if dest_was_renamed(&dest, &folder, &stem, &ext) {
+                            collisions += 1;
+                        }
+                        ops.push(ExportOp {
+                            source: source.to_path_buf(),
+                            dest,
+                            role: FileRole::Jpeg,
+                            kind: OpKind::Copy,
+                        });
+                    }
+                    None => collisions += 1,
+                }
             }
         }
         // Sidecars only ride along when the photo actually contributed a file, so
@@ -222,6 +277,7 @@ pub fn plan_export(
                             source: source.clone(),
                             dest,
                             role: FileRole::Sidecar,
+                            kind: OpKind::Copy,
                         });
                     }
                     None => collisions += 1,
@@ -237,7 +293,18 @@ pub fn plan_export(
     let jpeg_count = ops.iter().filter(|o| o.role == FileRole::Jpeg).count();
     let raw_count = ops.iter().filter(|o| o.role == FileRole::Raw).count();
     let sidecar_count = ops.iter().filter(|o| o.role == FileRole::Sidecar).count();
-    let summary = summarize(ops.len(), jpeg_count, raw_count, sidecar_count, request);
+    let crop_count = ops
+        .iter()
+        .filter(|o| matches!(o.kind, OpKind::RenderCrop { .. }))
+        .count();
+    let summary = summarize(
+        ops.len(),
+        jpeg_count,
+        raw_count,
+        sidecar_count,
+        crop_count,
+        request,
+    );
 
     Ok(ExportPlan {
         ops,
@@ -534,6 +601,7 @@ fn summarize(
     jpeg: usize,
     raw: usize,
     sidecar: usize,
+    cropped: usize,
     request: &ExportRequest,
 ) -> String {
     let dest = request.dest.display();
@@ -552,5 +620,13 @@ fn summarize(
     if sidecar > 0 {
         breakdown.push_str(&format!(" + {sidecar} sidecar"));
     }
-    format!("Copy {total} {files} ({breakdown}) into \"{dest}\", {layout}, {collision}.")
+    // A render-and-crop run isn't a pure copy; say so when any op crops.
+    let verb = if cropped > 0 { "Export" } else { "Copy" };
+    let mut summary =
+        format!("{verb} {total} {files} ({breakdown}) into \"{dest}\", {layout}, {collision}");
+    if cropped > 0 {
+        summary.push_str(&format!(" ({cropped} cropped)"));
+    }
+    summary.push('.');
+    summary
 }

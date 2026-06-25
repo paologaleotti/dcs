@@ -130,6 +130,18 @@ impl<K: Eq + Hash + Copy, V> LruMap<K, V> {
         self.evict_to_budget()
     }
 
+    /// Drop one entry by key, if present. Frees its slot and weight. Used to
+    /// invalidate a single photo's cached pixels when its crop edit changes.
+    pub fn remove(&mut self, key: &K) -> bool {
+        let Some(slot) = self.index.remove(key) else {
+            return false;
+        };
+        self.detach(slot);
+        self.used -= self.slots[slot].weight;
+        self.recycle(slot);
+        true
+    }
+
     /// Evict from the tail until within budget (keeping at least one entry).
     /// Returns the evicted keys.
     fn evict_to_budget(&mut self) -> Vec<K> {

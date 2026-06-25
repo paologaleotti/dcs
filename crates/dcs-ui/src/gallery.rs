@@ -22,7 +22,7 @@ use crate::theme;
 /// Docked info-bar height in points (filename/tags/time, gear/group).
 const INFO_BAR_H: f32 = 48.0;
 /// Filmstrip dock height in points (thumb + padding).
-const STRIP_H: f32 = 84.0;
+pub(crate) const STRIP_H: f32 = 84.0;
 /// Filmstrip thumb edge in points.
 const STRIP_THUMB: f32 = 64.0;
 /// Gap between filmstrip thumbs.
@@ -134,9 +134,9 @@ pub fn show(
 
 /// What the filmstrip reports: a left-click jump target and/or a context-menu
 /// action from a right-clicked thumb.
-struct StripResponse {
-    clicked: Option<usize>,
-    action: Option<AppAction>,
+pub(crate) struct StripResponse {
+    pub(crate) clicked: Option<usize>,
+    pub(crate) action: Option<AppAction>,
 }
 
 /// Copy the photo's currently-decoded pixels to the system clipboard, preferring
@@ -217,6 +217,8 @@ struct FrameInfo {
     kind: &'static str,
     /// Whether a RAW is present — drives the kind chip's emphasis.
     has_raw: bool,
+    /// The photo carries a committed crop — shown as a `cropped` marker.
+    cropped: bool,
     /// `camera · lens · 35mm · f/2.8 · 1/250 · ISO 400`, present parts only.
     detail: String,
     /// Derived group title, or empty for the headerless stream.
@@ -234,6 +236,7 @@ fn frame_info(session: &Session, focus: usize) -> FrameInfo {
         filename: String::new(),
         kind: "JPEG",
         has_raw: false,
+        cropped: false,
         detail: String::new(),
         group: session
             .group_title_at(focus)
@@ -253,6 +256,7 @@ fn frame_info(session: &Session, focus: usize) -> FrameInfo {
 
     let has_jpeg = photo.files.jpeg.is_some();
     info.has_raw = photo.files.raw.is_some();
+    info.cropped = session.has_crop(photo.id);
     info.kind = match (has_jpeg, info.has_raw) {
         (true, true) => "RAW+JPEG",
         (false, true) => "RAW",
@@ -307,7 +311,12 @@ fn paint_info_bar(ui: &Ui, info: &FrameInfo, rect: Rect) {
         FontId::monospace(13.0),
         theme::SELECT_OUTLINE,
     );
-    let chip_right = paint_kind_chip(p, info, Pos2::new(name.right() + 10.0, row1));
+    let mut chip_right = paint_kind_chip(p, info, Pos2::new(name.right() + 10.0, row1));
+    // A `CROPPED` chip rides just after the type chip when the photo is edited —
+    // an accent-outlined pill, matching the type chip's style.
+    if info.cropped {
+        chip_right = paint_cropped_chip(p, Pos2::new(chip_right + 8.0, row1));
+    }
     // Time hugs the right; the tags fill the gap between the chip and it.
     let mut tag_limit = right;
     if !info.time.is_empty() {
@@ -379,23 +388,55 @@ fn paint_caption_tags(p: &egui::Painter, tags: &[(Color, String)], start: Pos2, 
     }
 }
 
-/// The file-type chip (`RAW+JPEG` / `JPEG` / `RAW`), centered on its left edge at
-/// `anchor`. A RAW-bearing photo gets a brighter outline so the (load-bearing)
-/// "has a RAW" fact reads instantly; grayscale only.
-/// Draw the type chip at `anchor` (left-center) and return its right edge so the
-/// caller can place the tags that follow.
+/// The `CROPPED` chip: a filled cyan pill at `anchor` (left-center), so the
+/// see-vs-disk difference reads at a glance and is distinct from the outlined
+/// file-type chip. Returns its right edge.
+fn paint_cropped_chip(p: &egui::Painter, anchor: Pos2) -> f32 {
+    paint_chip(
+        p,
+        anchor,
+        "CROPPED",
+        theme::BADGE_BG,
+        Some(theme::CROP_ACCENT),
+    )
+}
+
+/// The file-type chip (`RAW+JPEG` / `JPEG` / `RAW`) at `anchor` (left-center),
+/// returning its right edge so the caller can place the tags that follow. A
+/// RAW-bearing photo gets a brighter outline so the (load-bearing) "has a RAW"
+/// fact reads instantly; grayscale only.
 fn paint_kind_chip(p: &egui::Painter, info: &FrameInfo, anchor: Pos2) -> f32 {
     let fg = if info.has_raw {
         theme::FOCUS_OUTLINE
     } else {
         theme::TEXT_DIM
     };
-    // Compact chip so its box clears the metadata row below on the short bar.
-    let galley = p.layout_no_wrap(info.kind.to_string(), FontId::monospace(9.0), fg);
+    paint_chip(p, anchor, info.kind, fg, None)
+}
+
+/// A compact info-bar pill: `text` in `fg`, either filled (`fill = Some`) or
+/// outlined (`fill = None`), anchored left-center. Returns its right edge so the
+/// next field can follow. The shared geometry keeps the type and crop chips
+/// visually locked together.
+fn paint_chip(
+    p: &egui::Painter,
+    anchor: Pos2,
+    text: &str,
+    fg: Color32,
+    fill: Option<Color32>,
+) -> f32 {
+    let galley = p.layout_no_wrap(text.to_string(), FontId::monospace(9.0), fg);
     let (px, py) = (5.0, 1.5);
     let size = Vec2::new(galley.size().x + px * 2.0, galley.size().y + py * 2.0);
     let chip = Rect::from_min_size(Pos2::new(anchor.x, anchor.y - size.y / 2.0), size);
-    p.rect_stroke(chip, 2.0, Stroke::new(1.0, fg), StrokeKind::Inside);
+    match fill {
+        Some(bg) => {
+            p.rect_filled(chip, 2.0, bg);
+        }
+        None => {
+            p.rect_stroke(chip, 2.0, Stroke::new(1.0, fg), StrokeKind::Inside);
+        }
+    }
     p.galley(Pos2::new(chip.left() + px, chip.top() + py), galley, fg);
     chip.right()
 }
@@ -403,7 +444,7 @@ fn paint_kind_chip(p: &egui::Painter, info: &FrameInfo, anchor: Pos2) -> f32 {
 /// The filmstrip dock: a centered band of the visible order, base thumbs reused
 /// from the grid, current frame outlined, verdict glyphs visible. Click-to-jump
 /// returns the display index hit.
-fn paint_filmstrip(
+pub(crate) fn paint_filmstrip(
     ui: &mut Ui,
     session: &mut Session,
     textures: &mut TextureCache,
@@ -497,6 +538,9 @@ fn paint_filmstrip(
                 }
                 crate::grid::paint_tag_strips(ui, slot, &info.tag_colors);
                 paint_strip_glyph(ui, slot, info.state);
+                if info.cropped {
+                    crate::grid::paint_crop_badge_at(ui, slot);
+                }
                 if idx == focus {
                     ui.painter().rect_stroke(
                         slot,

@@ -156,3 +156,33 @@ fn a_torn_trailing_line_is_ignored_not_fatal() {
         "good entries survive, torn line dropped"
     );
 }
+
+// --- Crop records (DoCrop) ---------------------------------------------------
+
+#[test]
+fn crop_patches_round_trip_through_the_log() {
+    use dcs_domain::command::CropChange;
+    use dcs_domain::crops::{CropEdit, NormRect};
+
+    let dir = std::env::temp_dir().join(format!("dcs_undolog_crop_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("undo.log");
+    let _ = std::fs::remove_file(&path);
+
+    let edit = CropEdit {
+        angle_deg: 3.5,
+        rect: NormRect::centered(0.7, 0.6),
+    };
+    let change: CropChange = (PhotoId(9), None, Some(edit));
+    let patch = Patch::Crop(vec![change]);
+
+    {
+        let mut log = UndoLog::open(&path).unwrap();
+        log.record_patch(&patch).unwrap();
+    }
+    let stacks = undo_log::load(&path).unwrap();
+    assert_eq!(stacks.undo, vec![patch]);
+    assert!(stacks.redo.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

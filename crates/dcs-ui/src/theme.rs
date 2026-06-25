@@ -43,6 +43,11 @@ pub const BURST_SPAN: Color32 = Color32::from_rgb(74, 64, 46);
 /// The burst run's count label, a brighter tint of the span accent.
 pub const BURST_LABEL: Color32 = Color32::from_rgb(198, 172, 120);
 
+/// Crop-edit accent — marks a cropped photo's grid badge and the gallery
+/// `CROPPED` chip. A distinct cool cyan, off the tag/verdict/burst/filter hues
+/// (color = meaning: this photo is edited, and what's shown differs from disk).
+pub const CROP_ACCENT: Color32 = Color32::from_rgb(86, 188, 200);
+
 /// "You are filtered" accent — a muted slate marking the filter bar, its rule,
 /// and the `N of M` count, so a narrowed grid reads at a glance. A UI-state
 /// signal, deliberately cool and off to the side of the tag/verdict/burst hues.

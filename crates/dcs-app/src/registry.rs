@@ -48,6 +48,9 @@ pub enum AppAction {
     /// Gallery-specific toggle (the `Space` binding), not a generic mode flip, so
     /// it stays valid as more view modes are added.
     ToggleGallery,
+    /// Enter the crop editor on the focused photo. Only valid when the focused
+    /// photo has a JPEG (RAW-only photos aren't croppable in v1).
+    EnterCrop,
     /// Toggle one verdict in/out of the filter (multi-select: acc + rej, …).
     ToggleVerdictFilter(AcceptState),
     /// Toggle a tag in/out of the filter (the filter dropdown's tag checkboxes).
@@ -163,6 +166,7 @@ impl AppAction {
             AppAction::EnterGrid => "enter-grid",
             AppAction::EnterGallery => "enter-gallery",
             AppAction::ToggleGallery => "toggle-gallery",
+            AppAction::EnterCrop => "enter-crop",
             AppAction::ToggleVerdictFilter(AcceptState::Unreviewed) => "filter-verdict-unrev",
             AppAction::ToggleVerdictFilter(AcceptState::Accepted) => "filter-verdict-acc",
             AppAction::ToggleVerdictFilter(AcceptState::Rejected) => "filter-verdict-rej",
@@ -221,6 +225,8 @@ pub enum ActionEffect {
     EnterGrid,
     EnterGallery,
     ToggleGallery,
+    /// Enter the crop editor on the focused photo (the UI owns the editor state).
+    EnterCrop,
     OpenZonePicker,
     OpenCameraZonePicker,
     /// Open the picker to toggle tag filters.
@@ -327,6 +333,10 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
         );
         push(&mut e, AppAction::ZoomIn, "Zoom In", Category::View);
         push(&mut e, AppAction::ZoomOut, "Zoom Out", Category::View);
+    }
+    // Crop the focused photo — offered only when it has a JPEG to edit.
+    if session.focused_is_croppable() {
+        push(&mut e, AppAction::EnterCrop, "Crop Photo…", Category::Edit);
     }
     push(
         &mut e,
@@ -560,6 +570,14 @@ impl Session {
             AppAction::EnterGrid => ActionEffect::EnterGrid,
             AppAction::EnterGallery => ActionEffect::EnterGallery,
             AppAction::ToggleGallery => ActionEffect::ToggleGallery,
+            // Only croppable photos reach the editor; a RAW-only focus is a no-op.
+            AppAction::EnterCrop => {
+                if self.focused_is_croppable() {
+                    ActionEffect::EnterCrop
+                } else {
+                    ActionEffect::None
+                }
+            }
             AppAction::ToggleVerdictFilter(state) => {
                 self.toggle_verdict_filter(state);
                 ActionEffect::None

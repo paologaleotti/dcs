@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use dcs_domain::command::{Command, Patch};
+use dcs_domain::crops::CropEdit;
 use dcs_domain::cull::AcceptState;
 use dcs_domain::photo::PhotoId;
 
@@ -133,16 +134,66 @@ impl Session {
         self.toggle_verdict(AcceptState::Rejected);
     }
 
+    /// Whether the photo at `display_index` can be cropped: it exists, isn't a
+    /// missing placeholder, and has a JPEG to decode (RAW-only isn't croppable in
+    /// v1).
+    pub fn is_croppable(&self, display_index: usize) -> bool {
+        self.photo_at(display_index)
+            .is_some_and(|p| !p.missing && p.decodable_path().is_some())
+    }
+
+    /// Whether the focused photo can be cropped (see [`Self::is_croppable`]).
+    pub fn focused_is_croppable(&self) -> bool {
+        self.focus().is_some_and(|i| self.is_croppable(i))
+    }
+
+    /// The committed crop for a photo, or `None` when uncropped.
+    pub fn crop_of(&self, id: PhotoId) -> Option<CropEdit> {
+        self.crops.crop_of(id)
+    }
+
+    /// Whether a photo has a committed crop.
+    pub fn has_crop(&self, id: PhotoId) -> bool {
+        self.crops.has_crop(id)
+    }
+
+    /// Set (or clear, with `None`) the crop on one photo through the unified undo
+    /// timeline. The crop editor commits here on apply; an identity edit clears.
+    /// A no-op records nothing.
+    pub fn set_crop(&mut self, id: PhotoId, edit: Option<CropEdit>) {
+        if let Some(patch) = self.dispatch(Command::SetCrop(vec![id], edit)) {
+            // Same invalidation path as undo/redo, so a crop change can't drift
+            // between them.
+            self.invalidate_thumbs_for_patch(&patch);
+            self.refresh_after_owned_change();
+        }
+    }
+
+    /// Drop cached thumbnails for any photo whose crop a patch changed, so the
+    /// grid/gallery re-decode with the new (or reverted) framing. A no-op for
+    /// verdict/tag patches, which don't touch pixels.
+    fn invalidate_thumbs_for_patch(&mut self, patch: &Patch) {
+        if let Patch::Crop(changes) = patch {
+            for &(id, _, _) in changes {
+                self.invalidate_photo_thumbs(id);
+            }
+        }
+    }
+
     /// `Ctrl+Z`: undo the last mutation (verdict or tag).
     pub fn undo(&mut self) -> bool {
         if self.read_only {
             return false;
         }
-        if self.history.undo(&mut self.cull, &mut self.tags) {
+        if let Some(patch) = self
+            .history
+            .undo(&mut self.cull, &mut self.tags, &mut self.crops)
+        {
             if let Some(log) = &mut self.log {
                 let _ = log.record_undo();
             }
             self.dirty = true;
+            self.invalidate_thumbs_for_patch(&patch);
             self.refresh_after_owned_change();
             true
         } else {
@@ -155,11 +206,15 @@ impl Session {
         if self.read_only {
             return false;
         }
-        if self.history.redo(&mut self.cull, &mut self.tags) {
+        if let Some(patch) = self
+            .history
+            .redo(&mut self.cull, &mut self.tags, &mut self.crops)
+        {
             if let Some(log) = &mut self.log {
                 let _ = log.record_redo();
             }
             self.dirty = true;
+            self.invalidate_thumbs_for_patch(&patch);
             self.refresh_after_owned_change();
             true
         } else {
@@ -237,9 +292,9 @@ impl Session {
         if self.read_only {
             return None;
         }
-        let patch = self
-            .history
-            .dispatch(command, &mut self.cull, &mut self.tags)?;
+        let patch =
+            self.history
+                .dispatch(command, &mut self.cull, &mut self.tags, &mut self.crops)?;
         if let Some(log) = &mut self.log {
             let _ = log.record_patch(&patch);
         }

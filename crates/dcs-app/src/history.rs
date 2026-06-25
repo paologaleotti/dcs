@@ -12,6 +12,7 @@ use std::collections::{HashSet, VecDeque};
 use dcs_domain::command::{Command, Patch, TagDelta};
 use dcs_domain::photo::PhotoId;
 
+use crate::crops::CropStore;
 use crate::cull::Cull;
 use crate::tags::TagStore;
 
@@ -70,6 +71,7 @@ impl History {
         command: Command,
         cull: &mut Cull,
         tags: &mut TagStore,
+        crops: &mut CropStore,
     ) -> Option<Patch> {
         let patch = match command {
             Command::SetState(ids, target) => Patch::Verdict(cull.apply_set_state(&ids, target)),
@@ -80,6 +82,7 @@ impl History {
             Command::MergeTags { into, from } => Patch::Tag(tags.apply_merge(into, from)),
             Command::SetTagColor(id, color) => Patch::Tag(tags.apply_recolor(id, color)),
             Command::DeleteTag(id) => Patch::Tag(tags.apply_delete(id)),
+            Command::SetCrop(ids, target) => Patch::Crop(crops.apply_set_crop(&ids, target)),
         };
         if patch.is_empty() {
             return None;
@@ -91,23 +94,30 @@ impl History {
 
     /// Reverse the most recent entry, moving it onto the redo stack. Returns
     /// whether anything was undone.
-    pub fn undo(&mut self, cull: &mut Cull, tags: &mut TagStore) -> bool {
-        let Some(patch) = self.undo.pop_back() else {
-            return false;
-        };
-        Self::revert(&patch, cull, tags);
-        self.redo.push(patch);
-        true
+    pub fn undo(
+        &mut self,
+        cull: &mut Cull,
+        tags: &mut TagStore,
+        crops: &mut CropStore,
+    ) -> Option<Patch> {
+        let patch = self.undo.pop_back()?;
+        Self::revert(&patch, cull, tags, crops);
+        self.redo.push(patch.clone());
+        Some(patch)
     }
 
-    /// Re-apply the most recently undone entry. Returns whether anything ran.
-    pub fn redo(&mut self, cull: &mut Cull, tags: &mut TagStore) -> bool {
-        let Some(patch) = self.redo.pop() else {
-            return false;
-        };
-        Self::apply(&patch, cull, tags);
-        self.undo.push_back(patch);
-        true
+    /// Re-apply the most recently undone entry. Returns the patch that was
+    /// re-applied, or `None` when the redo stack was empty.
+    pub fn redo(
+        &mut self,
+        cull: &mut Cull,
+        tags: &mut TagStore,
+        crops: &mut CropStore,
+    ) -> Option<Patch> {
+        let patch = self.redo.pop()?;
+        Self::apply(&patch, cull, tags, crops);
+        self.undo.push_back(patch.clone());
+        Some(patch)
     }
 
     /// Forget photos: scrub them from every recorded patch, dropping any entry
@@ -124,17 +134,19 @@ impl History {
         self.redo.retain(|p| !p.is_empty());
     }
 
-    fn apply(patch: &Patch, cull: &mut Cull, tags: &mut TagStore) {
+    fn apply(patch: &Patch, cull: &mut Cull, tags: &mut TagStore, crops: &mut CropStore) {
         match patch {
             Patch::Verdict(c) => cull.apply(c),
             Patch::Tag(d) => tags.apply(d),
+            Patch::Crop(c) => crops.apply(c),
         }
     }
 
-    fn revert(patch: &Patch, cull: &mut Cull, tags: &mut TagStore) {
+    fn revert(patch: &Patch, cull: &mut Cull, tags: &mut TagStore, crops: &mut CropStore) {
         match patch {
             Patch::Verdict(c) => cull.revert(c),
             Patch::Tag(d) => tags.revert(d),
+            Patch::Crop(c) => crops.revert(c),
         }
     }
 
@@ -155,5 +167,6 @@ fn scrub(patch: &mut Patch, ids: &HashSet<PhotoId>) {
             TagDelta::Assigned(_, p) | TagDelta::Unassigned(_, p) => !ids.contains(p),
             _ => true,
         }),
+        Patch::Crop(changes) => changes.retain(|(id, _, _)| !ids.contains(id)),
     }
 }

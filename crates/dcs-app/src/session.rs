@@ -50,6 +50,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use self::search::AiInit;
+use crate::crops::CropStore;
 use crate::cull::Cull;
 use crate::export::ExportStatus;
 use crate::history::History;
@@ -136,6 +137,8 @@ pub struct CellInfo {
     /// Burst membership for the span accent, `None` when the cell is in no
     /// derived burst (or bursts are off / the axis is `tag`).
     pub burst: Option<BurstMark>,
+    /// The photo carries a committed crop — drives the grid/gallery crop badge.
+    pub cropped: bool,
 }
 
 /// A cell's place in a derived burst, for the grid's span accent. The accent is
@@ -244,7 +247,9 @@ pub struct Session {
     cull: Cull,
     /// Owned tag store: defs + photo↔tag assignments. Reset per folder.
     tags: TagStore,
-    /// Unified durable undo/redo timeline over verdict + tag mutations.
+    /// Owned crop store: per-photo crop+straighten. Reset per folder.
+    crops: CropStore,
+    /// Unified durable undo/redo timeline over verdict + tag + crop mutations.
     history: History,
     /// Ephemeral focus cursor + selection.
     sel: Selection,
@@ -361,6 +366,7 @@ impl Session {
             burst_count: 0,
             cull: Cull::new(),
             tags: TagStore::new(),
+            crops: CropStore::new(),
             history: History::new(),
             sel: Selection::new(),
             filter: Filter::default(),
@@ -464,6 +470,7 @@ impl Session {
         self.builder = seed_builder(&snapshot);
         self.cull = seed_cull(&snapshot);
         self.tags = seed_tags(&snapshot);
+        self.crops = seed_crops(&snapshot);
         self.history = seed_history(&snapshot, &sidecar);
         let (views, config, records) = match snapshot {
             Some(s) => (s.views, s.config, s.photos),
@@ -522,7 +529,12 @@ impl Session {
         for (key, image) in self.decoder.poll() {
             let (epoch, id, tier) = decode_key(key);
             if epoch != self.epoch {
-                continue; // stale decode from a previously opened folder
+                // Stale decode (a previously opened folder, or a crop edit bumped
+                // the epoch). Drop the pixels but retire the in-flight marker so
+                // the photo can be re-requested under the current epoch — else it
+                // would be stuck forever neither resident nor re-requested.
+                self.retire_inflight(id, tier);
+                continue;
             }
             self.absorb_thumb(id, tier, image);
         }
@@ -591,6 +603,15 @@ fn seed_cull(snapshot: &Option<ProjectSnapshot>) -> Cull {
     match snapshot {
         Some(s) => Cull::from_verdicts(s.verdicts()),
         None => Cull::new(),
+    }
+}
+
+/// Rebuild the crop store from `project.json`: per-photo crop+straighten. Empty
+/// when there's no saved project.
+fn seed_crops(snapshot: &Option<ProjectSnapshot>) -> CropStore {
+    match snapshot {
+        Some(s) => CropStore::from_crops(s.crops()),
+        None => CropStore::new(),
     }
 }
 

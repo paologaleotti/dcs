@@ -149,6 +149,7 @@ const KEYMAP: &[(AppAction, Chord, &str)] = &[
     (AppAction::OpenTagPalette, plain(Key::T), "Add tag"),
     (AppAction::OpenUntagPalette, shift(Key::T), "Remove tag"),
     (AppAction::ShowMetadata, plain(Key::I), "Photo info"),
+    (AppAction::EnterCrop, plain(Key::C), "Crop photo"),
     (AppAction::Undo, cmd(Key::Z), "Undo"),
     (AppAction::Redo, cmd_shift(Key::Z), "Redo"),
     (AppAction::OpenFolder, cmd(Key::O), "Open folder"),

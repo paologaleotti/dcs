@@ -4,6 +4,7 @@ use dcs_domain::filter::{ChipOp, FilterChip};
 use egui::{Align, Color32, FontId, Layout, RichText, Sense, Stroke, Ui, Vec2};
 
 use super::{DcsApp, PALETTE_MOD, ViewMode};
+use crate::crop;
 use crate::gallery;
 use crate::grid;
 use crate::theme;
@@ -241,6 +242,12 @@ impl DcsApp {
                     self.empty_state(ui);
                     return;
                 }
+                // Crop is a transient editor over the gallery, not a view: when
+                // one is open it owns the central area regardless of `view`.
+                if self.crop_edit.is_some() {
+                    self.crop_central(ui);
+                    return;
+                }
                 match self.view {
                     ViewMode::Grid => {
                         let view_width = ui.available_width();
@@ -303,6 +310,45 @@ impl DcsApp {
             });
     }
 
+    /// Paint the crop editor and act on its result. The working edit lives in
+    /// `self.crop_edit`; a missing one (focus lost) drops straight back to the
+    /// gallery.
+    fn crop_central(&mut self, ui: &mut Ui) {
+        let Some(mut state) = self.crop_edit.take() else {
+            self.exit_crop();
+            return;
+        };
+        let resp = crop::show(
+            ui,
+            &mut self.session,
+            &mut self.gallery_textures,
+            &mut self.textures,
+            &mut state,
+        );
+        if resp.apply {
+            self.session.set_crop(state.photo, Some(state.to_edit()));
+            self.exit_crop();
+            return;
+        }
+        if resp.cancel {
+            self.exit_crop();
+            return;
+        }
+        // A filmstrip jump commits the pending edit, then re-seeds on the new
+        // photo so moving away never silently loses work.
+        if let Some(idx) = resp.jump
+            && idx != state.focus
+            && let Some(photo) = self.session.photo_at(idx).map(|p| p.id)
+        {
+            self.session.set_crop(state.photo, Some(state.to_edit()));
+            self.session.set_focus(idx, false);
+            let committed = self.session.crop_of(photo);
+            self.crop_edit = Some(crop::CropEditState::new(idx, photo, committed));
+            return;
+        }
+        self.crop_edit = Some(state);
+    }
+
     /// Open the gallery on the focused photo (else the first visible), starting
     /// contain-fit.
     pub(super) fn enter_gallery(&mut self) {
@@ -325,6 +371,42 @@ impl DcsApp {
         self.gallery_full = false;
         self.session.clear_gallery();
         self.gallery_textures.clear();
+        self.scroll_to_focus = true;
+    }
+
+    /// Enter the crop editor on the focused photo. Seeds the working edit from
+    /// the photo's committed crop (or identity) and clears the gallery cache so
+    /// the editor's *uncropped* frame doesn't collide with a cropped one on the
+    /// same id. No-op when nothing croppable is focused.
+    pub(super) fn enter_crop(&mut self) {
+        // Already editing — don't re-seed and clobber the working edit.
+        if self.crop_edit.is_some() {
+            return;
+        }
+        if !self.session.focused_is_croppable() {
+            return;
+        }
+        let Some(focus) = self.session.focus() else {
+            return;
+        };
+        let Some(photo) = self.session.photo_at(focus).map(|p| p.id) else {
+            return;
+        };
+        let committed = self.session.crop_of(photo);
+        self.session.clear_gallery();
+        self.gallery_textures.clear();
+        self.crop_edit = Some(crop::CropEditState::new(focus, photo, committed));
+    }
+
+    /// Leave the crop editor back to the gallery, dropping the working edit and
+    /// the editor's uncropped frame so the gallery re-decodes with the crop. The
+    /// underlying `view` is already `Gallery` (crop never changed it), so clearing
+    /// `crop_edit` falls back there.
+    pub(super) fn exit_crop(&mut self) {
+        self.crop_edit = None;
+        self.session.clear_gallery();
+        self.gallery_textures.clear();
+        self.view = ViewMode::Gallery;
         self.scroll_to_focus = true;
     }
 

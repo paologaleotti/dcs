@@ -344,6 +344,18 @@ impl DcsApp {
                         clicked = Some(AppAction::Reject);
                         ui.close();
                     }
+                    ui.separator();
+                    // Crop is an edit, not a view — it lives here, not in View.
+                    if ui
+                        .add_enabled(
+                            self.session.focused_is_croppable(),
+                            egui::Button::new("Crop & Straighten…"),
+                        )
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::EnterCrop);
+                        ui.close();
+                    }
                 });
                 ui.menu_button("View", |ui| {
                     let has_photos = self.session.photo_count() > 0;

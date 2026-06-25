@@ -19,6 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::crops::CropEdit;
 use crate::cull::AcceptState;
 use crate::photo::PhotoId;
 use crate::tag::{Color, Tag, TagId};
@@ -30,7 +31,7 @@ use crate::tag::{Color, Tag, TagId};
 /// the id is allocated by dispatch and captured in the resulting [`Patch`], so
 /// replay stays deterministic from the recorded deltas, never from re-running a
 /// command.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Command {
     /// Set every listed photo to one verdict. The `Vec` may contain duplicates
     /// (tag-band projections of one photo); dispatch dedups first.
@@ -50,10 +51,17 @@ pub enum Command {
     DeleteTag(TagId),
     /// Recolor a tag.
     SetTagColor(TagId, Color),
+    /// Set (or clear, with `None`) the crop+straighten edit on every listed
+    /// photo. The `Vec` may contain duplicates; dispatch dedups first.
+    SetCrop(Vec<PhotoId>, Option<CropEdit>),
 }
 
 /// One reversible verdict change: the photo, its verdict before, and after.
 pub type VerdictChange = (PhotoId, AcceptState, AcceptState);
+
+/// One reversible crop change: the photo, its edit before, and after. `None`
+/// means uncropped, so this captures setting, changing, and clearing a crop.
+pub type CropChange = (PhotoId, Option<CropEdit>, Option<CropEdit>);
 
 /// One reversible tag change. Granular and self-inverting so a command that
 /// touches many photos or several defs records a flat list of these, and undo
@@ -108,12 +116,14 @@ impl TagDelta {
 /// holds and the durable log persists. One `Patch` per command; `Verdict` and
 /// `Tag` never mix in a single patch, so the two stores stay independent while
 /// sharing one undo timeline.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Patch {
     /// Verdict deltas, one per changed photo (deduped to unique photos).
     Verdict(Vec<VerdictChange>),
     /// Tag deltas, in apply order; undo inverts each in reverse.
     Tag(Vec<TagDelta>),
+    /// Crop deltas, one per changed photo (deduped to unique photos).
+    Crop(Vec<CropChange>),
 }
 
 impl Patch {
@@ -123,6 +133,7 @@ impl Patch {
         match self {
             Patch::Verdict(c) => c.is_empty(),
             Patch::Tag(d) => d.is_empty(),
+            Patch::Crop(c) => c.is_empty(),
         }
     }
 }

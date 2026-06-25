@@ -65,6 +65,11 @@ pub(crate) fn cell_menu(ui: &mut Ui, session: &Session, idx: usize) -> Option<Ap
     };
     pick(ui, "Accept", AppAction::Accept);
     pick(ui, "Reject", AppAction::Reject);
+    // Crop the clicked photo (the caller already aimed focus/selection at it).
+    // JPEG only — RAW-only photos aren't croppable in v1.
+    if session.is_croppable(idx) {
+        pick(ui, "Crop & straighten…", AppAction::EnterCrop);
+    }
     ui.separator();
     pick(ui, "Add tag…", AppAction::OpenTagPalette);
     if session.selection_has_tags() {

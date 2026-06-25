@@ -13,7 +13,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use crossbeam_channel::{Receiver, unbounded};
-use dcs_domain::export::{ExportOp, ExportPlan, FileRole};
+use dcs_domain::crops::CropEdit;
+use dcs_domain::export::{ExportOp, ExportPlan, FileRole, OpKind};
+
+use crate::imaging;
 
 /// One executor outcome per plan op, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,7 +117,13 @@ fn execute_op(op: &ExportOp) -> ExportEvent {
             error: format!("create {}: {e}", parent.display()),
         };
     }
-    match copy_atomic(&op.source, &op.dest) {
+    let result = match op.kind {
+        OpKind::Copy => copy_atomic(&op.source, &op.dest),
+        OpKind::RenderCrop { edit, orientation } => {
+            render_crop_atomic(&op.source, &op.dest, &edit, orientation)
+        }
+    };
+    match result {
         Ok(()) => ExportEvent::Copied { role: op.role },
         Err(CopyError::DestExists) => ExportEvent::Skipped {
             reason: SkipKind::DestExists,
@@ -122,6 +131,42 @@ fn execute_op(op: &ExportOp) -> ExportEvent {
         Err(CopyError::Io(msg)) => ExportEvent::Failed { error: msg },
     }
 }
+
+/// Render a cropped+straightened JPEG to `dest` via the same atomic
+/// `.part` → fsync → rename + never-overwrite contract as a copy. Decodes the
+/// source at full resolution, applies orientation then the crop (one resample),
+/// and encodes a high-quality JPEG. The planner already decided the source,
+/// dest, and that this op renders — this only executes the pixels.
+fn render_crop_atomic(
+    source: &Path,
+    dest: &Path,
+    edit: &CropEdit,
+    orientation: dcs_domain::photo::Orientation,
+) -> Result<(), CopyError> {
+    let jpeg = render_crop_jpeg(source, edit, orientation).ok_or_else(|| {
+        CopyError::Io(format!("render {}: decode/encode failed", source.display()))
+    })?;
+    let tmp = part_path(dest);
+    fs::write(&tmp, &jpeg).map_err(|e| CopyError::Io(format!("write {}: {e}", tmp.display())))?;
+    finalize_atomic(&tmp, dest)
+}
+
+/// Decode → orient → crop → encode, returning the JPEG bytes. `EXPORT_QUALITY`
+/// is high so the re-encode is visually lossless against the cropped frame.
+/// Edge `u32::MAX` keeps full output resolution (no downscale) for the export.
+fn render_crop_jpeg(
+    source: &Path,
+    edit: &CropEdit,
+    orientation: dcs_domain::photo::Orientation,
+) -> Option<Vec<u8>> {
+    let oriented = imaging::decode_oriented_full(source, orientation)?;
+    let cropped = imaging::apply_crop(&oriented, edit, u32::MAX).into_rgba8();
+    imaging::encode_jpeg(&cropped, EXPORT_QUALITY)
+}
+
+/// JPEG quality for cropped export renders. Higher than the disposable thumbnail
+/// cache — this is a delivered file.
+const EXPORT_QUALITY: i32 = 92;
 
 enum CopyError {
     DestExists,
@@ -134,20 +179,28 @@ enum CopyError {
 fn copy_atomic(source: &Path, dest: &Path) -> Result<(), CopyError> {
     let tmp = part_path(dest);
     fs::copy(source, &tmp).map_err(|e| CopyError::Io(format!("copy {}: {e}", source.display())))?;
-    if let Ok(file) = File::open(&tmp) {
+    finalize_atomic(&tmp, dest)
+}
+
+/// Finish the atomic write of a populated `.part` file: fsync it, re-check the
+/// dest one last time (never overwrite), rename into place, then fsync the parent
+/// so the rename itself is durable. Shared by the copy and crop-render paths so
+/// the safety-critical "never overwrite, never torn" contract can't drift between
+/// them.
+fn finalize_atomic(tmp: &Path, dest: &Path) -> Result<(), CopyError> {
+    if let Ok(file) = File::open(tmp) {
         let _ = file.sync_all();
     }
-    // Re-check just before the rename: never overwrite.
     if dest.exists() {
-        let _ = fs::remove_file(&tmp);
+        let _ = fs::remove_file(tmp);
         return Err(CopyError::DestExists);
     }
-    fs::rename(&tmp, dest).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
+    fs::rename(tmp, dest).map_err(|e| {
+        let _ = fs::remove_file(tmp);
         CopyError::Io(format!("rename into {}: {e}", dest.display()))
     })?;
-    // Directory fsync makes the rename itself durable, the same atomic contract
-    // as saves; not all platforms permit it, so failure is non-fatal.
+    // Directory fsync makes the rename itself durable; not all platforms permit
+    // it, so failure is non-fatal.
     if let Some(parent) = dest.parent()
         && let Ok(handle) = File::open(parent)
     {

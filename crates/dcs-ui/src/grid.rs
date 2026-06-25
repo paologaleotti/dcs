@@ -29,6 +29,9 @@ use crate::theme;
 const PREFETCH_ROWS: usize = 5;
 /// Below this cell size the RAW badge is hidden (zoom-gated).
 const BADGE_MIN_CELL: f32 = 96.0;
+/// Below this cell size the crop badge is hidden — only the very smallest zoom,
+/// so the "this photo is edited" mark reads at every practical density.
+const CROP_BADGE_MIN_CELL: f32 = 84.0;
 /// At or above this cell size (logical points) the grid is "zoomed in" and
 /// requests sharp hi-res decodes for visible cells. Below it everything uses
 /// the cheap base thumbnail, so default browsing never pays for a full decode.
@@ -789,6 +792,9 @@ fn paint_cell(
     if info.raw_only && cell_rect.width() >= BADGE_MIN_CELL {
         paint_raw_badge(ui, cell_rect);
     }
+    if info.cropped && cell_rect.width() >= CROP_BADGE_MIN_CELL {
+        paint_crop_badge(ui, cell_rect);
+    }
 
     paint_verdict_glyph(ui, cell_rect, info.state);
     paint_tag_strips(ui, cell_rect, &info.tag_colors);
@@ -921,6 +927,57 @@ fn paint_raw_badge(ui: &Ui, cell_rect: Rect) {
         "R",
         FontId::monospace(size * 0.7),
         theme::TEXT_DIM,
+    );
+}
+
+/// The crop marker: two overlapping crop-corner brackets drawn (no font glyph,
+/// so it renders everywhere) in a cyan badge top-right, so an edited photo reads
+/// as cropped at a glance — the on-disk file differs from what's shown. Top-right
+/// keeps it clear of the RAW badge (top-left) and verdict glyph (bottom-right). A
+/// hover tooltip explains it and that exporting bakes the crop.
+fn paint_crop_badge(ui: &mut Ui, cell_rect: Rect) {
+    let badge = paint_crop_badge_at(ui, cell_rect);
+    ui.interact(
+        badge,
+        ui.id()
+            .with(("crop_badge", cell_rect.min.x as i32, cell_rect.min.y as i32)),
+        Sense::hover(),
+    )
+    .on_hover_text("Cropped — the crop is applied on export");
+}
+
+/// Draw just the cyan crop badge top-right of `rect` and return its box. Shared
+/// by the grid cell and the gallery filmstrip thumb so the edited mark reads
+/// identically in both. No tooltip — the caller adds one if it wants.
+pub(crate) fn paint_crop_badge_at(ui: &Ui, rect: Rect) -> Rect {
+    let size = (rect.width() * 0.16).clamp(12.0, 22.0);
+    let badge = Rect::from_min_size(
+        Pos2::new(rect.right() - size, rect.top()),
+        Vec2::splat(size),
+    );
+    ui.painter().rect_filled(badge, 0.0, theme::BADGE_BG);
+    paint_crop_glyph(ui, badge, theme::CROP_ACCENT);
+    badge
+}
+
+/// Two interlocking right-angle brackets — the universal crop-tool icon — drawn
+/// inside `area`. Font-independent so it can't render as a missing box.
+fn paint_crop_glyph(ui: &Ui, area: Rect, color: Color32) {
+    let g = area.shrink(area.width() * 0.26);
+    let stroke = Stroke::new((area.width() * 0.08).max(1.3), color);
+    let p = ui.painter();
+    let arm = g.width() * 0.62;
+    // Top-left bracket: down the left edge + along the top edge.
+    p.line_segment([g.left_top(), Pos2::new(g.left(), g.top() + arm)], stroke);
+    p.line_segment([g.left_top(), Pos2::new(g.left() + arm, g.top())], stroke);
+    // Bottom-right bracket: up the right edge + along the bottom edge.
+    p.line_segment(
+        [g.right_bottom(), Pos2::new(g.right(), g.bottom() - arm)],
+        stroke,
+    );
+    p.line_segment(
+        [g.right_bottom(), Pos2::new(g.right() - arm, g.bottom())],
+        stroke,
     );
 }
 

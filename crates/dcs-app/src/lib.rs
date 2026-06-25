@@ -5,6 +5,7 @@
 //!
 //! Depends DOWN on dcs-io + dcs-domain. Never the reverse.
 
+pub mod crops;
 pub mod cull;
 pub mod export;
 pub mod history;
@@ -26,6 +27,7 @@ pub use thumb_cache::ThumbView;
 // Domain types surfaced through `AppAction`/`Session`, so the UI names them via
 // the conductor rather than reaching into `dcs-domain`.
 pub use dcs_domain::burst::BurstKnobs;
+pub use dcs_domain::crops::{CropEdit, NormRect};
 pub use dcs_domain::export::{
     Collision, ExportError, ExportPlan, ExportRequest, FileSelection, Layout, NameTemplate,
     SkipReason, SkippedPhoto,

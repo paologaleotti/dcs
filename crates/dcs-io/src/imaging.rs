@@ -15,14 +15,20 @@ use std::sync::OnceLock;
 use std::thread::{self, JoinHandle, available_parallelism};
 
 use crossbeam_channel::{Receiver, Select, Sender, unbounded};
+use dcs_domain::crops::{CropEdit, SourceSampler, plan_crop};
 use dcs_domain::fingerprint::ContentFingerprint;
 use dcs_domain::photo::Orientation;
 use dcs_domain::thumb::ThumbImage;
-use image::DynamicImage;
 use image::imageops::FilterType;
+use image::{DynamicImage, RgbaImage};
+use rayon::prelude::*;
 use turbojpeg::{Decompressor, Image, PixelFormat, ScalingFactor, Subsamp};
 
 use crate::cache::{SharedCache, ThumbCache, ThumbTier};
+
+/// Hard ceiling on the source decode edge when a crop needs extra resolution, so
+/// a tiny crop window can't ask for an unbounded decode.
+const MAX_DECODE_EDGE: u32 = 8192;
 
 /// JPEG quality for cached thumbnail blobs. High enough that the cache is
 /// visually indistinguishable from a fresh decode, small enough that a 5–6k
@@ -56,6 +62,11 @@ pub struct DecodeRequest {
     pub cache: Option<SharedCache>,
     /// Which worker pool runs this decode.
     pub priority: DecodePriority,
+    /// The committed crop+straighten to bake into the decoded pixels, if any.
+    /// Applied after orientation, before the fit-resize. A cropped decode is
+    /// never disk-cached (it would need a crop-aware key); `cache_key` is
+    /// ignored when this is set.
+    pub crop: Option<CropEdit>,
 }
 
 /// Decodes thumbnails asynchronously. Requests carry an opaque caller key that
@@ -190,6 +201,13 @@ impl ThumbDecoder for ThumbDecoderPool {
 /// sized); a miss decodes the original, then encodes and stores it. The cache
 /// lock is taken only for the keyed get/put — the JPEG encode runs off-lock.
 fn decode_with_cache(req: DecodeRequest) -> Option<ThumbImage> {
+    // A cropped decode bakes a per-photo edit into the pixels; the disk cache is
+    // keyed only by content fingerprint + tier, so it can't represent the crop.
+    // Skip the cache entirely (display-only RAM caching covers the cost upstream).
+    if req.crop.is_some() {
+        return decode_thumbnail(&req.path, req.orientation, req.edge, req.crop.as_ref());
+    }
+
     if let (Some(fp), Some(cache)) = (req.cache_key, req.cache.as_ref()) {
         let cached = cache.lock().ok().and_then(|guard| guard.get(&fp, req.tier));
         if let Some(blob) = cached
@@ -199,7 +217,7 @@ fn decode_with_cache(req: DecodeRequest) -> Option<ThumbImage> {
         }
     }
 
-    let thumb = decode_thumbnail(&req.path, req.orientation, req.edge)?;
+    let thumb = decode_thumbnail(&req.path, req.orientation, req.edge, None)?;
 
     if let (Some(fp), Some(cache)) = (req.cache_key, req.cache.as_ref())
         && let Some(blob) = encode_blob(&thumb)
@@ -241,19 +259,68 @@ fn decode_blob(blob: &[u8]) -> Option<ThumbImage> {
 }
 
 /// Decode one thumbnail at the given pixel edge: libjpeg-turbo DCT-scaled
-/// decode, orientation baked in, contain-fit to an `edge × edge` box. Returns
-/// `None` for anything turbojpeg and the `image` fallback both reject (RAW,
-/// corrupt, missing).
-pub fn decode_thumbnail(path: &Path, orientation: Orientation, edge: u32) -> Option<ThumbImage> {
-    let img = decode_scaled(path, edge).or_else(|| image::open(path).ok())?;
-    Some(finish(img, orientation, edge))
+/// decode, orientation baked in, optional straighten+crop, contain-fit to an
+/// `edge × edge` box. Returns `None` for anything turbojpeg and the `image`
+/// fallback both reject (RAW, corrupt, missing).
+///
+/// When `crop` is set, the source is decoded at higher resolution (so the crop
+/// window still resolves to ~`edge` px) before the transform.
+pub fn decode_thumbnail(
+    path: &Path,
+    orientation: Orientation,
+    edge: u32,
+    crop: Option<&CropEdit>,
+) -> Option<ThumbImage> {
+    let decode_edge = crop.map_or(edge, |e| crop_decode_edge(e, edge));
+    let img = decode_scaled(path, decode_edge).or_else(|| image::open(path).ok())?;
+    let img = apply_orientation(img, orientation);
+    let img = match crop {
+        Some(edit) => apply_crop(&img.into_rgba8(), edit, edge),
+        None => img,
+    };
+    Some(finish(img, edge))
 }
 
-/// Apply orientation and contain-fit into an `edge × edge` box, never upscaling
-/// beyond it. The input is already RGBA, so `into_rgba8` moves rather than
-/// converts.
-fn finish(img: DynamicImage, orientation: Orientation, edge: u32) -> ThumbImage {
-    let img = apply_orientation(img, orientation);
+/// Decode a JPEG at full resolution with EXIF orientation baked into the pixels,
+/// as an `RgbaImage`. For the export render path, which needs the original
+/// resolution (no thumbnail downscale). `None` if the file can't be decoded.
+pub fn decode_oriented_full(path: &Path, orientation: Orientation) -> Option<RgbaImage> {
+    let img = decode_scaled(path, u32::MAX).or_else(|| image::open(path).ok())?;
+    Some(apply_orientation(img, orientation).into_rgba8())
+}
+
+/// Encode an RGBA image to a JPEG blob at the given quality. `None` if the codec
+/// rejects the buffer.
+pub fn encode_jpeg(img: &RgbaImage, quality: i32) -> Option<Vec<u8>> {
+    if img.width() == 0 || img.height() == 0 {
+        return None;
+    }
+    let image = Image {
+        pixels: img.as_raw().as_slice(),
+        width: img.width() as usize,
+        pitch: img.width() as usize * 4,
+        height: img.height() as usize,
+        format: PixelFormat::RGBA,
+    };
+    turbojpeg::compress(image, quality, Subsamp::Sub2x2)
+        .ok()
+        .map(|buf| buf.to_vec())
+}
+
+/// The source decode edge for a cropped thumbnail: scaled up by the inverse of
+/// the crop window's smaller normalized side, so the cropped region keeps ~`edge`
+/// resolution. Capped at [`MAX_DECODE_EDGE`].
+fn crop_decode_edge(edit: &CropEdit, edge: u32) -> u32 {
+    let min_side = edit.rect.w.min(edit.rect.h).max(0.05);
+    let scaled = (edge as f32 / min_side).ceil() as u32;
+    // `edge` can exceed the cap (a future caller / very large request); clamp the
+    // low bound too so the range can't invert and panic.
+    scaled.clamp(edge.min(MAX_DECODE_EDGE), MAX_DECODE_EDGE)
+}
+
+/// Contain-fit into an `edge × edge` box, never upscaling beyond it. The input is
+/// already RGBA, so `into_rgba8` moves rather than converts.
+fn finish(img: DynamicImage, edge: u32) -> ThumbImage {
     let resized = if img.width() > edge || img.height() > edge {
         img.resize(edge, edge, FilterType::Triangle)
     } else {
@@ -265,6 +332,79 @@ fn finish(img: DynamicImage, orientation: Orientation, edge: u32) -> ThumbImage 
         height: rgba.height(),
         rgba: rgba.into_raw(),
     }
+}
+
+/// Bake a straighten+crop into an oriented RGBA image. One bilinear resample
+/// handles rotation, crop, and downscaling together: each output pixel maps back
+/// through the inverse straighten rotation to a source point and is sampled.
+/// Output size is the crop window's pixel dims, scaled so its longest side is at
+/// most `edge` (no upscale). Pure pixel work — the geometry comes from
+/// [`plan_crop`], the single shared crop math path.
+pub fn apply_crop(src: &RgbaImage, edit: &CropEdit, edge: u32) -> DynamicImage {
+    let (sw, sh) = (src.width(), src.height());
+    let plan = plan_crop(sw, sh, edit);
+    // Output dims: the crop window, capped so the long side is ≤ edge.
+    let long = plan.out_w.max(plan.out_h).max(1);
+    let scale = (edge as f32 / long as f32).min(1.0);
+    let ow = ((plan.out_w as f32 * scale).round() as u32).max(1);
+    let oh = ((plan.out_h as f32 * scale).round() as u32).max(1);
+
+    // The straighten+crop geometry is the pure domain transform; this only walks
+    // output pixels and bilinear-fetches the source coordinate it returns. Rows
+    // are independent, so a full-res export (tens of millions of pixels) fans out
+    // across the rayon pool; the sampler is `Copy`/`Send` and the source is `Sync`.
+    let sampler = SourceSampler::new(sw, sh, edit.angle_deg);
+    let rect = edit.rect;
+    let raw = src.as_raw().as_slice();
+    let (sw_i, sh_i) = (sw as i32, sh as i32);
+    let row_bytes = ow as usize * 4;
+    let mut buf = vec![0u8; row_bytes * oh as usize];
+    buf.par_chunks_mut(row_bytes)
+        .enumerate()
+        .for_each(|(oy, row)| {
+            let ny = rect.y + (oy as f32 + 0.5) / oh as f32 * rect.h;
+            for ox in 0..ow as usize {
+                let nx = rect.x + (ox as f32 + 0.5) / ow as f32 * rect.w;
+                let (sx, sy) = sampler.source_at(nx, ny);
+                let px = sample_bilinear(raw, sw_i, sh_i, sx, sy);
+                row[ox * 4..ox * 4 + 4].copy_from_slice(&px);
+            }
+        });
+    // SAFETY-of-invariant: `buf` is exactly `ow * oh * 4` bytes, so `from_raw`
+    // cannot fail.
+    let img = RgbaImage::from_raw(ow, oh, buf).expect("buffer is ow*oh*4 RGBA bytes");
+    DynamicImage::ImageRgba8(img)
+}
+
+/// Bilinear-sample an RGBA `raw` buffer (`w`×`h`) at fractional `(x, y)`, clamping
+/// to the image edge so an off-image coordinate (rounding at the border) yields
+/// the nearest edge pixel rather than a transparent hole. Indexes the slice
+/// directly — no per-pixel `GenericImage` dispatch on the hot path.
+fn sample_bilinear(raw: &[u8], w: i32, h: i32, x: f32, y: f32) -> [u8; 4] {
+    let x0 = x.floor() as i32;
+    let y0 = y.floor() as i32;
+    let fx = x - x0 as f32;
+    let fy = y - y0 as f32;
+    let at = |ix: i32, iy: i32| -> [f32; 4] {
+        let cx = ix.clamp(0, w - 1);
+        let cy = iy.clamp(0, h - 1);
+        let o = ((cy * w + cx) * 4) as usize;
+        [
+            raw[o] as f32,
+            raw[o + 1] as f32,
+            raw[o + 2] as f32,
+            raw[o + 3] as f32,
+        ]
+    };
+    let p00 = at(x0, y0);
+    let p10 = at(x0 + 1, y0);
+    let p01 = at(x0, y0 + 1);
+    let p11 = at(x0 + 1, y0 + 1);
+    std::array::from_fn(|c| {
+        let top = p00[c] + (p10[c] - p00[c]) * fx;
+        let bot = p01[c] + (p11[c] - p01[c]) * fx;
+        (top + (bot - top) * fy).round().clamp(0.0, 255.0) as u8
+    })
 }
 
 thread_local! {

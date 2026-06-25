@@ -345,6 +345,14 @@ impl DcsApp {
                                 .on_hover_text(
                                     "Also copy XMP sidecars sitting next to each photo's files",
                                 );
+                            ui.checkbox(
+                                &mut self.export.include_uncropped_originals,
+                                "Include uncropped originals",
+                            )
+                            .on_hover_text(
+                                "For cropped photos, also copy the untouched original into an \
+                                 originals/ subfolder",
+                            );
                         });
 
                         section(ui, "Layout", |ui| {

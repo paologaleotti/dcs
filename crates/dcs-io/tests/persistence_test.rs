@@ -16,6 +16,7 @@ fn rec(id: u32, fp_seed: u8, verdict: AcceptState, jpeg: Option<&str>) -> PhotoR
         fingerprint: fp(fp_seed),
         verdict,
         tags: Vec::new(),
+        crop: None,
         jpeg: jpeg.map(std::path::PathBuf::from),
         raw: None,
     }

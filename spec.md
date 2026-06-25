@@ -62,8 +62,9 @@ the JPEG; RAW-only shows the embedded preview (no raw decode in v1).
 
 ### 2.2 Derived vs owned — the load-bearing rule
 
-- **Owned (persisted):** verdicts, tags + assignments, views. User
-  intent; mutations; undoable.
+- **Owned (persisted):** verdicts, tags + assignments, crops, views. User
+  intent; mutations; undoable. (Crop = a per-photo `CropEdit`; its rendered
+  pixels are *derived* and never persisted — see §2.14.)
 - **Derived (never persisted):** grouping, bursts, sort, titles, counts.
   Computed from metadata + settings; changing them is a display setting —
   instant, safe, nothing to confirm or undo.
@@ -215,10 +216,10 @@ channel.
 are not in the Esc chain** — they persist until a chip is explicitly
 removed, so over-pressing Esc can never destroy a built-up filter set.
 
-### 2.13 View modes: grid + gallery
+### 2.13 View modes: grid + gallery + crop
 
-A **view-mode switcher** lives in the top bar — `GRID | GALLERY` in v1;
-future modes (board) join it there. Gallery is a mode, not only an
+A **view-mode switcher** lives in the top bar — `GRID | GALLERY | CROP`
+in v1; future modes (board) join it there. Gallery is a mode, not only an
 overlay: switching to it opens on the focused photo (else the first
 visible).
 
@@ -239,8 +240,46 @@ visible).
   group, tags. Right-click → **copy the photo to the clipboard** (the
   decoded frame on screen; a UI-only side effect, not a registry command).
 
-Three orthogonal controls: zoom (view) · group/tag (structure) ·
-gallery (judging). Resist a fourth.
+- **Crop** to recompose: `C` from the focused photo (JPEG only — RAW-only
+  photos aren't croppable in v1). Shaped like the gallery — big frame, docked
+  filmstrip — with a tool bar (aspect presets `Free / Original / 1:1 / 3:2 /
+  4:3 / 16:9` + portrait flip, and a ±45° straighten slider precise to 0.1°)
+  and a crop overlay (rule-of-thirds grid, eight drag handles, dimmed
+  surround). The straighten rotates the image live via a GPU mesh — no CPU
+  re-decode while dragging. All edits clamp to the largest rectangle that fits
+  inside the rotated frame, so the result never exposes empty corners. `Enter`
+  applies, `Esc` cancels, `R` resets, `[`/`]` nudge the angle. See §2.14.
+
+Crop is judging-adjacent, not a fourth structural control: zoom (view) ·
+group/tag (structure) · gallery + crop (judging/finishing).
+
+### 2.14 Crop + straighten — owned, non-destructive, stateless renders
+
+Crop is **owned per-photo state**, modelled exactly like verdicts and tags: a
+`CropEdit { angle_deg, rect }` (straighten angle + a normalized crop window over
+the rotated bounding box) lives in `project.json`, is undoable through the one
+timeline (`Command::SetCrop` / `Patch::Crop`, append-only), and is true in every
+view. The original file on disk is **never** touched or deleted.
+
+**The crop IS the photo, everywhere.** The grid thumbnail, the gallery frame,
+and the export output all show the cropped framing; the full-frame original is
+visible only *inside* the crop editor, where you're explicitly editing. A
+**crop badge** (`⌗`) marks edited photos in the grid and gallery so the
+see-vs-disk difference is explicit.
+
+**Stateless renders — nothing rendered is persisted.** Cropped pixels are always
+derived from `original + CropEdit`:
+- **Display**: rendered in-memory and held in the disposable RAM thumb cache;
+  changing the edit invalidates that photo's cached thumbnails (and bumps the
+  decode epoch so an in-flight old-crop decode is discarded, never stored).
+- **Export**: the pure planner marks a cropped photo's JPEG op `RenderCrop`; the
+  executor decodes → orients → straightens → crops → re-encodes straight to the
+  destination. No staging files, no render directory. See §6.9.
+
+The geometry (bounding box, max-inset bound, output sizing, the sampling quad) is
+a pure, exhaustively-tested `dcs-domain::crops` module shared by the on-screen
+overlay, the display render, and the export render — one math path, so the
+preview and the output can never diverge.
 
 ## 3. UI design language — the analog contact sheet
 
@@ -445,11 +484,23 @@ none of it in `dcs-io` or `dcs-app`. The split:
   RAWs, collision cascades `-1 -2 -3`, template + split-layout
   interaction, empty scope) with zero mocks.
 - **`dcs-io` executes the plan and nothing else.** It walks the
-  `ExportPlan`'s operation list, copies each file (`.part` → fsync →
+  `ExportPlan`'s operation list, materializes each op (`.part` → fsync →
   rename, the atomic contract), emits progress events, and supports
   cancel. It makes **no decisions** — every path, rename, and skip was
   settled by the planner. The executor can't produce a wrong filename
   because it never computes one.
+
+  Each op carries an `OpKind`: `Copy` (the byte-for-byte default for
+  everything) or `RenderCrop { edit, orientation }` for a cropped photo's
+  JPEG. `RenderCrop` is the **one** op that touches pixels — it decodes,
+  applies EXIF orientation then the crop, and re-encodes to the dest (same
+  atomic, never-overwrite contract). This is a deliberate amendment to the
+  original "copy-only executor": the load-bearing promise is unchanged — the
+  pure planner still decides *everything* (which photos render, dest names,
+  collisions, the `originals/` subfolder when "include uncropped originals"
+  is on); the executor only runs the op kind it was handed. RAW never
+  renders; a cropped pair renders its JPEG and copies its RAW untouched. See
+  §2.14.
 - **`dcs-app` is the thin trigger.** It gathers the dialog state into an
   `ExportRequest`, calls the pure planner to get the live dry-run
   sentence shown in the dialog (so the preview *is* the plan — what you
@@ -471,6 +522,8 @@ missing/unreadable handling + fingerprint identity · time/tag/none
 grouping, smart day, timezone (IANA), derived bursts · explicit sort,
 zoom, bricks, square cells · tags + palette + simple tag manager
 (rename/recolor/delete) + merge-via-rename ·
+**crop + straighten (§2.14): owned, non-destructive, JPEG-only, rendered on
+export** ·
 A/X/unreviewed + AND/OR filters + solo · **local AI semantic text search
 (§11b): embedded SigLIP, per-project opt-in** · registry → keys + `Cmd+P` +
 two context menus · gallery + filmstrip + 1:1 · durable undo/redo ·
@@ -528,7 +581,7 @@ deferred to v1.1, decision #41).
 | 16 | Collapsed cover = first accepted, else first |
 | 17 | Burst spans segment per group; bricks at half gap; neutral accent |
 | 18 | **Undo durable across sessions (persisted `undo.log`); promptless design depends on it** |
-| 19 | Export: copy-only, never overwrite, honest skip counts; **flexible staged engine (§6)** |
+| 19 | Export: copy by default, never overwrite, honest skip counts; **flexible staged engine (§6)**; cropped JPEGs render on export (`RenderCrop` op) — the one pixel-touching op, planner still decides everything (#37) |
 | 20 | Gallery: key parity, visible order, filmstrip, 1:1 in v1 |
 | 21 | Square cells, contain-fit, EXIF orientation auto |
 | 22 | One registry → keys, palette, two context menus, **and a top menu bar (File/Edit/View/Tags/Help)**; every surface mirrors the registry with identical state-gating, nothing lives in only one |
@@ -541,7 +594,7 @@ deferred to v1.1, decision #41).
 | 29 | UI: dark neutral, square corners, mono data type, color = meaning only, no motion (§3) |
 | 30 | "Cluster" banned as a term in code and UI |
 | 31 | Grid is arrow-navigable: focus cursor (←→ visible order, ↑↓ by row), Shift extends, **Space opens gallery**; prefetch follows the cursor |
-| 32 | View-mode switcher in the top bar: grid \| gallery (board joins later) |
+| 32 | View-mode switcher in the top bar: grid \| gallery \| crop (board joins later) |
 | 33 | **File identity keyed on content fingerprint from import day one; rename-in-place keeps owned state (re-link UI is v1.1, the keying is not)** |
 | 34 | **Lock file carries a refreshed timestamp; stale after N minutes so a crash doesn't strand the project in read-only forever** |
 | 35 | **`MoveOnBoard` drags coalesce into one undo entry on drop; an aborted/interrupted drag commits nothing — positions roll back to pre-drag, no torn entry** |
@@ -551,6 +604,7 @@ deferred to v1.1, decision #41).
 | 39 | **AI semantic text search ships in v1 (§11b): local SigLIP embeddings via `candle`, the model **embedded in the binary** (pinned + SHA-256-verified + fp16 by `build.rs`; no runtime download). Per-project opt-in, persisted; indexing is lowest-priority (after thumbnails). The index is derived/disposable (cache table); ranking is pure in `dcs-domain`; the `Search` filter chip is no longer a scaffold. Auto-tagging + near-dup reuse the same index but stay v1.1 (§11c).** |
 | 40 | **Shipped in v1, beyond the original cut: a global recent-projects list (`Open Recent`, stored outside any project — moved up from v1.1 deferral); `tag-results` (batch-tag everything the active filter resolves to, plus a one-click "tag all as `<query>`" for a lone search chip); copy-photo-to-clipboard from the gallery (UI-only, no registry command); a second IANA `camera timezone` to anchor offset-less EXIF; a persistent top menu bar as a fourth registry surface (#22).** |
 | 41 | **Solo deferred to v1.1.** Spec'd across §2.8/2.9/2.12 but unbuilt in v1; the `S` key, the solo filter (ghosted non-soloed headers), the Esc-chain solo tail, and the `SoloGroup` export scope all move to v1.1. The header *"select members"* affordance (which solo built on) ships independently. |
+| 42 | **Crop + straighten ships in v1 (§2.14): a third view mode (`C`).** Owned, non-destructive `CropEdit` (angle + normalized rect) in `project.json`, undoable (`Command::SetCrop`, append-only). Stateless — rendered pixels are derived from `original + CropEdit`, never persisted: display caches in RAM (invalidated + epoch-bumped on edit), export renders via the `RenderCrop` op (the one pixel-touching executor path, #19). **JPEG only** (RAW-only photos aren't croppable). The crop *is* the photo in grid/gallery/export; a `⌗` badge marks edited photos; "include uncropped originals" export option drops untouched originals into `originals/`. Geometry is a pure, exhaustively-tested `dcs-domain::crops` module shared by overlay, display, and export — one math path. |
 
 ---
 
@@ -738,11 +792,13 @@ pub struct ExportRequest {
     multitag: MultiTagPlacement,            // DuplicatePerTag | PrimaryOnce
     collisions: SkipOrRename,               // overwrite doesn't exist
     naming: Option<NameTemplate>,           // tokens: {name}{date}{time}{group}{seq}{tag}
-    dest: PathBuf,                          // copy-only in v1
+    include_uncropped_originals: bool,      // also copy a cropped photo's original into originals/
+    dest: PathBuf,                          // copy by default; cropped JPEGs render (§6.9)
 }
 
 // Fully decided. Every path/rename/skip is settled here — io makes no choices.
-pub struct ExportOp { src: PathBuf, dst: PathBuf, role: FileRole }   // role = Jpeg|Raw|Sidecar
+// kind = Copy (default) | RenderCrop{edit,orientation} (cropped JPEG; the one pixel-touching op)
+pub struct ExportOp { src: PathBuf, dst: PathBuf, role: FileRole, kind: OpKind } // role = Jpeg|Raw|Sidecar
 pub struct ExportPlan {
     ops: Vec<ExportOp>,                     // ordered, dst collisions already resolved
     skipped: Vec<(PhotoId, SkipReason)>,    // e.g. RawOnly but no RAW — surfaced as "(show)"

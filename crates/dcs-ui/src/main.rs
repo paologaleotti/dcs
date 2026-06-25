@@ -11,6 +11,7 @@
 
 mod app;
 mod context_menu;
+mod crop;
 mod export;
 mod gallery;
 mod grid;

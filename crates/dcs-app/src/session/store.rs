@@ -82,6 +82,7 @@ impl Session {
         self.builder.forget(&ids);
         self.cull.forget(&ids);
         self.tags.forget(&ids);
+        self.crops.forget(&ids);
         self.history.forget(&ids);
         self.sel.clear();
         self.regroup();
@@ -249,6 +250,7 @@ impl Session {
                 group_title: title_of.get(&i).copied(),
                 primary_tag: primary_tags[k].as_deref(),
                 sidecars: &sidecar_lists[k],
+                crop: self.crops.crop_of(photos[i].id),
             })
             .collect();
         let root = self.root.as_deref().unwrap_or(Path::new(""));
@@ -357,6 +359,7 @@ impl Session {
                 fingerprint: p.fingerprint,
                 verdict: self.cull.state(p.id),
                 tags: self.tags.tags_of(p.id),
+                crop: self.crops.crop_of(p.id),
                 jpeg: relativize(p.files.jpeg.as_deref(), root),
                 raw: relativize(p.files.raw.as_deref(), root),
             })

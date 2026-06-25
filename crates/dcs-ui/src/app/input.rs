@@ -75,12 +75,55 @@ impl DcsApp {
         for action in keymap::actions_for_input(ctx) {
             self.dispatch(action, ctx);
         }
+        // The crop editor, when open, owns the keyboard (over the gallery).
+        if self.crop_edit.is_some() {
+            self.handle_crop_keys(ctx);
+            return;
+        }
         match self.view {
             // Grid geometry keys are a pure UI concern (they need the column
             // count), so they stay out of the registry. Space (open gallery) is a
             // registry binding, dispatched above.
             ViewMode::Grid => self.handle_grid_keys(ctx),
             ViewMode::Gallery => self.handle_gallery_keys(ctx),
+        }
+    }
+
+    /// Crop-editor keys: `Enter` applies, `Esc` cancels, `R` resets, `[`/`]`
+    /// nudge the straighten angle by 0.1°. The crop rect/handles are pointer
+    /// driven (in `crop::show`); these are the keyboard affordances.
+    fn handle_crop_keys(&mut self, ctx: &egui::Context) {
+        let Some(state) = self.crop_edit.as_mut() else {
+            self.exit_crop();
+            return;
+        };
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.exit_crop();
+            return;
+        }
+        if ctx.input(|i| i.key_pressed(Key::Enter)) {
+            let edit = state.to_edit();
+            let photo = state.photo;
+            self.session.set_crop(photo, Some(edit));
+            self.exit_crop();
+            return;
+        }
+        if ctx.input(|i| i.key_pressed(Key::R) && !i.modifiers.command) {
+            state.reset();
+            return;
+        }
+        let mut delta = 0.0;
+        if ctx.input(|i| i.key_pressed(Key::OpenBracket)) {
+            delta -= 0.1;
+        }
+        if ctx.input(|i| i.key_pressed(Key::CloseBracket)) {
+            delta += 0.1;
+        }
+        if delta != 0.0 {
+            state.angle_deg = (state.angle_deg + delta).clamp(
+                -dcs_domain::crops::MAX_ANGLE_DEG,
+                dcs_domain::crops::MAX_ANGLE_DEG,
+            );
         }
     }
 

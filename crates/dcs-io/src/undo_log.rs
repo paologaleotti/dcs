@@ -22,7 +22,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use dcs_domain::command::TagDelta;
+use dcs_domain::command::{CropChange, TagDelta};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -43,7 +43,7 @@ pub enum LogError {
 
 /// The undo + redo stacks reconstructed from the log. Each entry is one
 /// command's reversible [`Patch`]; the last element of each vec is the stack top.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Stacks {
     pub undo: Vec<Patch>,
     pub redo: Vec<Patch>,
@@ -59,6 +59,10 @@ enum LogRecord {
     /// Tag deltas.
     DoTag {
         deltas: Vec<TagDelta>,
+    },
+    /// Crop deltas (additive, like `DoTag`).
+    DoCrop {
+        changes: Vec<CropChange>,
     },
     Undo,
     Redo,
@@ -127,6 +131,10 @@ pub fn load(path: &Path) -> Result<Stacks, LogError> {
                 stacks.undo.push(Patch::Tag(deltas));
                 stacks.redo.clear();
             }
+            LogRecord::DoCrop { changes } => {
+                stacks.undo.push(Patch::Crop(changes));
+                stacks.redo.clear();
+            }
             LogRecord::Undo => {
                 if let Some(entry) = stacks.undo.pop() {
                     stacks.redo.push(entry);
@@ -172,6 +180,9 @@ fn record_of(patch: &Patch) -> LogRecord {
         },
         Patch::Tag(deltas) => LogRecord::DoTag {
             deltas: deltas.clone(),
+        },
+        Patch::Crop(changes) => LogRecord::DoCrop {
+            changes: changes.clone(),
         },
     }
 }

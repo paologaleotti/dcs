@@ -1,3 +1,4 @@
+use dcs_domain::crops::CropEdit;
 use dcs_domain::cull::AcceptState;
 use dcs_domain::photo::{Photo, PhotoId};
 use dcs_domain::thumb::ThumbImage;
@@ -202,6 +203,7 @@ impl Session {
             missing: photo.missing,
             tag_colors: self.tags.strip(photo.id),
             burst: self.bursts.get(&photo.id).copied(),
+            cropped: self.crops.has_crop(photo.id),
         })
     }
 
@@ -268,6 +270,7 @@ impl Session {
         };
         let path = path.to_path_buf();
         let orientation = photo.orientation;
+        let crop = self.crops.crop_of(id);
         self.hires.start(id);
         // Hi-res is viewport-ephemeral and its size tracks the zoom, so it is
         // not disk-cached (no stable tier to key it on); it lives only in RAM
@@ -281,6 +284,7 @@ impl Session {
             tier: ThumbTier::Gallery,
             cache: None,
             priority: DecodePriority::High,
+            crop,
         });
     }
 
@@ -423,6 +427,7 @@ impl Session {
         // The grid (base) tier is disk-cached by content fingerprint, so a
         // reopened folder paints from cached blobs instead of re-decoding.
         let cache_key = Some(photo.fingerprint);
+        let crop = self.crops.crop_of(id);
         self.base.start(id);
         self.decoder.request(DecodeRequest {
             key: encode_key(self.epoch, id, DecodeTier::Base),
@@ -433,13 +438,33 @@ impl Session {
             tier: ThumbTier::Grid,
             cache: self.cache.clone(),
             priority,
+            crop,
         });
+    }
+
+    /// Request an *uncropped* full gallery frame for the crop editor, sized to
+    /// `fit_edge` device pixels. The editor draws its overlay over the whole
+    /// original image, so it never bakes the committed crop. Shares the gallery
+    /// cache, so callers clear it on entering/leaving the editor (as the gallery
+    /// itself does) to avoid a cropped/uncropped collision on one `PhotoId`.
+    pub fn request_crop_source(&mut self, display_index: usize, fit_edge: u32) {
+        let edge = fit_edge.min(GALLERY_PREVIEW_EDGE);
+        self.request_gallery_core(display_index, edge, None);
     }
 
     /// Core gallery decode request: decode `display_index` at `edge` px on its
     /// longest side unless an at-least-as-large frame is already resident or in
-    /// flight. Not disk-cached — gallery frames are large and ephemeral.
+    /// flight. Bakes `crop` into the pixels when set. Not disk-cached — gallery
+    /// frames are large and ephemeral.
     fn request_gallery_at(&mut self, display_index: usize, edge: u32) {
+        let Some(&pool_index) = self.visible.get(display_index) else {
+            return;
+        };
+        let crop = self.crops.crop_of(self.builder.photos()[pool_index].id);
+        self.request_gallery_core(display_index, edge, crop);
+    }
+
+    fn request_gallery_core(&mut self, display_index: usize, edge: u32, crop: Option<CropEdit>) {
         let Some(&pool_index) = self.visible.get(display_index) else {
             return;
         };
@@ -472,6 +497,7 @@ impl Session {
             tier: ThumbTier::Gallery,
             cache: None,
             priority: DecodePriority::High,
+            crop,
         });
     }
 
@@ -504,6 +530,31 @@ impl Session {
                 self.imported.insert(photo.id);
             }
         }
+    }
+
+    /// Retire one photo's in-flight marker in a tier without storing pixels —
+    /// for a stale decode discarded at the epoch check. Keeps resident pixels.
+    pub(super) fn retire_inflight(&mut self, id: PhotoId, tier: DecodeTier) {
+        match tier {
+            DecodeTier::Base => self.base.fail(id),
+            DecodeTier::Hires => self.hires.fail(id),
+            DecodeTier::Gallery => {
+                self.gallery.fail(id);
+                self.gallery_edge.remove(&id);
+            }
+        }
+    }
+
+    /// Invalidate one photo's cached thumbnails across every tier after its crop
+    /// changed, and bump the decode epoch so an in-flight decode of the *old*
+    /// crop is discarded on arrival rather than stored. The next frame
+    /// re-requests the photo, baking in the new crop.
+    pub(super) fn invalidate_photo_thumbs(&mut self, id: PhotoId) {
+        self.epoch += 1;
+        self.base.invalidate(id);
+        self.hires.invalidate(id);
+        self.gallery.invalidate(id);
+        self.gallery_edge.remove(&id);
     }
 
     /// Fold a decode result into its tier's cache, retiring the in-flight marker

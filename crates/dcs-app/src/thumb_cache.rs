@@ -49,6 +49,15 @@ impl ThumbCache {
         self.inflight.contains(&id)
     }
 
+    /// Drop one photo's resident pixels and in-flight marker, so the next request
+    /// re-decodes it. Used when a crop edit changes and the baked thumbnail is
+    /// stale. A still-running decode for the old crop is discarded on arrival
+    /// because its marker is gone (the cache treats it as unsolicited).
+    pub(crate) fn invalidate(&mut self, id: PhotoId) {
+        self.resident.remove(&id);
+        self.inflight.remove(&id);
+    }
+
     /// True when a decode for `id` is neither resident nor already in flight — so
     /// one should be started. Touches the entry, keeping a present thumbnail
     /// recently used.

@@ -54,6 +54,7 @@ fn items<'a>(photos: &'a [Photo]) -> Vec<ExportItem<'a>> {
             group_title: None,
             primary_tag: None,
             sidecars: &[],
+            crop: None,
         })
         .collect()
 }
@@ -66,6 +67,7 @@ fn request(files: FileSelection, layout: Layout, collision: Collision) -> Export
         collision,
         template: None,
         sidecars: false,
+        include_uncropped_originals: false,
     }
 }
 
@@ -256,6 +258,7 @@ fn group_as_folders_sanitizes_the_group_title() {
         group_title: Some("Day 1 · 11/05/25"),
         primary_tag: None,
         sidecars: &[],
+        crop: None,
     };
     let req = request(
         FileSelection::Jpeg,
@@ -372,6 +375,7 @@ fn group_token_expands_and_falls_back_when_ungrouped() {
         group_title: Some("Day 1 · 11/05/25"),
         primary_tag: None,
         sidecars: &[],
+        crop: None,
     };
     let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
     req.template = Some(NameTemplate("{group}_{name}".to_string()));
@@ -393,6 +397,7 @@ fn tag_token_expands_and_falls_back_when_untagged() {
         group_title: None,
         primary_tag: Some("temple"),
         sidecars: &[],
+        crop: None,
     };
     let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
     req.template = Some(NameTemplate("{tag}_{name}".to_string()));
@@ -418,6 +423,7 @@ fn sidecars_ride_into_the_primary_folder_when_opted_in() {
         group_title: None,
         primary_tag: None,
         sidecars: std::slice::from_ref(&xmp),
+        crop: None,
     };
     let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
     req.sidecars = true;
@@ -439,6 +445,7 @@ fn sidecars_follow_the_template_rename_and_are_off_by_default() {
         group_title: None,
         primary_tag: None,
         sidecars: std::slice::from_ref(&xmp),
+        crop: None,
     };
     // Off by default: the sidecar is ignored.
     let off = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
@@ -473,12 +480,14 @@ fn a_skipped_photo_leaves_no_orphan_sidecar() {
             group_title: None,
             primary_tag: None,
             sidecars: std::slice::from_ref(&a_xmp),
+            crop: None,
         },
         ExportItem {
             photo: &dropped,
             group_title: None,
             primary_tag: None,
             sidecars: std::slice::from_ref(&b_xmp),
+            crop: None,
         },
     ];
     let mut req = request(FileSelection::Raw, Layout::Together, Collision::Rename);
@@ -506,12 +515,14 @@ fn sidecar_names_cascade_on_collision() {
             group_title: None,
             primary_tag: None,
             sidecars: std::slice::from_ref(&x1),
+            crop: None,
         },
         ExportItem {
             photo: &p2,
             group_title: None,
             primary_tag: None,
             sidecars: std::slice::from_ref(&x2),
+            crop: None,
         },
     ];
     let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
@@ -532,6 +543,7 @@ fn sidecar_rides_into_the_split_jpeg_folder() {
         group_title: None,
         primary_tag: None,
         sidecars: std::slice::from_ref(&xmp),
+        crop: None,
     };
     let mut req = request(FileSelection::Both, Layout::SplitJpegRaw, Collision::Rename);
     req.sidecars = true;
@@ -599,4 +611,133 @@ fn summary_reads_as_a_true_sentence() {
         plan.summary,
         "Copy 2 files (1 JPEG + 1 RAW) into \"/out\", split JPEG/RAW, rename on collision."
     );
+}
+
+// --- Crop ops (RenderCrop + include-uncropped-originals) ---------------------
+
+use dcs_domain::crops::{CropEdit, NormRect};
+use dcs_domain::export::OpKind;
+
+fn cropped_item<'a>(photo: &'a Photo, edit: CropEdit) -> ExportItem<'a> {
+    ExportItem {
+        photo,
+        group_title: None,
+        primary_tag: None,
+        sidecars: &[],
+        crop: Some(edit),
+    }
+}
+
+fn an_edit() -> CropEdit {
+    CropEdit {
+        angle_deg: 2.0,
+        rect: NormRect::centered(0.8, 0.8),
+    }
+}
+
+#[test]
+fn cropped_jpeg_becomes_a_render_op() {
+    let p = photo(1, Some("/src/a.JPG"), None);
+    let edit = an_edit();
+    let req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
+    let plan = plan_export(&[cropped_item(&p, edit)], Path::new("/src"), &req).unwrap();
+    assert_eq!(plan.ops.len(), 1);
+    assert_eq!(
+        plan.ops[0].kind,
+        OpKind::RenderCrop {
+            edit,
+            orientation: Default::default()
+        }
+    );
+    assert_eq!(plan.ops[0].dest, dest(&["a.JPG"]));
+    assert_eq!(plan.ops[0].role, FileRole::Jpeg);
+}
+
+#[test]
+fn cropped_pair_renders_jpeg_but_copies_raw() {
+    let p = photo(1, Some("/src/a.JPG"), Some("/src/a.RAF"));
+    let req = request(FileSelection::Both, Layout::Together, Collision::Rename);
+    let plan = plan_export(&[cropped_item(&p, an_edit())], Path::new("/src"), &req).unwrap();
+    assert_eq!(plan.ops.len(), 2);
+    assert!(matches!(plan.ops[0].kind, OpKind::RenderCrop { .. }));
+    assert_eq!(plan.ops[0].role, FileRole::Jpeg);
+    assert_eq!(plan.ops[1].kind, OpKind::Copy);
+    assert_eq!(plan.ops[1].role, FileRole::Raw);
+}
+
+#[test]
+fn include_uncropped_originals_adds_a_plain_copy_into_originals() {
+    let p = photo(1, Some("/src/a.JPG"), None);
+    let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
+    req.include_uncropped_originals = true;
+    let plan = plan_export(&[cropped_item(&p, an_edit())], Path::new("/src"), &req).unwrap();
+    assert_eq!(plan.ops.len(), 2);
+    assert!(matches!(plan.ops[0].kind, OpKind::RenderCrop { .. }));
+    assert_eq!(plan.ops[0].dest, dest(&["a.JPG"]));
+    // The original copy lands untouched under originals/.
+    assert_eq!(plan.ops[1].kind, OpKind::Copy);
+    assert_eq!(plan.ops[1].dest, dest(&["originals", "a.JPG"]));
+    assert_eq!(plan.ops[1].source, PathBuf::from("/src/a.JPG"));
+}
+
+#[test]
+fn originals_flag_is_inert_without_a_crop() {
+    let p = photo(1, Some("/src/a.JPG"), None);
+    let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
+    req.include_uncropped_originals = true;
+    let plan = plan_export(&items(&[p]), Path::new("/src"), &req).unwrap();
+    assert_eq!(plan.ops.len(), 1);
+    assert_eq!(plan.ops[0].kind, OpKind::Copy);
+}
+
+#[test]
+fn crop_summary_says_export_and_counts_cropped() {
+    let p = photo(1, Some("/src/a.JPG"), None);
+    let req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
+    let plan = plan_export(&[cropped_item(&p, an_edit())], Path::new("/src"), &req).unwrap();
+    assert_eq!(
+        plan.summary,
+        "Export 1 file (1 JPEG + 0 RAW) into \"/out\", one folder, rename on collision (1 cropped)."
+    );
+}
+
+#[test]
+fn include_originals_collisions_cascade_independently_of_renders() {
+    // Two cropped photos sharing a JPEG basename: the rendered dests collide and
+    // cascade (-1), and the originals/ copies collide and cascade independently in
+    // their own folder. One shared claim set, two folders.
+    let p1 = photo(1, Some("/src/a.JPG"), None);
+    let p2 = photo(2, Some("/src/sub/a.JPG"), None);
+    let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
+    req.include_uncropped_originals = true;
+    let items = vec![cropped_item(&p1, an_edit()), cropped_item(&p2, an_edit())];
+    let plan = plan_export(&items, Path::new("/src"), &req).unwrap();
+
+    // 2 renders + 2 originals copies.
+    assert_eq!(plan.ops.len(), 4);
+    assert_eq!(plan.ops[0].dest, dest(&["a.JPG"]));
+    assert_eq!(plan.ops[1].dest, dest(&["originals", "a.JPG"]));
+    assert_eq!(plan.ops[2].dest, dest(&["a-1.JPG"]));
+    assert_eq!(plan.ops[3].dest, dest(&["originals", "a-1.JPG"]));
+    // The render is a RenderCrop, the original is a plain Copy.
+    assert!(matches!(plan.ops[0].kind, OpKind::RenderCrop { .. }));
+    assert_eq!(plan.ops[1].kind, OpKind::Copy);
+    // Two renamed dests (a-1.JPG and originals/a-1.JPG).
+    assert_eq!(plan.collisions, 2);
+}
+
+#[test]
+fn include_originals_under_skip_drops_the_colliding_original() {
+    // With Skip policy a pre-claimed originals/ name is dropped, not renamed.
+    let p1 = photo(1, Some("/src/a.JPG"), None);
+    let p2 = photo(2, Some("/src/sub/a.JPG"), None);
+    let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Skip);
+    req.include_uncropped_originals = true;
+    let items = vec![cropped_item(&p1, an_edit()), cropped_item(&p2, an_edit())];
+    let plan = plan_export(&items, Path::new("/src"), &req).unwrap();
+    // photo1: render a.JPG + originals/a.JPG. photo2: both names taken → both
+    // dropped, so only the two photo1 ops remain.
+    assert_eq!(plan.ops.len(), 2);
+    assert_eq!(plan.ops[0].dest, dest(&["a.JPG"]));
+    assert_eq!(plan.ops[1].dest, dest(&["originals", "a.JPG"]));
 }

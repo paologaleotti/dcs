@@ -1,6 +1,7 @@
 //! The single durable undo timeline (#10, #18): one stack reverses both verdict
 //! and tag mutations, in order, with PhotoId dedup and no-op suppression.
 
+use dcs_app::crops::CropStore;
 use dcs_app::cull::Cull;
 use dcs_app::history::History;
 use dcs_app::tags::TagStore;
@@ -14,6 +15,7 @@ struct Env {
     h: History,
     c: Cull,
     t: TagStore,
+    cr: CropStore,
 }
 
 impl Env {
@@ -22,16 +24,21 @@ impl Env {
             h: History::new(),
             c: Cull::new(),
             t: TagStore::new(),
+            cr: CropStore::new(),
         }
     }
     fn run(&mut self, cmd: Command) -> Option<Patch> {
-        self.h.dispatch(cmd, &mut self.c, &mut self.t)
+        self.h.dispatch(cmd, &mut self.c, &mut self.t, &mut self.cr)
     }
     fn undo(&mut self) -> bool {
-        self.h.undo(&mut self.c, &mut self.t)
+        self.h
+            .undo(&mut self.c, &mut self.t, &mut self.cr)
+            .is_some()
     }
     fn redo(&mut self) -> bool {
-        self.h.redo(&mut self.c, &mut self.t)
+        self.h
+            .redo(&mut self.c, &mut self.t, &mut self.cr)
+            .is_some()
     }
     /// Create a tag and return its id.
     fn tag(&mut self, name: &str) -> TagId {
@@ -229,4 +236,68 @@ fn from_stacks_seeds_undo_and_redo() {
     let h = History::from_stacks(undo, vec![]);
     assert_eq!(h.undo_depth(), 1);
     assert!(h.can_undo());
+}
+
+#[test]
+fn crop_dispatch_undo_redo_round_trips() {
+    use dcs_domain::crops::{CropEdit, NormRect};
+
+    let mut e = Env::new();
+    let edit = CropEdit {
+        angle_deg: 4.0,
+        rect: NormRect::centered(0.6, 0.6),
+    };
+    // Set a crop on photo 1.
+    let patch = e
+        .run(Command::SetCrop(vec![PhotoId(1)], Some(edit)))
+        .expect("a real crop records a patch");
+    assert!(matches!(patch, Patch::Crop(ref c) if c.len() == 1));
+    assert_eq!(e.cr.crop_of(PhotoId(1)), Some(edit));
+
+    // Undo clears it; redo restores it.
+    assert!(e.undo());
+    assert_eq!(e.cr.crop_of(PhotoId(1)), None);
+    assert!(e.redo());
+    assert_eq!(e.cr.crop_of(PhotoId(1)), Some(edit));
+}
+
+#[test]
+fn setting_the_same_crop_again_is_a_noop() {
+    use dcs_domain::crops::{CropEdit, NormRect};
+
+    let mut e = Env::new();
+    let edit = CropEdit {
+        angle_deg: 0.0,
+        rect: NormRect::centered(0.5, 0.5),
+    };
+    assert!(
+        e.run(Command::SetCrop(vec![PhotoId(1)], Some(edit)))
+            .is_some()
+    );
+    // Re-applying the identical crop moves nothing → no undo entry.
+    assert!(
+        e.run(Command::SetCrop(vec![PhotoId(1)], Some(edit)))
+            .is_none()
+    );
+}
+
+#[test]
+fn crop_dedups_duplicate_photo_ids() {
+    use dcs_domain::crops::{CropEdit, NormRect};
+
+    let mut e = Env::new();
+    let edit = CropEdit {
+        angle_deg: 1.0,
+        rect: NormRect::centered(0.7, 0.7),
+    };
+    let patch = e
+        .run(Command::SetCrop(
+            vec![PhotoId(1), PhotoId(1), PhotoId(1)],
+            Some(edit),
+        ))
+        .expect("records once");
+    match patch {
+        Patch::Crop(c) => assert_eq!(c.len(), 1, "deduped to a single photo"),
+        _ => panic!("expected a crop patch"),
+    }
 }

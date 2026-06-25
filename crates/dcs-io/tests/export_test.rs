@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::Duration;
 
-use dcs_domain::export::{ExportOp, ExportPlan, FileRole};
+use dcs_domain::export::{ExportOp, ExportPlan, FileRole, OpKind};
 use dcs_io::export::{ExportEvent, ExportHandle, SkipKind, run_export};
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -23,7 +23,12 @@ fn write(path: &Path, contents: &str) {
 }
 
 fn op(source: PathBuf, dest: PathBuf, role: FileRole) -> ExportOp {
-    ExportOp { source, dest, role }
+    ExportOp {
+        source,
+        dest,
+        role,
+        kind: OpKind::Copy,
+    }
 }
 
 fn plan(ops: Vec<ExportOp>, dest: PathBuf) -> ExportPlan {
@@ -229,6 +234,109 @@ fn cancel_stops_early_and_finishes_cleanly() {
     // the whole plan, and the worker always finishes.
     assert!(events.len() <= total);
     assert!(!handle.is_running());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- RenderCrop executor path ------------------------------------------------
+
+fn write_real_jpeg(path: &Path, w: u32, h: u32) {
+    use image::{Rgb, RgbImage};
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    let mut img = RgbImage::new(w, h);
+    for (x, y, px) in img.enumerate_pixels_mut() {
+        *px = Rgb([(x % 256) as u8, (y % 256) as u8, 96]);
+    }
+    img.save(path).unwrap();
+}
+
+#[test]
+fn render_crop_writes_a_valid_cropped_jpeg() {
+    use dcs_domain::crops::{CropEdit, NormRect};
+    use dcs_domain::photo::Orientation;
+
+    let dir = temp_dir("render_crop");
+    let src = dir.join("in.jpg");
+    let dest = dir.join("out.jpg");
+    write_real_jpeg(&src, 1200, 800);
+
+    let edit = CropEdit {
+        angle_deg: 0.0,
+        rect: NormRect::centered(0.5, 0.5),
+    };
+    let crop_op = ExportOp {
+        source: src,
+        dest: dest.clone(),
+        role: FileRole::Jpeg,
+        kind: OpKind::RenderCrop {
+            edit,
+            orientation: Orientation::Normal,
+        },
+    };
+
+    let handle = run_export(plan(vec![crop_op], dir.clone()));
+    let events = drain(&handle);
+    assert_eq!(
+        events,
+        vec![ExportEvent::Copied {
+            role: FileRole::Jpeg
+        }]
+    );
+
+    // The output is a real, decodable JPEG, cropped to ~half the source dims.
+    let out = image::open(&dest).expect("output is a valid jpeg");
+    assert!(
+        out.width() <= 700 && out.width() >= 500,
+        "w={}",
+        out.width()
+    );
+    assert!(
+        out.height() <= 460 && out.height() >= 340,
+        "h={}",
+        out.height()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn render_crop_never_overwrites_an_existing_dest() {
+    use dcs_domain::crops::{CropEdit, NormRect};
+    use dcs_domain::photo::Orientation;
+
+    let dir = temp_dir("render_crop_no_clobber");
+    let src = dir.join("in.jpg");
+    let dest = dir.join("out.jpg");
+    write_real_jpeg(&src, 600, 400);
+    write(&dest, "precious existing file");
+
+    let crop_op = ExportOp {
+        source: src,
+        dest: dest.clone(),
+        role: FileRole::Jpeg,
+        kind: OpKind::RenderCrop {
+            edit: CropEdit {
+                angle_deg: 1.0,
+                rect: NormRect::centered(0.8, 0.8),
+            },
+            orientation: Orientation::Normal,
+        },
+    };
+    let handle = run_export(plan(vec![crop_op], dir.clone()));
+    let events = drain(&handle);
+    assert_eq!(
+        events,
+        vec![ExportEvent::Skipped {
+            reason: SkipKind::DestExists
+        }]
+    );
+    // The original bytes survive untouched.
+    assert_eq!(
+        std::fs::read_to_string(&dest).unwrap(),
+        "precious existing file"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

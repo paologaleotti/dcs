@@ -67,6 +67,11 @@ pub struct DcsApp {
     gallery_textures: TextureCache,
     /// Gallery zoom: `false` = contain-fit, `true` = 1:1 (`Z` toggles).
     gallery_full: bool,
+    /// The live crop-editor working state. Crop is not a view mode — it's a
+    /// transient editor layered over the gallery: when this is `Some` the central
+    /// area renders the editor instead of `view`, and committing/cancelling drops
+    /// it back to the gallery. Ephemeral; committed as one `SetCrop` on apply.
+    crop_edit: Option<crate::crop::CropEditState>,
     /// Filmstrip dock collapsed (ephemeral UI).
     strip_collapsed: bool,
     cell: f32,
@@ -148,6 +153,7 @@ impl DcsApp {
             // caches from together pinning ~1.5 GB.
             gallery_textures: TextureCache::with_budget(GALLERY_TEXTURE_BYTES),
             gallery_full: false,
+            crop_edit: None,
             strip_collapsed: false,
             cell: 92.0,
             debug: false,
@@ -343,6 +349,7 @@ impl DcsApp {
                     self.enter_gallery();
                 }
             }
+            E::EnterCrop => self.enter_crop(),
             E::ShowMetadata => self.show_metadata = true,
             E::ShowAbout => self.show_about = true,
             E::ShowShortcuts => self.show_shortcuts = true,

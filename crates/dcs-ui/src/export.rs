@@ -17,6 +17,8 @@ pub struct ExportDialog {
     pub template_on: bool,
     pub template: String,
     pub sidecars: bool,
+    /// Also copy the untouched original of every cropped photo into `originals/`.
+    pub include_uncropped_originals: bool,
     pub dest: Option<PathBuf>,
 }
 
@@ -31,6 +33,7 @@ impl Default for ExportDialog {
             template_on: false,
             template: String::new(),
             sidecars: false,
+            include_uncropped_originals: false,
             dest: None,
         }
     }
@@ -49,6 +52,7 @@ impl ExportDialog {
             collision: self.collision,
             template,
             sidecars: self.sidecars,
+            include_uncropped_originals: self.include_uncropped_originals,
         })
     }
 }

@@ -49,6 +49,7 @@ fn request(out: &Path, files: FileSelection, layout: Layout) -> ExportRequest {
         collision: Collision::Rename,
         template: None,
         sidecars: false,
+        include_uncropped_originals: false,
     }
 }
 
