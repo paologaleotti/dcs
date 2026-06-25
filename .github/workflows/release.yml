@@ -6,7 +6,10 @@ name: Release
 #
 # Packaging is done by cargo-packager: .dmg (macOS), NSIS installer (Windows),
 # AppImage + .deb (Linux). It packages a prebuilt binary — it does not compile —
-# so each job builds the release binary first, then packages target/release/dcs.
+# so each job builds the release binary first, then packages the per-target
+# target/<triple>/release/dcs. macOS ships separate arm64 + x86_64 dmgs (one
+# matrix row each) rather than a universal binary, so the embedded model isn't
+# duplicated per slice.
 on:
   push:
     branches: [release]
@@ -38,12 +41,19 @@ jobs:
         include:
           - os: ubuntu-latest
             name: linux-x86_64
-            formats: deb appimage
+            target: x86_64-unknown-linux-gnu
+            formats: deb,appimage
           - os: macos-latest
             name: macos-arm64
+            target: aarch64-apple-darwin
+            formats: dmg
+          - os: macos-latest
+            name: macos-x86_64
+            target: x86_64-apple-darwin
             formats: dmg
           - os: windows-latest
             name: windows-x86_64
+            target: x86_64-pc-windows-msvc
             formats: nsis
     steps:
       - uses: actions/checkout@v4
@@ -68,6 +78,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
@@ -108,7 +120,7 @@ jobs:
         shell: bash
         env:
           DCS_MODEL_DIR: ${{ github.workspace }}/model
-        run: cargo build --release --locked -p dcs-ui --bin dcs
+        run: cargo build --release --locked -p dcs-ui --bin dcs --target ${{ matrix.target }}
 
       - name: Install cargo-packager
         shell: bash
@@ -134,7 +146,7 @@ jobs:
         # --out-dir is resolved relative to the package manifest, not the cwd, so
         # pass an absolute path to land artifacts in the workspace-root dist/ that
         # the staging/archive/upload steps below read from.
-        run: cargo packager --release --formats ${{ matrix.formats }} --out-dir "$GITHUB_WORKSPACE/dist"
+        run: cargo packager --release --target ${{ matrix.target }} --formats ${{ matrix.formats }} --out-dir "$GITHUB_WORKSPACE/dist"
 
       # The release binary bundles the SigLIP model (Apache-2.0), so its
       # attribution + license text must accompany the distribution.
@@ -148,12 +160,12 @@ jobs:
       # Portable archive: the raw binary for users who don't want an installer.
       - name: Package archive (unix)
         if: runner.os != 'Windows'
-        run: tar -czf "dist/dcs-${{ matrix.name }}.tar.gz" -C target/release dcs
+        run: tar -czf "dist/dcs-${{ matrix.name }}.tar.gz" -C "target/${{ matrix.target }}/release" dcs
 
       - name: Package archive (windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path target/release/dcs.exe -DestinationPath "dist/dcs-${{ matrix.name }}.zip"
+        run: Compress-Archive -Path "target/${{ matrix.target }}/release/dcs.exe" -DestinationPath "dist/dcs-${{ matrix.name }}.zip"
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
