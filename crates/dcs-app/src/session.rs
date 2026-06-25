@@ -249,6 +249,12 @@ pub struct Session {
     tags: TagStore,
     /// Owned crop store: per-photo crop+straighten. Reset per folder.
     crops: CropStore,
+    /// Per-photo decode generation, bumped when a photo's crop changes. Packed
+    /// into each decode key so a stale decode of the *old* crop is discarded on
+    /// arrival — scoping crop invalidation to the one photo, instead of bumping
+    /// the global `epoch` (which would flush every in-flight decode). Cleared per
+    /// folder. Absent == 0.
+    crop_gen: HashMap<PhotoId, u32>,
     /// Unified durable undo/redo timeline over verdict + tag + crop mutations.
     history: History,
     /// Ephemeral focus cursor + selection.
@@ -367,6 +373,7 @@ impl Session {
             cull: Cull::new(),
             tags: TagStore::new(),
             crops: CropStore::new(),
+            crop_gen: HashMap::new(),
             history: History::new(),
             sel: Selection::new(),
             filter: Filter::default(),
@@ -446,6 +453,7 @@ impl Session {
         self.bg_cursor = 0;
         self.imported.clear();
         self.sidecar_cache.borrow_mut().clear();
+        self.crop_gen.clear();
         self.epoch += 1;
         self.dirty = false;
 
@@ -527,13 +535,20 @@ impl Session {
             self.regroup();
         }
         for (key, image) in self.decoder.poll() {
-            let (epoch, id, tier) = decode_key(key);
+            let (epoch, generation, id, tier) = decode_key(key);
             if epoch != self.epoch {
-                // Stale decode (a previously opened folder, or a crop edit bumped
-                // the epoch). Drop the pixels but retire the in-flight marker so
-                // the photo can be re-requested under the current epoch — else it
-                // would be stuck forever neither resident nor re-requested.
+                // Stale decode from a previously opened folder. Retire the in-flight
+                // marker so the photo can be re-requested under the current epoch —
+                // else it would be stuck neither resident nor re-requested.
                 self.retire_inflight(id, tier);
+                continue;
+            }
+            if generation != self.crop_gen_key(id) {
+                // A decode of this photo's *previous* crop, superseded by a re-edit.
+                // Drop it without retiring: the re-edit already invalidated the
+                // marker, and the new-crop decode (if the photo's still wanted) will
+                // retire it on arrival. Other photos are untouched — this is why
+                // crop invalidation no longer bumps the global epoch.
                 continue;
             }
             self.absorb_thumb(id, tier, image);
@@ -545,6 +560,14 @@ impl Session {
         // Indexing is the lowest priority: only sweep once every thumbnail is warm.
         self.maybe_start_indexing();
         self.poll_export();
+    }
+
+    /// This photo's current crop generation, masked to the 15 bits the decode key
+    /// carries. Absent == 0. Packed into every decode request for the photo so a
+    /// result can be matched against the live generation on arrival.
+    pub(crate) fn crop_gen_key(&self, id: PhotoId) -> u64 {
+        const KEY_GEN_MASK: u64 = 0x7FFF;
+        (self.crop_gen.get(&id).copied().unwrap_or(0) as u64) & KEY_GEN_MASK
     }
 
     pub fn is_scanning(&self) -> bool {

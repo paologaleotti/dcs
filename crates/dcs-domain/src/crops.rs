@@ -101,6 +101,28 @@ impl CropEdit {
             && (self.rect.h - 1.0).abs() < 1e-4
     }
 
+    /// A stable 64-bit token of this edit, for keying derived caches (the disk
+    /// thumbnail cache folds it into the content key so a cropped thumbnail is
+    /// cached per distinct crop). Stable across runs — folds the raw bit patterns
+    /// with FNV-1a, never a randomly-seeded hasher.
+    pub fn cache_token(&self) -> u64 {
+        let mut acc: u64 = 0xcbf2_9ce4_8422_2325;
+        let fields = [
+            self.angle_deg.to_bits(),
+            self.rect.x.to_bits(),
+            self.rect.y.to_bits(),
+            self.rect.w.to_bits(),
+            self.rect.h.to_bits(),
+        ];
+        for word in fields {
+            for byte in word.to_le_bytes() {
+                acc ^= byte as u64;
+                acc = acc.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        acc
+    }
+
     /// Clamp the angle into range and the rect into `0..=1`.
     pub fn sanitized(self) -> CropEdit {
         let angle_deg = self.angle_deg.clamp(-MAX_ANGLE_DEG, MAX_ANGLE_DEG);

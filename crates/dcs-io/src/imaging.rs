@@ -63,9 +63,9 @@ pub struct DecodeRequest {
     /// Which worker pool runs this decode.
     pub priority: DecodePriority,
     /// The committed crop+straighten to bake into the decoded pixels, if any.
-    /// Applied after orientation, before the fit-resize. A cropped decode is
-    /// never disk-cached (it would need a crop-aware key); `cache_key` is
-    /// ignored when this is set.
+    /// Applied after orientation, before the fit-resize. When `cache_key` is also
+    /// set the result is disk-cached under a key that folds the crop, so each
+    /// distinct crop gets its own entry.
     pub crop: Option<CropEdit>,
 }
 
@@ -197,19 +197,25 @@ impl ThumbDecoder for ThumbDecoderPool {
 }
 
 /// Resolve a thumbnail, going through the disk cache when the request carries an
-/// identity. A cache hit decodes the stored JPEG blob (already oriented and
-/// sized); a miss decodes the original, then encodes and stores it. The cache
+/// identity. A cache hit decodes the stored JPEG blob (already oriented, cropped,
+/// and sized); a miss decodes the original, then encodes and stores it. The cache
 /// lock is taken only for the keyed get/put — the JPEG encode runs off-lock.
+///
+/// A cropped decode bakes a per-photo edit into the pixels; it still caches, under
+/// a content key that folds the crop ([`crop_cache_key`]) so each distinct crop
+/// gets its own entry and an unedited reopen of the folder paints the cropped
+/// thumbnail straight from disk.
 fn decode_with_cache(req: DecodeRequest) -> Option<ThumbImage> {
-    // A cropped decode bakes a per-photo edit into the pixels; the disk cache is
-    // keyed only by content fingerprint + tier, so it can't represent the crop.
-    // Skip the cache entirely (display-only RAM caching covers the cost upstream).
-    if req.crop.is_some() {
-        return decode_thumbnail(&req.path, req.orientation, req.edge, req.crop.as_ref());
-    }
+    let key = req.cache_key.map(|fp| match req.crop.as_ref() {
+        Some(crop) => crop_cache_key(&fp, crop),
+        None => fp,
+    });
 
-    if let (Some(fp), Some(cache)) = (req.cache_key, req.cache.as_ref()) {
-        let cached = cache.lock().ok().and_then(|guard| guard.get(&fp, req.tier));
+    if let (Some(key), Some(cache)) = (key, req.cache.as_ref()) {
+        let cached = cache
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(&key, req.tier));
         if let Some(blob) = cached
             && let Some(thumb) = decode_blob(&blob)
         {
@@ -217,15 +223,25 @@ fn decode_with_cache(req: DecodeRequest) -> Option<ThumbImage> {
         }
     }
 
-    let thumb = decode_thumbnail(&req.path, req.orientation, req.edge, None)?;
+    let thumb = decode_thumbnail(&req.path, req.orientation, req.edge, req.crop.as_ref())?;
 
-    if let (Some(fp), Some(cache)) = (req.cache_key, req.cache.as_ref())
+    if let (Some(key), Some(cache)) = (key, req.cache.as_ref())
         && let Some(blob) = encode_blob(&thumb)
         && let Ok(guard) = cache.lock()
     {
-        guard.put(&fp, req.tier, &blob);
+        guard.put(&key, req.tier, &blob);
     }
     Some(thumb)
+}
+
+/// Fold a crop into a content fingerprint so a cropped thumbnail keys its own disk
+/// cache entry, distinct from the uncropped one and from other crops. Stable
+/// across runs (blake3 over the fingerprint + the edit's [`CropEdit::cache_token`]).
+fn crop_cache_key(fp: &ContentFingerprint, crop: &CropEdit) -> ContentFingerprint {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(fp.as_bytes());
+    hasher.update(&crop.cache_token().to_le_bytes());
+    ContentFingerprint::from_bytes(*hasher.finalize().as_bytes())
 }
 
 /// Encode an already-prepared RGBA thumbnail to a JPEG blob for the cache.

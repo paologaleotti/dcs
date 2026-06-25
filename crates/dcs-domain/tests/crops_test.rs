@@ -527,3 +527,33 @@ fn drag_ratio_lock_is_inert_on_a_degenerate_ratio() {
     // Falls through to the free result (no NaN, no panic).
     assert!(out.w.is_finite() && out.h.is_finite());
 }
+
+// --- cache_token (disk-cache discriminator for cropped thumbnails) -----------
+
+#[test]
+fn cache_token_is_stable_and_distinguishes_edits() {
+    let a = CropEdit {
+        angle_deg: 2.0,
+        rect: NormRect::centered(0.8, 0.8),
+    };
+    // Same edit → same token (stable; the disk cache relies on this across runs).
+    assert_eq!(a.cache_token(), a.cache_token());
+    let same = CropEdit {
+        angle_deg: 2.0,
+        rect: NormRect::centered(0.8, 0.8),
+    };
+    assert_eq!(a.cache_token(), same.cache_token());
+    // A different angle or rect → a different token.
+    let diff_angle = CropEdit {
+        angle_deg: 2.5,
+        ..a
+    };
+    let diff_rect = CropEdit {
+        rect: NormRect::centered(0.7, 0.8),
+        ..a
+    };
+    assert_ne!(a.cache_token(), diff_angle.cache_token());
+    assert_ne!(a.cache_token(), diff_rect.cache_token());
+    // Identity has its own token, distinct from any real crop.
+    assert_ne!(CropEdit::identity().cache_token(), a.cache_token());
+}

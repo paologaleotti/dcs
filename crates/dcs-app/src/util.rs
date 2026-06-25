@@ -35,17 +35,27 @@ impl DecodeTier {
     }
 }
 
-/// Pack a folder epoch, a `PhotoId`, and the decode tier into one key. The epoch
-/// lets the session discard thumbnails decoded for a folder that has since been
-/// closed (ids restart at 0 per folder); the tier bits route the result to the
-/// right cache.
-pub(crate) fn encode_key(epoch: u64, id: PhotoId, tier: DecodeTier) -> u64 {
-    (epoch << 34) | ((id.0 as u64) << 2) | tier.bits()
+/// 15-bit mask for the per-key generation fields (epoch, crop gen).
+const GEN_MASK: u64 = 0x7FFF;
+
+/// Pack a folder epoch, per-photo crop generation, `PhotoId`, and decode tier into
+/// one decode key (echoed back with the result). The **epoch** discards
+/// thumbnails decoded for a since-closed folder (ids restart at 0 per folder); the
+/// **crop generation** discards a stale decode of a photo's *previous* crop after
+/// it's been re-edited, without disturbing any other photo's in-flight decodes;
+/// the tier bits route the result to the right cache. Epoch and gen are 15 bits
+/// each (ample per session); `id` is the full 32, `tier` the low 2.
+pub(crate) fn encode_key(epoch: u64, generation: u64, id: PhotoId, tier: DecodeTier) -> u64 {
+    ((epoch & GEN_MASK) << 49)
+        | ((generation & GEN_MASK) << 34)
+        | ((id.0 as u64) << 2)
+        | tier.bits()
 }
 
-pub(crate) fn decode_key(key: u64) -> (u64, PhotoId, DecodeTier) {
+pub(crate) fn decode_key(key: u64) -> (u64, u64, PhotoId, DecodeTier) {
     (
-        key >> 34,
+        (key >> 49) & GEN_MASK,
+        (key >> 34) & GEN_MASK,
         PhotoId(((key >> 2) & 0xFFFF_FFFF) as u32),
         DecodeTier::from_bits(key),
     )
@@ -326,25 +336,46 @@ mod tests {
     fn decode_key_round_trips_every_tier() {
         for tier in [DecodeTier::Base, DecodeTier::Hires, DecodeTier::Gallery] {
             assert_eq!(
-                decode_key(encode_key(7, PhotoId(123), tier)),
-                (7, PhotoId(123), tier)
+                decode_key(encode_key(7, 3, PhotoId(123), tier)),
+                (7, 3, PhotoId(123), tier)
             );
         }
     }
 
     #[test]
-    fn keys_differ_by_epoch_and_tier_for_same_id() {
+    fn keys_differ_by_epoch_gen_and_tier_for_same_id() {
         assert_ne!(
-            encode_key(1, PhotoId(5), DecodeTier::Base),
-            encode_key(2, PhotoId(5), DecodeTier::Base)
+            encode_key(1, 0, PhotoId(5), DecodeTier::Base),
+            encode_key(2, 0, PhotoId(5), DecodeTier::Base)
+        );
+        // A bumped crop generation alone changes the key (stale-crop discard).
+        assert_ne!(
+            encode_key(1, 0, PhotoId(5), DecodeTier::Base),
+            encode_key(1, 1, PhotoId(5), DecodeTier::Base)
         );
         assert_ne!(
-            encode_key(1, PhotoId(5), DecodeTier::Base),
-            encode_key(1, PhotoId(5), DecodeTier::Hires)
+            encode_key(1, 0, PhotoId(5), DecodeTier::Base),
+            encode_key(1, 0, PhotoId(5), DecodeTier::Hires)
         );
         assert_ne!(
-            encode_key(1, PhotoId(5), DecodeTier::Hires),
-            encode_key(1, PhotoId(5), DecodeTier::Gallery)
+            encode_key(1, 0, PhotoId(5), DecodeTier::Hires),
+            encode_key(1, 0, PhotoId(5), DecodeTier::Gallery)
         );
+    }
+
+    #[test]
+    fn decode_key_masks_generations_to_15_bits() {
+        // The id occupies its own 32 bits and is never corrupted by large epoch /
+        // gen values (they wrap at 15 bits, not into the id).
+        let (epoch, generation, id, tier) = decode_key(encode_key(
+            0xFFFF,
+            0xFFFF,
+            PhotoId(777),
+            DecodeTier::Gallery,
+        ));
+        assert_eq!(id, PhotoId(777));
+        assert_eq!(tier, DecodeTier::Gallery);
+        assert_eq!(epoch, 0x7FFF);
+        assert_eq!(generation, 0x7FFF);
     }
 }

@@ -83,6 +83,9 @@ impl Session {
         self.cull.forget(&ids);
         self.tags.forget(&ids);
         self.crops.forget(&ids);
+        // Drop stale decode generations too, so a later reclaimed PhotoId doesn't
+        // inherit a bumped generation and have its fresh decodes discarded.
+        self.crop_gen.retain(|id, _| !ids.contains(id));
         self.history.forget(&ids);
         self.sel.clear();
         self.regroup();

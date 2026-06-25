@@ -267,11 +267,14 @@ visible only *inside* the crop editor, where you're explicitly editing. A
 **crop badge** (`⌗`) marks edited photos in the grid and gallery so the
 see-vs-disk difference is explicit.
 
-**Stateless renders — nothing rendered is persisted.** Cropped pixels are always
-derived from `original + CropEdit`:
-- **Display**: rendered in-memory and held in the disposable RAM thumb cache;
-  changing the edit invalidates that photo's cached thumbnails (and bumps the
-  decode epoch so an in-flight old-crop decode is discarded, never stored).
+**Stateless renders — nothing rendered is persisted as owned state.** Cropped
+pixels are always derived from `original + CropEdit`:
+- **Display**: rendered in-memory, held in the disposable RAM thumb cache, and —
+  for the grid tier — in the disposable disk cache under a content key that folds
+  the crop (so a reopen paints the cropped thumbnail straight from disk, never
+  re-rendered). Changing the edit invalidates that photo's cached thumbnails and
+  bumps a *per-photo* decode generation, so an in-flight old-crop decode is
+  discarded on arrival while every other photo's in-flight decodes are untouched.
 - **Export**: the pure planner marks a cropped photo's JPEG op `RenderCrop`; the
   executor decodes → orients → straightens → crops → re-encodes straight to the
   destination. No staging files, no render directory. See §6.9.

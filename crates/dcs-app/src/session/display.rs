@@ -276,7 +276,7 @@ impl Session {
         // not disk-cached (no stable tier to key it on); it lives only in RAM
         // and is dropped on zoom-out.
         self.decoder.request(DecodeRequest {
-            key: encode_key(self.epoch, id, DecodeTier::Hires),
+            key: encode_key(self.epoch, self.crop_gen_key(id), id, DecodeTier::Hires),
             path,
             orientation,
             edge: target_edge,
@@ -430,7 +430,7 @@ impl Session {
         let crop = self.crops.crop_of(id);
         self.base.start(id);
         self.decoder.request(DecodeRequest {
-            key: encode_key(self.epoch, id, DecodeTier::Base),
+            key: encode_key(self.epoch, self.crop_gen_key(id), id, DecodeTier::Base),
             path,
             orientation,
             edge: BASE_EDGE,
@@ -489,7 +489,7 @@ impl Session {
         self.gallery_edge.insert(id, edge);
         self.gallery.start(id);
         self.decoder.request(DecodeRequest {
-            key: encode_key(self.epoch, id, DecodeTier::Gallery),
+            key: encode_key(self.epoch, self.crop_gen_key(id), id, DecodeTier::Gallery),
             path,
             orientation,
             edge,
@@ -546,11 +546,12 @@ impl Session {
     }
 
     /// Invalidate one photo's cached thumbnails across every tier after its crop
-    /// changed, and bump the decode epoch so an in-flight decode of the *old*
-    /// crop is discarded on arrival rather than stored. The next frame
-    /// re-requests the photo, baking in the new crop.
+    /// changed, and bump *that photo's* decode generation so an in-flight decode of
+    /// the old crop is discarded on arrival rather than stored. Scoped to the one
+    /// photo — other photos' in-flight decodes are untouched. The next frame
+    /// re-requests this photo, baking in the new crop.
     pub(super) fn invalidate_photo_thumbs(&mut self, id: PhotoId) {
-        self.epoch += 1;
+        *self.crop_gen.entry(id).or_insert(0) += 1;
         self.base.invalidate(id);
         self.hires.invalidate(id);
         self.gallery.invalidate(id);
