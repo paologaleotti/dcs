@@ -25,7 +25,13 @@ fn main() -> eframe::Result {
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1200.0, 800.0])
         .with_maximized(true)
-        .with_title("dcs - digital contact sheet");
+        .with_title("dcs - digital contact sheet")
+        // Wayland/X11 associate a window with its installed `.desktop` entry (and
+        // thus its taskbar/dock icon) by app_id. It must equal the desktop file
+        // basename, which cargo-packager derives from the packager `identifier`.
+        // If they drift, Linux shows a generic icon despite the icon being
+        // installed.
+        .with_app_id("io.github.paologaleotti.dcs");
 
     // Runtime window/dock icon, on every platform — without it macOS dev runs and
     // any unbundled launch fall back to a generic placeholder. The PNG carries the

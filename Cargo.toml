@@ -51,6 +51,9 @@ ureq = "2"
 sha2 = "0.10"
 safetensors = "0.7"
 half = "2"
+# Build-time only (dcs-ui build.rs, Windows): embed assets/icon.ico into the .exe
+# so Explorer, the taskbar, and the installer shortcut show the app icon.
+winresource = "0.1"
 rfd = "0.15"
 egui = "0.34.3"
 # wgpu backend → Metal on macOS, Vulkan/DX12 elsewhere. Unlike the glow
