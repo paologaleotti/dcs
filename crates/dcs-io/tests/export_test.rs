@@ -41,6 +41,7 @@ fn plan(ops: Vec<ExportOp>, dest: PathBuf) -> ExportPlan {
         jpeg_count,
         raw_count,
         sidecar_count,
+        original_count: 0,
         collisions: 0,
         dest,
         summary: String::new(),

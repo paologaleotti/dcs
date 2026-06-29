@@ -557,3 +557,29 @@ fn cache_token_is_stable_and_distinguishes_edits() {
     // Identity has its own token, distinct from any real crop.
     assert_ne!(CropEdit::identity().cache_token(), a.cache_token());
 }
+
+/// `plan_crop` must never emit a zero/oversized dimension or a window that
+/// overruns the bounding box, even when handed an unsanitized edit with NaN,
+/// infinite, negative, or out-of-range rect components. The output is the pixel
+/// recipe the renderer and export executor both trust, so a degenerate input
+/// has to degrade to a valid (clamped) recipe, never panic or produce garbage.
+#[test]
+fn plan_crop_clamps_degenerate_edits_to_a_valid_recipe() {
+    let degenerate = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -5.0, 5.0, 0.0];
+    for &x in &degenerate {
+        for &w in &degenerate {
+            for &angle in &[0.0f32, 12.0, f32::NAN] {
+                let edit = CropEdit {
+                    angle_deg: angle,
+                    rect: NormRect { x, y: x, w, h: w },
+                };
+                let r = plan_crop(4000, 3000, &edit);
+                assert!(r.bbox_w >= 1 && r.bbox_h >= 1);
+                assert!(r.out_w >= 1 && r.out_w <= r.bbox_w, "out_w in range");
+                assert!(r.out_h >= 1 && r.out_h <= r.bbox_h, "out_h in range");
+                assert!(r.crop_x + r.out_w <= r.bbox_w, "x window inside bbox");
+                assert!(r.crop_y + r.out_h <= r.bbox_h, "y window inside bbox");
+            }
+        }
+    }
+}

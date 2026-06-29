@@ -201,7 +201,7 @@ impl TagStore {
     /// Create a new tag, allocating its id. Returns the `Created` delta.
     pub fn apply_create(&mut self, name: String, color: Color) -> Vec<TagDelta> {
         let id = TagId(self.next_id);
-        self.next_id += 1;
+        self.next_id = self.next_id.saturating_add(1);
         let tag = Tag { id, name, color };
         self.insert_def(tag.clone());
         vec![TagDelta::Created(tag)]

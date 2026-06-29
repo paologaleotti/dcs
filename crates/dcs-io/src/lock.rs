@@ -112,7 +112,14 @@ fn held_by_live_instance(path: &Path, stale: Duration) -> bool {
 }
 
 fn stamp(path: &Path, token: u64) -> io::Result<()> {
-    fs::write(path, format!("{} {}", now_secs(), token))
+    // Write to a per-token temp then rename: rename is atomic, so a concurrent
+    // reader never sees a half-written stamp. The temp is keyed by token so two
+    // instances racing to acquire don't clobber each other's temp mid-write —
+    // each renames its own file over `lock`, and the last rename wins (the
+    // read-back in `acquire` then settles who owns it).
+    let tmp = path.with_extension(format!("{token}.tmp"));
+    fs::write(&tmp, format!("{} {}", now_secs(), token))?;
+    fs::rename(&tmp, path)
 }
 
 /// The timestamp field (first token) of the lock file.

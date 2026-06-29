@@ -301,3 +301,47 @@ fn crop_dedups_duplicate_photo_ids() {
         _ => panic!("expected a crop patch"),
     }
 }
+
+/// After `forget` scrubs a missing photo's deltas, the surviving entries must
+/// still undo and redo cleanly — the scrub edits stacks in place, so a botched
+/// scrub could leave a half-applied delta that corrupts replay. This walks the
+/// whole timeline backward then forward and asserts the kept photo round-trips.
+#[test]
+fn undo_redo_replays_cleanly_after_forget() {
+    let mut e = Env::new();
+    let t = e.tag("a");
+    e.run(Command::AssignTag(t, ids(&[1, 2])));
+    e.run(Command::SetState(ids(&[1, 2]), AcceptState::Accepted));
+
+    // Photo 1 vanished from disk; scrub it from live state and the timeline,
+    // mirroring `Session::forget_missing` (cull + tags + crops + history).
+    let gone: std::collections::HashSet<PhotoId> = [PhotoId(1)].into_iter().collect();
+    e.c.forget(&gone);
+    e.t.forget(&gone);
+    e.cr.forget(&gone);
+    e.h.forget(&gone);
+
+    // State for the surviving photo is intact post-scrub.
+    assert!(e.t.is_assigned(t, PhotoId(2)));
+    assert_eq!(e.c.state(PhotoId(2)), AcceptState::Accepted);
+
+    // Unwind the whole stack: every kept entry reverts without panicking.
+    let mut undone = 0;
+    while e.undo() {
+        undone += 1;
+    }
+    assert!(
+        undone >= 2,
+        "tag-create, assign, and verdict entries unwind"
+    );
+    assert_eq!(e.c.state(PhotoId(2)), AcceptState::Unreviewed);
+    assert!(!e.t.is_assigned(t, PhotoId(2)), "assign reverted");
+
+    // Replay forward to the post-forget state.
+    while e.redo() {}
+    assert!(e.t.is_assigned(t, PhotoId(2)), "assign reapplied");
+    assert_eq!(e.c.state(PhotoId(2)), AcceptState::Accepted);
+    // The forgotten photo never reappears through replay.
+    assert!(!e.t.is_assigned(t, PhotoId(1)));
+    assert_eq!(e.c.state(PhotoId(1)), AcceptState::Unreviewed);
+}

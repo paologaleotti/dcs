@@ -993,3 +993,42 @@ pub fn contain_fit(outer: Rect, size: Vec2) -> Rect {
 pub fn full_uv() -> Rect {
     Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{contain_fit, row_stride};
+    use egui::{Pos2, Rect, Vec2};
+
+    fn approx(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-3
+    }
+
+    #[test]
+    fn row_stride_uses_a_min_gap_at_small_cells_and_scales_at_large() {
+        // gap = max(cell * 0.1, 4.0): the floor dominates below cell 40.
+        assert!(approx(row_stride(20.0), 24.0)); // gap floored at 4
+        assert!(approx(row_stride(40.0), 44.0)); // boundary: 4 == 4
+        assert!(approx(row_stride(100.0), 110.0)); // gap scales: 10
+    }
+
+    #[test]
+    fn contain_fit_preserves_aspect_and_centers() {
+        let outer = Rect::from_min_size(Pos2::ZERO, Vec2::new(100.0, 100.0));
+
+        // Landscape 2:1 into a square fits the width, leaves vertical margin.
+        let r = contain_fit(outer, Vec2::new(200.0, 100.0));
+        assert!(approx(r.width(), 100.0));
+        assert!(approx(r.height(), 50.0));
+        assert!(approx(r.center().x, 50.0) && approx(r.center().y, 50.0));
+
+        // Portrait 1:2 fits the height instead.
+        let r = contain_fit(outer, Vec2::new(100.0, 200.0));
+        assert!(approx(r.width(), 50.0));
+        assert!(approx(r.height(), 100.0));
+        assert!(approx(r.center().x, 50.0) && approx(r.center().y, 50.0));
+
+        // A square fills the cell exactly.
+        let r = contain_fit(outer, Vec2::new(64.0, 64.0));
+        assert!(approx(r.width(), 100.0) && approx(r.height(), 100.0));
+    }
+}

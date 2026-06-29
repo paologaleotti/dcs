@@ -104,7 +104,9 @@ fn push_if_qualifies(
     end: usize,
     knobs: &BurstKnobs,
 ) {
-    if end - start < knobs.min {
+    // `.max(1)` matches the length guard in `derive_bursts`: a nonsensical
+    // `min` of 0 must never qualify a zero-length run.
+    if end - start < knobs.min.max(1) {
         return;
     }
     if let Some(max) = knobs.max_dur

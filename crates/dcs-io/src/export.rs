@@ -6,7 +6,7 @@
 //! file the pure planner couldn't see) is skipped and reported, never clobbered.
 
 use std::ffi::OsString;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -188,7 +188,10 @@ fn copy_atomic(source: &Path, dest: &Path) -> Result<(), CopyError> {
 /// the safety-critical "never overwrite, never torn" contract can't drift between
 /// them.
 fn finalize_atomic(tmp: &Path, dest: &Path) -> Result<(), CopyError> {
-    if let Ok(file) = File::open(tmp) {
+    // Open for *write* to fsync: a read-only handle's flush is a no-op on
+    // Windows (FlushFileBuffers needs write access), which would leave the
+    // .part data unflushed before the rename. `write(true)` does not truncate.
+    if let Ok(file) = OpenOptions::new().write(true).open(tmp) {
         let _ = file.sync_all();
     }
     if dest.exists() {

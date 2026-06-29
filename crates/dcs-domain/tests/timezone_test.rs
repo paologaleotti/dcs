@@ -1,5 +1,20 @@
 use dcs_domain::timezone;
+use time::UtcOffset;
 use time::macros::datetime;
+
+#[test]
+fn format_offset_signs_off_whole_offset_not_hour() {
+    let f = |h, m| timezone::format_offset(UtcOffset::from_hms(h, m, 0).unwrap());
+    assert_eq!(f(2, 0), "+02:00");
+    assert_eq!(f(-5, 0), "-05:00");
+    assert_eq!(f(0, 0), "+00:00");
+    assert_eq!(f(5, 30), "+05:30");
+    assert_eq!(f(-9, -30), "-09:30");
+    // Regression: a sub-hour negative offset has hour component 0 but must
+    // still render with a minus sign.
+    assert_eq!(f(0, -30), "-00:30");
+    assert_eq!(f(0, -45), "-00:45");
+}
 
 fn rome() -> &'static time_tz::Tz {
     timezone::zone("Europe/Rome").expect("Rome exists")

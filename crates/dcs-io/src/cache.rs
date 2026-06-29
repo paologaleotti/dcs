@@ -224,21 +224,36 @@ impl SqliteCache {
     }
 
     /// Delete least-recently-used blobs until total bytes are within the cap.
-    fn evict_to_cap(&self) {
-        while self.thumb_bytes() > self.thumb_cap_bytes {
-            let deleted = self
+    /// Returns the resident byte total after eviction so the caller can reseed
+    /// its running estimate without a second full scan. The total is summed once
+    /// up front and decremented per delete — no full `SUM` per iteration.
+    fn evict_to_cap(&self) -> u64 {
+        let mut total = self.thumb_bytes();
+        while total > self.thumb_cap_bytes {
+            let victim: Option<(i64, i64)> = self
                 .conn
-                .execute(
-                    "DELETE FROM thumbs WHERE rowid = (
-                         SELECT rowid FROM thumbs ORDER BY last_used ASC LIMIT 1
-                     )",
+                .query_row(
+                    "SELECT rowid, LENGTH(blob) FROM thumbs ORDER BY last_used ASC LIMIT 1",
                     [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
-                .unwrap_or(0);
-            if deleted == 0 {
+                .optional()
+                .ok()
+                .flatten();
+            let Some((rowid, len)) = victim else {
                 break; // empty table but still over cap (cap smaller than one blob)
+            };
+            if self
+                .conn
+                .execute("DELETE FROM thumbs WHERE rowid = ?1", params![rowid])
+                .unwrap_or(0)
+                == 0
+            {
+                break;
             }
+            total = total.saturating_sub(len.max(0) as u64);
         }
+        total
     }
 }
 
@@ -312,9 +327,8 @@ impl ThumbCache for SqliteCache {
                 .fetch_add(blob.len() as u64, Ordering::Relaxed)
                 + blob.len() as u64;
             if est > self.thumb_cap_bytes {
-                self.evict_to_cap();
-                self.thumb_bytes_est
-                    .store(self.thumb_bytes(), Ordering::Relaxed);
+                let resident = self.evict_to_cap();
+                self.thumb_bytes_est.store(resident, Ordering::Relaxed);
             }
         }
     }

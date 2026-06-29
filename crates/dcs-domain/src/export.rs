@@ -155,6 +155,10 @@ pub struct ExportPlan {
     pub jpeg_count: usize,
     pub raw_count: usize,
     pub sidecar_count: usize,
+    /// Untouched-original copies emitted into `originals/` when
+    /// `include_uncropped_originals` is on. Counted apart from `jpeg_count` so a
+    /// cropped photo's render and its original aren't conflated in the summary.
+    pub original_count: usize,
     /// Ops whose dest had to change (rename policy) or that were dropped (skip
     /// policy) because the name was already taken — the "projected collisions".
     pub collisions: usize,
@@ -201,6 +205,14 @@ pub fn plan_export(
     let mut skipped: Vec<SkippedPhoto> = Vec::new();
     let mut claimed: HashSet<String> = HashSet::new();
     let mut collisions = 0usize;
+    // Counted inline rather than by post-filtering `ops` on role: the
+    // `include_uncropped_originals` copies carry `FileRole::Jpeg` but must not
+    // inflate `jpeg_count` (that would double-count every cropped photo).
+    let mut jpeg_count = 0usize;
+    let mut raw_count = 0usize;
+    let mut sidecar_count = 0usize;
+    let mut original_count = 0usize;
+    let mut crop_count = 0usize;
 
     for (seq, item) in items.iter().enumerate() {
         let roles = selected_roles(item.photo, request.files, &mut skipped);
@@ -226,6 +238,14 @@ pub fn plan_export(
                     if dest_was_renamed(&dest, &folder, &stem, &ext) {
                         collisions += 1;
                     }
+                    match role {
+                        FileRole::Jpeg => jpeg_count += 1,
+                        FileRole::Raw => raw_count += 1,
+                        FileRole::Sidecar => {}
+                    }
+                    if matches!(kind, OpKind::RenderCrop { .. }) {
+                        crop_count += 1;
+                    }
                     ops.push(ExportOp {
                         source: source.to_path_buf(),
                         dest,
@@ -246,6 +266,7 @@ pub fn plan_export(
                         if dest_was_renamed(&dest, &folder, &stem, &ext) {
                             collisions += 1;
                         }
+                        original_count += 1;
                         ops.push(ExportOp {
                             source: source.to_path_buf(),
                             dest,
@@ -273,6 +294,7 @@ pub fn plan_export(
                         if dest_was_renamed(&dest, folder, &stem, &ext) {
                             collisions += 1;
                         }
+                        sidecar_count += 1;
                         ops.push(ExportOp {
                             source: source.clone(),
                             dest,
@@ -290,18 +312,12 @@ pub fn plan_export(
         return Err(ExportError::NothingToCopy);
     }
 
-    let jpeg_count = ops.iter().filter(|o| o.role == FileRole::Jpeg).count();
-    let raw_count = ops.iter().filter(|o| o.role == FileRole::Raw).count();
-    let sidecar_count = ops.iter().filter(|o| o.role == FileRole::Sidecar).count();
-    let crop_count = ops
-        .iter()
-        .filter(|o| matches!(o.kind, OpKind::RenderCrop { .. }))
-        .count();
     let summary = summarize(
         ops.len(),
         jpeg_count,
         raw_count,
         sidecar_count,
+        original_count,
         crop_count,
         request,
     );
@@ -312,6 +328,7 @@ pub fn plan_export(
         jpeg_count,
         raw_count,
         sidecar_count,
+        original_count,
         collisions,
         dest: request.dest.clone(),
         summary,
@@ -440,10 +457,17 @@ fn place(
 /// dest paths differ only in case (`a.JPG` vs `a.jpg`) would otherwise both be
 /// emitted and the second would silently overwrite the first when the dumb
 /// executor copies them — breaking "never overwrite". Case-folding the whole
-/// path makes the planner treat them as a collision on every platform. This is
-/// deliberately conservative: on a case-sensitive filesystem it may rename an
-/// avoidable clash, but it can never overwrite. Unicode normalization
-/// (NFC vs NFD, which APFS also folds) is a known remaining gap.
+/// path makes the planner treat them as a collision on every platform.
+///
+/// This folds *folder* case too, not just the filename — and that direction is
+/// load-bearing: under `GroupAsFolders`, two group titles differing only in case
+/// (`Temple` vs `temple`) resolve to the same real directory on a
+/// case-insensitive FS, so files inside them must collide. Folding only the
+/// filename would let those overwrite on the very platforms dcs primarily
+/// targets. The cost is the inverse, on a case-sensitive FS: two genuinely
+/// distinct case-different folders may see an avoidable rename. That is the
+/// deliberate, safe-by-default tradeoff — it can never overwrite. Unicode
+/// normalization (NFC vs NFD, which APFS also folds) is a known remaining gap.
 fn collision_key(path: &Path) -> String {
     path.to_string_lossy().to_lowercase()
 }
@@ -601,6 +625,7 @@ fn summarize(
     jpeg: usize,
     raw: usize,
     sidecar: usize,
+    originals: usize,
     cropped: usize,
     request: &ExportRequest,
 ) -> String {
@@ -619,6 +644,9 @@ fn summarize(
     let mut breakdown = format!("{jpeg} JPEG + {raw} RAW");
     if sidecar > 0 {
         breakdown.push_str(&format!(" + {sidecar} sidecar"));
+    }
+    if originals > 0 {
+        breakdown.push_str(&format!(" + {originals} original"));
     }
     // A render-and-crop run isn't a pure copy; say so when any op crops.
     let verb = if cropped > 0 { "Export" } else { "Copy" };

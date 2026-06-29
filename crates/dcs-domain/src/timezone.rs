@@ -14,6 +14,16 @@ pub fn zone_names() -> Vec<&'static str> {
     names
 }
 
+/// Format a UTC offset as `±HH:MM`. The sign is taken from the whole offset,
+/// not the hour component: `time`'s `as_hms` splits a sub-hour negative offset
+/// like `-00:30` into `(0, -30, 0)`, so signing off the hour alone would render
+/// it `+00:30`.
+pub fn format_offset(offset: UtcOffset) -> String {
+    let (h, m, _) = offset.as_hms();
+    let sign = if offset.is_negative() { '-' } else { '+' };
+    format!("{sign}{:02}:{:02}", h.unsigned_abs(), m.unsigned_abs())
+}
+
 /// Whether `name` is a known IANA zone (e.g. `"Europe/Rome"`).
 pub fn is_valid(name: &str) -> bool {
     zone(name).is_some()

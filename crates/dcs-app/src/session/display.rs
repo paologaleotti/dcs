@@ -95,8 +95,7 @@ impl Session {
             naive.minute(),
             naive.second()
         );
-        let (oh, om, _) = adjusted.offset().as_hms();
-        let offset = format!("{oh:+03}:{:02}", om.unsigned_abs());
+        let offset = timezone::format_offset(adjusted.offset());
         let shot = (shot_str != adjusted_str).then_some(shot_str);
         Some(CaptionTime {
             adjusted: adjusted_str,
@@ -109,8 +108,7 @@ impl Session {
     /// photo carries no `OffsetTimeOriginal`.
     pub fn exif_offset(&self, display_index: usize) -> Option<String> {
         let offset = self.photo_at(display_index)?.captured_offset?;
-        let (h, m, _) = offset.as_hms();
-        Some(format!("UTC{h:+03}:{:02}", m.unsigned_abs()))
+        Some(format!("UTC{}", timezone::format_offset(offset)))
     }
 
     /// Every known fact about the photo at `display_index`, as ordered

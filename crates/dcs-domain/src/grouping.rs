@@ -81,7 +81,15 @@ pub fn group(
         ),
         // Tag bands derive from owned assignments, which this pure photo-only
         // entry never sees; the app routes the tag axis to `tag_groups` instead.
-        Axis::Tag => unreachable!("tag grouping is derived via grouping::tag_groups"),
+        // A misrouted `Tag` degrades to no groups rather than panicking — a pure
+        // total function must not crash the app on a legal enum variant.
+        Axis::Tag => {
+            debug_assert!(
+                false,
+                "tag grouping must route through grouping::tag_groups"
+            );
+            Vec::new()
+        }
     }
 }
 

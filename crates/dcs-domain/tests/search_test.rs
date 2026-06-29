@@ -134,3 +134,21 @@ fn default_absolute_floor_returns_nothing_for_pure_noise() {
     let photos: [(PhotoId, &[f32]); 2] = [(PhotoId(1), &n1), (PhotoId(2), &n2)];
     assert!(rank(&[1.0, 0.0], &photos, &SearchParams::default()).is_empty());
 }
+
+#[test]
+fn rank_with_zero_cap_returns_empty() {
+    let v = [1.0, 0.0];
+    let photos: [(PhotoId, &[f32]); 2] = [(PhotoId(1), &v), (PhotoId(2), &v)];
+    let params = SearchParams {
+        min_similarity: 0.0,
+        relative_floor: 0.0,
+        max_results: 0,
+    };
+    assert!(rank(&[1.0, 0.0], &photos, &params).is_empty());
+}
+
+#[test]
+fn rank_over_empty_pool_is_empty() {
+    let photos: [(PhotoId, &[f32]); 0] = [];
+    assert!(rank(&[1.0, 0.0], &photos, &SearchParams::default()).is_empty());
+}

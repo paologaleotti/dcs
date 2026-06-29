@@ -741,3 +741,73 @@ fn include_originals_under_skip_drops_the_colliding_original() {
     assert_eq!(plan.ops[0].dest, dest(&["a.JPG"]));
     assert_eq!(plan.ops[1].dest, dest(&["originals", "a.JPG"]));
 }
+
+#[test]
+fn uncropped_originals_count_apart_from_jpeg_count() {
+    use dcs_domain::crops::{CropEdit, NormRect};
+
+    let photos = [photo(1, Some("/src/a.jpg"), None)];
+    let mut its = items(&photos);
+    its[0].crop = Some(CropEdit {
+        angle_deg: 0.0,
+        rect: NormRect::centered(0.5, 0.5),
+    });
+    let mut req = request(FileSelection::Any, Layout::Together, Collision::Rename);
+    req.include_uncropped_originals = true;
+
+    let plan = plan_export(&its, Path::new("/src"), &req).unwrap();
+
+    // One cropped render + one untouched original copy into originals/.
+    assert_eq!(plan.ops.len(), 2);
+    assert_eq!(plan.jpeg_count, 1, "the render is the one JPEG, not two");
+    assert_eq!(plan.original_count, 1, "the original is counted on its own");
+    assert_eq!(plan.raw_count, 0);
+    // Summary keeps them distinct rather than reporting "2 JPEG".
+    assert!(plan.summary.contains("1 JPEG"), "summary: {}", plan.summary);
+    assert!(
+        plan.summary.contains("1 original"),
+        "summary: {}",
+        plan.summary
+    );
+    assert!(
+        !plan.summary.contains("2 JPEG"),
+        "summary: {}",
+        plan.summary
+    );
+}
+
+#[test]
+fn group_folders_differing_only_in_case_collide_conservatively() {
+    // "Temple" and "temple" fold to one real directory on case-insensitive
+    // filesystems (the macOS/Windows default), so a same-named file in each must
+    // cascade rather than silently overwrite — even though a case-sensitive FS
+    // would keep them as distinct folders. The safe-by-default tradeoff.
+    let photos = [
+        photo(1, Some("/src/a/IMG.jpg"), None),
+        photo(2, Some("/src/b/IMG.jpg"), None),
+    ];
+    let mut its = items(&photos);
+    its[0].group_title = Some("Temple");
+    its[1].group_title = Some("temple");
+    let req = request(
+        FileSelection::Any,
+        Layout::GroupAsFolders,
+        Collision::Rename,
+    );
+
+    let plan = plan_export(&its, Path::new("/src"), &req).unwrap();
+
+    assert_eq!(plan.ops.len(), 2);
+    assert_eq!(
+        plan.collisions, 1,
+        "case-only folder clash treated as collision"
+    );
+    // The second file was renamed, never overwritten.
+    let renamed = plan.ops.iter().any(|o| {
+        o.dest
+            .to_string_lossy()
+            .to_lowercase()
+            .ends_with("img-1.jpg")
+    });
+    assert!(renamed, "second file cascades to -1, not overwrite");
+}
