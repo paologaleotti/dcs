@@ -49,6 +49,12 @@ impl ThumbCache {
         self.inflight.contains(&id)
     }
 
+    /// Whether decoded pixels for `id` are resident, without touching LRU recency
+    /// — a cheap pre-check before deciding which source to `view`.
+    pub(crate) fn contains(&self, id: PhotoId) -> bool {
+        self.resident.contains_key(&id)
+    }
+
     /// Drop one photo's resident pixels and in-flight marker, so the next request
     /// re-decodes it. Used when a crop edit changes and the baked thumbnail is
     /// stale. A still-running decode for the old crop is discarded on arrival

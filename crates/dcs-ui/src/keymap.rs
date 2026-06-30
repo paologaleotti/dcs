@@ -46,14 +46,23 @@ pub struct Shortcut {
 /// the trailing rows are the view/navigation keys the grid and gallery read
 /// directly — fixed for now, listed here so the reference stays complete.
 pub fn shortcuts() -> Vec<Shortcut> {
-    let mut rows = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    // One row per action, but every chord bound to it (e.g. `B / ⌘3` for the
+    // board, `+ =` for zoom) so no alias is hidden. Order follows KEYMAP.
+    let mut rows: Vec<Shortcut> = Vec::new();
+    let mut index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for (action, chord, description) in KEYMAP {
-        if seen.insert(action.id()) {
-            rows.push(Shortcut {
-                keys: render_chord(chord),
-                description,
-            });
+        match index.get(action.id()) {
+            Some(&i) => {
+                let row: &mut Shortcut = &mut rows[i];
+                row.keys = format!("{}  {}", row.keys, render_chord(chord));
+            }
+            None => {
+                index.insert(action.id(), rows.len());
+                rows.push(Shortcut {
+                    keys: render_chord(chord),
+                    description,
+                });
+            }
         }
     }
     rows.push(Shortcut {
@@ -77,8 +86,16 @@ pub fn shortcuts() -> Vec<Shortcut> {
         description: "Gallery: toggle 1:1 zoom",
     });
     rows.push(Shortcut {
+        keys: "Enter".to_string(),
+        description: "Board: place focused photo on the canvas",
+    });
+    rows.push(Shortcut {
+        keys: "Del".to_string(),
+        description: "Board: remove selected from canvas",
+    });
+    rows.push(Shortcut {
         keys: "Esc".to_string(),
-        description: "Clear selection / close",
+        description: "Cancel drag / clear selection / close",
     });
     rows
 }
@@ -150,6 +167,10 @@ const KEYMAP: &[(AppAction, Chord, &str)] = &[
     (AppAction::OpenUntagPalette, shift(Key::T), "Remove tag"),
     (AppAction::ShowMetadata, plain(Key::I), "Photo info"),
     (AppAction::EnterCrop, plain(Key::C), "Crop photo"),
+    (AppAction::EnterBoard, plain(Key::B), "Board view"),
+    (AppAction::EnterGrid, cmd(Key::Num1), "Grid view"),
+    (AppAction::EnterGallery, cmd(Key::Num2), "Gallery view"),
+    (AppAction::EnterBoard, cmd(Key::Num3), "Board view"),
     (AppAction::Undo, cmd(Key::Z), "Undo"),
     (AppAction::Redo, cmd_shift(Key::Z), "Redo"),
     (AppAction::OpenFolder, cmd(Key::O), "Open folder"),
@@ -203,7 +224,11 @@ mod tests {
         assert!(rows.iter().any(|s| s.description == "Open / close gallery"));
 
         // The fixed non-registry keys are appended.
-        for desc in ["Move focus", "Clear selection / close"] {
+        for desc in [
+            "Move focus",
+            "Board: remove selected from canvas",
+            "Cancel drag / clear selection / close",
+        ] {
             assert!(
                 rows.iter().any(|s| s.description == desc),
                 "missing fixed shortcut: {desc}"

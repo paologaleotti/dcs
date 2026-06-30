@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 
 use dcs_app::{AppAction, CellInfo, Session, ThumbView};
 
+use crate::board::BoardDragPayload;
 use crate::context_menu::{self, MenuTarget};
 use dcs_domain::cull::AcceptState;
 use dcs_domain::grouping::GroupKind;
@@ -211,6 +212,10 @@ pub struct GridResponse {
 /// then its cells flowing in rows of `cols`. Only the rows intersecting the
 /// viewport are painted. When `scroll_to_focus` is set, the focus cell is
 /// scrolled into view (after a keyboard nav move).
+/// When `drag_source` is set (the board's left panel), a cell drag starts an
+/// egui drag-and-drop carrying the dragged photos as a [`BoardDragPayload`], so
+/// the board canvas can drop them. The normal grid passes `false` and behaves
+/// exactly as before.
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
@@ -221,6 +226,7 @@ pub fn show(
     scroll_to_focus: bool,
     collapsed: &mut HashSet<String>,
     ctx_target: &mut Option<MenuTarget>,
+    drag_source: bool,
 ) -> GridResponse {
     let count = session.photo_count();
     if count == 0 {
@@ -289,12 +295,23 @@ pub fn show(
                 ui.allocate_exact_size(Vec2::new(view_width, layout.total), Sense::hover());
             let origin = rect.min;
 
-            let resp = ui.interact(rect, Id::new("dcs_grid"), Sense::click());
+            let sense = if drag_source {
+                Sense::click_and_drag()
+            } else {
+                Sense::click()
+            };
+            let resp = ui.interact(rect, Id::new("dcs_grid"), sense);
             let hover_pos = ui.input(|i| i.pointer.hover_pos());
             let click_pos = resp
                 .clicked()
                 .then(|| resp.interact_pointer_pos())
                 .flatten();
+            // The cell a drag began on (board mode only) → resolved to a photo and
+            // set as the drag payload after the cell sweep.
+            let drag_pos = (drag_source && resp.drag_started())
+                .then(|| resp.interact_pointer_pos())
+                .flatten();
+            let mut drag_idx: Option<usize> = None;
             let dbl_pos = resp
                 .double_clicked()
                 .then(|| resp.interact_pointer_pos())
@@ -358,6 +375,9 @@ pub fn show(
                             if dbl_pos.is_some_and(|p| cell_rect.contains(p)) {
                                 double_clicked = Some(idx);
                             }
+                            if drag_pos.is_some_and(|p| cell_rect.contains(p)) {
+                                drag_idx = Some(idx);
+                            }
                             if sec_pos.is_some_and(|p| cell_rect.contains(p)) {
                                 sec_target = Some(MenuTarget::Cell(idx));
                             }
@@ -380,10 +400,23 @@ pub fn show(
                     }
                 }
             }
-            (resp, sec_target)
+            (resp, sec_target, drag_idx)
         })
         .inner;
-    let (grid_resp, sec_target) = grid_resp;
+    let (grid_resp, sec_target, drag_idx) = grid_resp;
+
+    // A drag that began on a cell carries that photo — or the whole selection,
+    // when the cell is part of one — as the board drop payload.
+    if let Some(idx) = drag_idx
+        && let Some(info) = session.cell_info(idx)
+    {
+        let photos = if session.is_selected(info.id) && session.selection_count() > 1 {
+            session.selected_ids()
+        } else {
+            vec![info.id]
+        };
+        grid_resp.dnd_set_drag_payload(BoardDragPayload { photos });
+    }
 
     // The UI only reports the raw click + modifiers; the app owns the policy.
     if let Some(idx) = clicked {

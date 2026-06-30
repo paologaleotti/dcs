@@ -5,6 +5,7 @@
 //!
 //! Depends DOWN on dcs-io + dcs-domain. Never the reverse.
 
+pub mod boards;
 pub mod crops;
 pub mod cull;
 pub mod export;

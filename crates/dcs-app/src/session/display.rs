@@ -338,6 +338,92 @@ impl Session {
         self.gallery.pending()
     }
 
+    /// Ensure a sharp board frame for `id` covering `target_edge` on-screen
+    /// pixels is decoding or resident. Keyed by `PhotoId` (board membership is
+    /// independent of the visible grid order) and capped at [`BOARD_MAX_EDGE`].
+    /// The wanted size is **quantized to a tier ladder** so a continuous zoom-in
+    /// steps through a handful of decodes rather than re-decoding every frame;
+    /// the GPU bilinear-scales between tiers, so steady viewing and zoom-out
+    /// never re-decode (the Figma/canvas approach). RAM-only.
+    pub fn request_board(&mut self, id: PhotoId, target_edge: u32) {
+        let edge = board_tier(target_edge);
+        if self.board_cache.is_inflight(id) {
+            return;
+        }
+        if self.board_edge.get(&id).copied().unwrap_or(0) >= edge {
+            return;
+        }
+        let Some(pool_index) = self.pool_index_of(id) else {
+            return;
+        };
+        let photo = &self.builder.photos()[pool_index];
+        if photo.missing {
+            return;
+        }
+        let Some(path) = photo.decodable_path() else {
+            return;
+        };
+        let path = path.to_path_buf();
+        let orientation = photo.orientation;
+        let crop = self.crops.crop_of(id);
+        self.board_edge.insert(id, edge);
+        self.board_cache.start(id);
+        self.decoder.request(DecodeRequest {
+            key: encode_key(self.epoch, self.crop_gen_key(id), id, DecodeTier::Board),
+            path,
+            orientation,
+            edge,
+            cache_key: None,
+            tier: ThumbTier::Gallery,
+            cache: None,
+            priority: DecodePriority::High,
+            crop,
+        });
+    }
+
+    /// The resident sharp board frame for a photo if present, else the base
+    /// thumbnail — resolved in one session borrow so the canvas paints the
+    /// sharpest available source. Marks the hit recently used.
+    pub fn board_or_thumb(&mut self, id: PhotoId) -> Option<ThumbView<'_>> {
+        if self.board_cache.contains(id) {
+            return self.board_cache.view(id);
+        }
+        self.thumb(id)
+    }
+
+    /// The pool index for a `PhotoId`, via a revision-keyed cache so the board's
+    /// per-frame lookups are O(1) rather than a full-pool scan. Rebuilt only when
+    /// the pool changes (scan/forget bump the revision).
+    fn pool_index_of(&mut self, id: PhotoId) -> Option<usize> {
+        if self.id_index_rev != Some(self.builder.revision()) {
+            self.id_index = self
+                .builder
+                .photos()
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (p.id, i))
+                .collect();
+            self.id_index_rev = Some(self.builder.revision());
+        }
+        self.id_index.get(&id).copied()
+    }
+
+    /// Drop every board frame — called on leaving the board so the large pixels
+    /// stop costing RAM. Base/hi-res/gallery caches are untouched.
+    pub fn clear_board(&mut self) {
+        if self.board_cache.len() == 0 && !self.board_cache.pending() {
+            return;
+        }
+        self.board_cache.reset(super::BOARD_CACHE_BYTES);
+        self.board_edge.clear();
+    }
+
+    /// True while a board frame is still decoding — the UI keeps repainting until
+    /// the visible items resolve.
+    pub fn has_board_pending(&self) -> bool {
+        self.board_cache.pending()
+    }
+
     /// Whether the background fill still has folder left to walk — so the UI
     /// keeps repainting to drive it even when fully idle.
     pub fn has_background_work(&self) -> bool {
@@ -540,6 +626,10 @@ impl Session {
                 self.gallery.fail(id);
                 self.gallery_edge.remove(&id);
             }
+            DecodeTier::Board => {
+                self.board_cache.fail(id);
+                self.board_edge.remove(&id);
+            }
         }
     }
 
@@ -554,6 +644,8 @@ impl Session {
         self.hires.invalidate(id);
         self.gallery.invalidate(id);
         self.gallery_edge.remove(&id);
+        self.board_cache.invalidate(id);
+        self.board_edge.remove(&id);
     }
 
     /// Fold a decode result into its tier's cache, retiring the in-flight marker
@@ -573,6 +665,10 @@ impl Session {
                     self.gallery.fail(id);
                     self.gallery_edge.remove(&id);
                 }
+                DecodeTier::Board => {
+                    self.board_cache.fail(id);
+                    self.board_edge.remove(&id);
+                }
             }
             return;
         };
@@ -587,11 +683,32 @@ impl Session {
             }
             DecodeTier::Hires => self.hires.store(id, image, version),
             DecodeTier::Gallery => self.gallery.store(id, image, version),
+            DecodeTier::Board => self.board_cache.store(id, image, version),
         };
-        if tier == DecodeTier::Gallery {
-            for id in evicted {
-                self.gallery_edge.remove(&id);
+        match tier {
+            DecodeTier::Gallery => {
+                for id in evicted {
+                    self.gallery_edge.remove(&id);
+                }
             }
+            DecodeTier::Board => {
+                for id in evicted {
+                    self.board_edge.remove(&id);
+                }
+            }
+            _ => {}
         }
     }
+}
+
+/// Quantize a wanted on-screen edge up to a fixed board-decode tier, so a
+/// continuous zoom-in steps through a handful of decode sizes instead of
+/// re-decoding at a new arbitrary pixel count every frame. Capped at the board
+/// maximum; values above the top rung resolve there.
+fn board_tier(edge: u32) -> u32 {
+    const TIERS: [u32; 5] = [512, 768, 1152, 1728, 2560];
+    TIERS
+        .into_iter()
+        .find(|&t| t >= edge)
+        .unwrap_or(super::BOARD_MAX_EDGE)
 }

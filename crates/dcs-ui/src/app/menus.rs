@@ -44,6 +44,20 @@ impl DcsApp {
                     {
                         clicked = Some(dcs_app::AppAction::EnterGallery);
                     }
+                    // Board is a freeform canvas; needs a photo to place.
+                    if ui
+                        .add_enabled_ui(has_photos, |ui| {
+                            ui.selectable_label(
+                                self.view == ViewMode::Board,
+                                RichText::new("board").monospace(),
+                            )
+                            .on_hover_text("Freeform canvas: drag photos in, arrange them")
+                        })
+                        .inner
+                        .clicked()
+                    {
+                        clicked = Some(dcs_app::AppAction::EnterBoard);
+                    }
 
                     ui.separator();
                     micro_label(ui, "GROUP");

@@ -186,3 +186,40 @@ fn crop_patches_round_trip_through_the_log() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- Board records (DoBoard) -------------------------------------------------
+
+#[test]
+fn board_patches_round_trip_through_the_log() {
+    use dcs_domain::command::BoardDelta;
+    use dcs_domain::view::{BoardItem, Pos, ViewId};
+
+    let dir = std::env::temp_dir().join(format!("dcs_undolog_board_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("undo.log");
+    let _ = std::fs::remove_file(&path);
+
+    let v = ViewId(2);
+    // One add, one move, one remove — every BoardDelta shape in one patch.
+    let patch = Patch::Board(vec![
+        BoardDelta::Added(v, BoardItem::placed(PhotoId(1), Pos::new(10.0, 20.0))),
+        BoardDelta::Moved(v, PhotoId(1), Pos::new(10.0, 20.0), Pos::new(30.0, 40.0)),
+        BoardDelta::Removed(v, 0, BoardItem::placed(PhotoId(2), Pos::new(5.0, 5.0))),
+    ]);
+
+    // Record the patch, then an Undo cursor move, so the fold lands it on redo.
+    {
+        let mut log = UndoLog::open(&path).unwrap();
+        log.record_patch(&patch).unwrap();
+        log.record_undo().unwrap();
+    }
+    let stacks = undo_log::load(&path).unwrap();
+    assert!(stacks.undo.is_empty(), "the undo moved the entry to redo");
+    assert_eq!(
+        stacks.redo,
+        vec![patch],
+        "board patch survives the log verbatim"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -15,6 +15,8 @@ pub(crate) enum DecodeTier {
     Hires,
     /// Large fit/1:1 decode for the gallery view.
     Gallery,
+    /// Sharp per-item decode for the board canvas, sized to its on-screen size.
+    Board,
 }
 
 impl DecodeTier {
@@ -23,6 +25,7 @@ impl DecodeTier {
             DecodeTier::Base => 0,
             DecodeTier::Hires => 1,
             DecodeTier::Gallery => 2,
+            DecodeTier::Board => 3,
         }
     }
 
@@ -30,7 +33,8 @@ impl DecodeTier {
         match bits & 0b11 {
             0 => DecodeTier::Base,
             1 => DecodeTier::Hires,
-            _ => DecodeTier::Gallery,
+            2 => DecodeTier::Gallery,
+            _ => DecodeTier::Board,
         }
     }
 }
@@ -110,6 +114,11 @@ impl<K: Eq + Hash + Copy, V> LruMap<K, V> {
     /// Total resident weight (bytes).
     pub fn weight(&self) -> u64 {
         self.used
+    }
+
+    /// Whether `key` is resident, without promoting it (no LRU touch).
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.index.contains_key(key)
     }
 
     /// The value for `key`, promoted to most-recently-used.

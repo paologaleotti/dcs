@@ -51,6 +51,9 @@ pub enum AppAction {
     /// Enter the crop editor on the focused photo. Only valid when the focused
     /// photo has a JPEG (RAW-only photos aren't croppable in v1).
     EnterCrop,
+    /// Switch to the board (freeform canvas) view mode, creating the project's
+    /// board on first use. No-op on an empty pool.
+    EnterBoard,
     /// Toggle one verdict in/out of the filter (multi-select: acc + rej, …).
     ToggleVerdictFilter(AcceptState),
     /// Toggle a tag in/out of the filter (the filter dropdown's tag checkboxes).
@@ -167,6 +170,7 @@ impl AppAction {
             AppAction::EnterGallery => "enter-gallery",
             AppAction::ToggleGallery => "toggle-gallery",
             AppAction::EnterCrop => "enter-crop",
+            AppAction::EnterBoard => "enter-board",
             AppAction::ToggleVerdictFilter(AcceptState::Unreviewed) => "filter-verdict-unrev",
             AppAction::ToggleVerdictFilter(AcceptState::Accepted) => "filter-verdict-acc",
             AppAction::ToggleVerdictFilter(AcceptState::Rejected) => "filter-verdict-rej",
@@ -227,6 +231,8 @@ pub enum ActionEffect {
     ToggleGallery,
     /// Enter the crop editor on the focused photo (the UI owns the editor state).
     EnterCrop,
+    /// Enter the board view (the UI owns the canvas + panel state).
+    EnterBoard,
     OpenZonePicker,
     OpenCameraZonePicker,
     /// Open the picker to toggle tag filters.
@@ -337,6 +343,9 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
     // Crop the focused photo — offered only when it has a JPEG to edit.
     if session.focused_is_croppable() {
         push(&mut e, AppAction::EnterCrop, "Crop Photo…", Category::Edit);
+    }
+    if session.photo_count() > 0 {
+        push(&mut e, AppAction::EnterBoard, "Board View", Category::View);
     }
     push(
         &mut e,
@@ -570,6 +579,14 @@ impl Session {
             AppAction::EnterGrid => ActionEffect::EnterGrid,
             AppAction::EnterGallery => ActionEffect::EnterGallery,
             AppAction::ToggleGallery => ActionEffect::ToggleGallery,
+            // The pool must hold a displayable photo for the board to be useful.
+            AppAction::EnterBoard => {
+                if self.photo_count() > 0 {
+                    ActionEffect::EnterBoard
+                } else {
+                    ActionEffect::None
+                }
+            }
             // Only croppable photos reach the editor; a RAW-only focus is a no-op.
             AppAction::EnterCrop => {
                 if self.focused_is_croppable() {

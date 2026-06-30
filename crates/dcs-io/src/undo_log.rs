@@ -22,7 +22,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use dcs_domain::command::{CropChange, TagDelta};
+use dcs_domain::command::{BoardDelta, CropChange, TagDelta};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -63,6 +63,10 @@ enum LogRecord {
     /// Crop deltas (additive, like `DoTag`).
     DoCrop {
         changes: Vec<CropChange>,
+    },
+    /// Board deltas (additive, like `DoCrop`).
+    DoBoard {
+        deltas: Vec<BoardDelta>,
     },
     Undo,
     Redo,
@@ -135,6 +139,10 @@ pub fn load(path: &Path) -> Result<Stacks, LogError> {
                 stacks.undo.push(Patch::Crop(changes));
                 stacks.redo.clear();
             }
+            LogRecord::DoBoard { deltas } => {
+                stacks.undo.push(Patch::Board(deltas));
+                stacks.redo.clear();
+            }
             LogRecord::Undo => {
                 if let Some(entry) = stacks.undo.pop() {
                     stacks.redo.push(entry);
@@ -172,7 +180,8 @@ pub fn compact(path: &Path, stacks: &Stacks, cap: usize) -> Result<(), LogError>
     atomic_write(path, &out)
 }
 
-/// The log record for one patch: `Do` for verdict, `DoTag` for tag.
+/// The log record for one patch, one variant per [`Patch`] kind: `Do` (verdict),
+/// `DoTag`, `DoCrop`, `DoBoard`.
 fn record_of(patch: &Patch) -> LogRecord {
     match patch {
         Patch::Verdict(changes) => LogRecord::Do {
@@ -183,6 +192,9 @@ fn record_of(patch: &Patch) -> LogRecord {
         },
         Patch::Crop(changes) => LogRecord::DoCrop {
             changes: changes.clone(),
+        },
+        Patch::Board(deltas) => LogRecord::DoBoard {
+            deltas: deltas.clone(),
         },
     }
 }

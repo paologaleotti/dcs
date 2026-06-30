@@ -203,3 +203,91 @@ fn reopen_reclaims_the_same_photo_ids() {
         "ids are reclaimed by fingerprint, not reassigned"
     );
 }
+
+#[test]
+fn board_placement_survives_save_and_reopen() {
+    use dcs_domain::view::Pos;
+
+    let dir = temp_folder("board");
+    write_jpeg(&dir, "a.jpg", 8);
+    write_jpeg(&dir, "b.jpg", 9);
+
+    let (p0, p1) = {
+        let mut s = open(&dir, 2);
+        let a = s.photo_at(0).unwrap().id;
+        let b = s.photo_at(1).unwrap().id;
+        let board = s
+            .primary_board()
+            .expect("a fresh project can create its board");
+        s.add_to_board(
+            board,
+            vec![(a, Pos::new(10.0, 20.0)), (b, Pos::new(30.0, 40.0))],
+        );
+        s.move_on_board(board, vec![(a, Pos::new(15.0, 25.0))]);
+        s.save().unwrap();
+        (a, b)
+    };
+
+    // A fresh session restores membership, positions, and stacking order.
+    let mut s = open(&dir, 2);
+    let board = s.primary_board().expect("board restored, not recreated");
+    let items: Vec<_> = s.board_items(board).to_vec();
+    assert_eq!(items.len(), 2, "both placements restored");
+    assert_eq!(items[0].photo, p0);
+    assert_eq!(items[0].pos, Pos::new(15.0, 25.0), "the move persisted");
+    assert_eq!(items[1].photo, p1);
+    assert_eq!(items[1].pos, Pos::new(30.0, 40.0));
+}
+
+#[test]
+fn raise_persists_but_is_not_undoable() {
+    use dcs_domain::view::Pos;
+
+    let dir = temp_folder("raise");
+    write_jpeg(&dir, "a.jpg", 1);
+    write_jpeg(&dir, "b.jpg", 2);
+    write_jpeg(&dir, "c.jpg", 3);
+
+    {
+        let mut s = open(&dir, 3);
+        let a = s.photo_at(0).unwrap().id;
+        let b = s.photo_at(1).unwrap().id;
+        let c = s.photo_at(2).unwrap().id;
+        let v = s.primary_board().unwrap();
+        // One AddToBoard = one undo entry; stacking order is the add order.
+        s.add_to_board(
+            v,
+            vec![
+                (a, Pos::new(0.0, 0.0)),
+                (b, Pos::new(10.0, 0.0)),
+                (c, Pos::new(20.0, 0.0)),
+            ],
+        );
+        // Grab-to-raise brings `a` to the top (last).
+        s.raise_on_board(v, a);
+        assert_eq!(
+            s.board_items(v).iter().map(|i| i.photo).collect::<Vec<_>>(),
+            vec![b, c, a],
+            "raised photo is on top"
+        );
+        s.save().unwrap();
+    }
+
+    // Reopen: the raised order is persisted (z-order is owned).
+    let mut s = open(&dir, 3);
+    let a = s.photo_at(0).unwrap().id;
+    let v = s.primary_board().unwrap();
+    assert_eq!(
+        s.board_items(v).last().map(|i| i.photo),
+        Some(a),
+        "raised order survived save/reopen"
+    );
+    // Raise left the undo timeline alone: the single entry is the AddToBoard, so
+    // one undo empties the board rather than just lowering the raised photo.
+    assert!(s.can_undo());
+    assert!(s.undo());
+    assert!(
+        s.board_items(v).is_empty(),
+        "the only undo entry was the add — raise was never recorded"
+    );
+}

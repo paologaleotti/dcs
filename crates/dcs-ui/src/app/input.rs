@@ -86,6 +86,68 @@ impl DcsApp {
             // registry binding, dispatched above.
             ViewMode::Grid => self.handle_grid_keys(ctx),
             ViewMode::Gallery => self.handle_gallery_keys(ctx),
+            ViewMode::Board => self.handle_board_keys(ctx),
+        }
+    }
+
+    /// Board keys: arrows navigate the sidebar grid (so the focus the registry's
+    /// verdict/tag keys act on is visible and reachable), `Enter` places the
+    /// selection/focus onto the canvas, and `Esc` aborts a live drag (rolling it
+    /// back) or, when none, clears the sidebar selection. The canvas's pointer
+    /// keys (Delete) live in `board::show`.
+    fn handle_board_keys(&mut self, ctx: &egui::Context) {
+        self.arrow_nav(ctx);
+        if ctx.input(|i| i.key_pressed(Key::Enter)) {
+            self.place_focused_on_board();
+        }
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            if self.board.is_dragging() {
+                self.board.end_drag();
+            } else {
+                self.session.clear_selection();
+            }
+        }
+    }
+
+    /// Place the sidebar selection — or, with none, the focused photo — onto the
+    /// board at the center of the current canvas view, cascading multiples and
+    /// skipping any already placed. One undo entry.
+    fn place_focused_on_board(&mut self) {
+        let Some(view) = self.session.primary_board() else {
+            return;
+        };
+        let mut photos = self.session.selected_ids();
+        if photos.is_empty() {
+            let Some(id) = self
+                .session
+                .focus()
+                .and_then(|i| self.session.photo_at(i))
+                .map(|p| p.id)
+            else {
+                return;
+            };
+            photos = vec![id];
+        }
+        // Skip already-placed photos before cascading, so the offset has no gaps
+        // (matching the drop path) and the store's dedup has nothing to drop.
+        let on_board: std::collections::HashSet<_> = self
+            .session
+            .board_items(view)
+            .iter()
+            .map(|it| it.photo)
+            .collect();
+        let at = self.board.view_center();
+        let placed: Vec<_> = photos
+            .into_iter()
+            .filter(|id| !on_board.contains(id))
+            .enumerate()
+            .map(|(k, id)| {
+                let step = k as f32 * crate::board::CASCADE;
+                (id, dcs_domain::view::Pos::new(at.x + step, at.y + step))
+            })
+            .collect();
+        if !placed.is_empty() {
+            self.session.add_to_board(view, placed);
         }
     }
 
@@ -167,6 +229,15 @@ impl DcsApp {
     /// `Esc` clears the selection. A move flags the grid to scroll the focus
     /// cell into view next paint.
     fn handle_grid_keys(&mut self, ctx: &egui::Context) {
+        self.arrow_nav(ctx);
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.session.clear_selection();
+        }
+    }
+
+    /// Focus-cursor arrow navigation, shared by the grid view and the board's
+    /// sidebar grid (`Shift` extends the selection from the anchor).
+    fn arrow_nav(&mut self, ctx: &egui::Context) {
         let shift = ctx.input(|i| i.modifiers.shift);
         if ctx.input(|i| i.key_pressed(Key::ArrowLeft)) {
             self.nav(-1, 0, shift);
@@ -179,9 +250,6 @@ impl DcsApp {
         }
         if ctx.input(|i| i.key_pressed(Key::ArrowDown)) {
             self.nav(0, 1, shift);
-        }
-        if ctx.input(|i| i.key_pressed(Key::Escape)) {
-            self.session.clear_selection();
         }
     }
 

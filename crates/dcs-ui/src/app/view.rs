@@ -260,6 +260,7 @@ impl DcsApp {
                             std::mem::take(&mut self.scroll_to_focus),
                             &mut self.collapsed,
                             &mut self.grid_ctx,
+                            false,
                         );
                         self.visible = resp.visible;
                         self.cols = resp.cols;
@@ -304,6 +305,24 @@ impl DcsApp {
                             if matches!(action, dcs_app::AppAction::SelectGroup(_)) {
                                 self.exit_gallery();
                             }
+                        }
+                    }
+                    ViewMode::Board => {
+                        let resp = crate::board::show(
+                            ui,
+                            &mut self.session,
+                            &mut self.textures,
+                            &mut self.board_textures,
+                            &mut self.board,
+                            &mut self.collapsed,
+                            &mut self.grid_ctx,
+                            std::mem::take(&mut self.scroll_to_focus),
+                        );
+                        // The sidebar grid drives row-nav math, like the grid view.
+                        self.cols = resp.cols;
+                        if let Some(action) = resp.action {
+                            let ctx = ui.ctx().clone();
+                            self.dispatch(action, &ctx);
                         }
                     }
                 }
@@ -371,6 +390,30 @@ impl DcsApp {
         self.gallery_full = false;
         self.session.clear_gallery();
         self.gallery_textures.clear();
+        self.scroll_to_focus = true;
+    }
+
+    /// Enter the board view. A no-op on an empty pool (the registry already
+    /// gates it); leaves the gallery first if we were there.
+    pub(super) fn enter_board(&mut self) {
+        if self.session.photo_count() == 0 {
+            return;
+        }
+        if self.view == ViewMode::Gallery {
+            self.session.clear_gallery();
+            self.gallery_textures.clear();
+        }
+        self.view = ViewMode::Board;
+        self.board.end_drag();
+    }
+
+    /// Leave the board back to the grid. The placements persist in the session;
+    /// only the ephemeral canvas state (pan/zoom, selection, drag) is dropped.
+    pub(super) fn exit_board(&mut self) {
+        self.view = ViewMode::Grid;
+        self.board.end_drag();
+        self.session.clear_board();
+        self.board_textures.clear();
         self.scroll_to_focus = true;
     }
 

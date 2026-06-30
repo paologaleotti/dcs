@@ -33,6 +33,7 @@ fn snapshot() -> ProjectSnapshot {
         tags: Vec::new(),
         next_tag_id: 0,
         views: vec![serde_json::json!({ "kind": "Grid", "settings": { "zoom": 4 } })],
+        next_view_id: 1,
         config: ProjectConfig {
             shoot_zone: Some("Europe/Rome".to_string()),
             camera_zone: Some("Asia/Tokyo".to_string()),
@@ -99,11 +100,12 @@ fn unknown_view_kind_is_preserved_verbatim() {
     let dir = tempdir();
     let store = JsonProjectStore;
     let mut snap = snapshot();
-    // A future ViewKind this build has never heard of.
+    // A future ViewKind this build has never heard of — `dcs-io` stores views as
+    // raw JSON and parses no kinds, so it must round-trip byte-for-byte.
     snap.views.push(serde_json::json!({
-        "kind": "Board",
-        "members": [1, 2, 3],
-        "positions": { "1": [10, 20] }
+        "kind": "Mosaic",
+        "tiles": [1, 2, 3],
+        "layout": { "1": [10, 20] }
     }));
     store.save(&dir, &snap).unwrap();
     let loaded = store.load(&dir).unwrap().unwrap();

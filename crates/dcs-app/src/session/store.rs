@@ -83,6 +83,7 @@ impl Session {
         self.cull.forget(&ids);
         self.tags.forget(&ids);
         self.crops.forget(&ids);
+        self.boards.forget(&ids);
         // Drop stale decode generations too, so a later reclaimed PhotoId doesn't
         // inherit a bumped generation and have its fresh decodes discarded.
         self.crop_gen.retain(|id, _| !ids.contains(id));
@@ -372,7 +373,8 @@ impl Session {
             next_id: self.builder.next_id(),
             tags: self.tags.defs(),
             next_tag_id: self.tags.next_id(),
-            views: self.views.clone(),
+            views: self.boards.to_values(),
+            next_view_id: self.boards.next_view_id(),
             config: self.config.clone(),
         }
     }

@@ -13,6 +13,7 @@
 //! about to paint (plus hi-res for the visible cells when zoomed), and reads
 //! back the best resident thumbnail per cell.
 
+mod board;
 mod burst;
 mod display;
 mod edit;
@@ -50,6 +51,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use self::search::AiInit;
+use crate::boards::BoardStore;
 use crate::crops::CropStore;
 use crate::cull::Cull;
 use crate::export::ExportStatus;
@@ -106,6 +108,15 @@ const GALLERY_PREVIEW_EDGE: u32 = 3200;
 /// texture size (most backends cap a single texture near 8–16k); images larger
 /// than this show at this resolution, which is still far past screen-sharp.
 const GALLERY_FULL_EDGE: u32 = 8192;
+
+/// RAM budget for the board canvas cache. The board shows many photos at once,
+/// each decoded only to its on-screen size, so a moderate pool holds a full
+/// canvas of screen-class frames; LRU evicts the rest.
+const BOARD_CACHE_BYTES: u64 = 512_000_000;
+
+/// Longest-side cap for a board item's sharp decode — near-sharp at any sane
+/// zoom without chasing the full sensor resolution per item.
+const BOARD_MAX_EDGE: u32 = 3200;
 
 /// Cap on base decodes kept in flight by the background fill. Enough to keep
 /// the decode pool fed, low enough that viewport requests (issued first each
@@ -298,6 +309,18 @@ pub struct Session {
     /// view doesn't re-request every frame and a smaller-than-target source (its
     /// native size) isn't chased forever. Pruned alongside `gallery` eviction.
     gallery_edge: HashMap<PhotoId, u32>,
+    /// Sharp per-item frames for the board canvas, keyed by `PhotoId`. Dropped on
+    /// leaving the board so the big pixels stop costing RAM.
+    board_cache: ThumbCache,
+    /// Best decode edge already requested per board photo — re-decode only when a
+    /// zoom-in grows the on-screen size past it. Pruned alongside eviction.
+    board_edge: HashMap<PhotoId, u32>,
+    /// `PhotoId → pool index` cache for board decodes (membership is keyed by id,
+    /// not display order). Rebuilt lazily when the pool revision changes, so the
+    /// per-frame board path stays O(1) instead of scanning the whole pool.
+    id_index: HashMap<PhotoId, usize>,
+    /// The pool revision `id_index` was built for; `None` forces a rebuild.
+    id_index_rev: Option<u64>,
     /// Display index the background base-fill has walked to.
     bg_cursor: usize,
     /// Displayable photos whose grid thumbnail has been warmed into the disk
@@ -324,8 +347,9 @@ pub struct Session {
     log: Option<UndoLog>,
     /// Disposable thumb + fingerprint cache, shared with the scan/decode pools.
     cache: Option<SharedCache>,
-    /// Views as raw JSON, round-tripped on save so unknown kinds survive.
-    views: Vec<Value>,
+    /// Owned views store: typed boards plus any unknown view kinds preserved
+    /// verbatim. Round-tripped to raw JSON on save (spec §9b).
+    boards: BoardStore,
     /// Owned project settings: shoot zone, grid zoom.
     config: ProjectConfig,
     /// The open folder root; needed to re-scan and to relativize stored paths.
@@ -389,6 +413,10 @@ impl Session {
             decoder: ThumbDecoderPool::new(),
             base: ThumbCache::new(BASE_CACHE_BYTES),
             hires: ThumbCache::new(HIRES_CACHE_BYTES),
+            board_cache: ThumbCache::new(BOARD_CACHE_BYTES),
+            board_edge: HashMap::new(),
+            id_index: HashMap::new(),
+            id_index_rev: None,
             gallery: ThumbCache::new(GALLERY_CACHE_BYTES),
             gallery_edge: HashMap::new(),
             bg_cursor: 0,
@@ -399,7 +427,7 @@ impl Session {
             store: JsonProjectStore,
             log: None,
             cache: None,
-            views: Vec::new(),
+            boards: BoardStore::default(),
             config: ProjectConfig::default(),
             root: None,
             loaded_records: Vec::new(),
@@ -450,6 +478,10 @@ impl Session {
         self.hires.reset(HIRES_CACHE_BYTES);
         self.gallery.reset(GALLERY_CACHE_BYTES);
         self.gallery_edge.clear();
+        self.board_cache.reset(BOARD_CACHE_BYTES);
+        self.board_edge.clear();
+        self.id_index.clear();
+        self.id_index_rev = None;
         self.bg_cursor = 0;
         self.imported.clear();
         self.sidecar_cache.borrow_mut().clear();
@@ -480,11 +512,11 @@ impl Session {
         self.tags = seed_tags(&snapshot);
         self.crops = seed_crops(&snapshot);
         self.history = seed_history(&snapshot, &sidecar);
-        let (views, config, records) = match snapshot {
-            Some(s) => (s.views, s.config, s.photos),
-            None => (default_views(), ProjectConfig::default(), Vec::new()),
+        let (views, next_view_id, config, records) = match snapshot {
+            Some(s) => (s.views, s.next_view_id, s.config, s.photos),
+            None => (default_views(), 0, ProjectConfig::default(), Vec::new()),
         };
-        self.views = views;
+        self.boards = BoardStore::from_values(views, next_view_id);
         self.config = config;
         self.loaded_records = records;
         self.log = UndoLog::open(&sidecar.join(UNDO_LOG_FILE)).ok();

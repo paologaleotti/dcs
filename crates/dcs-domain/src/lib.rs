@@ -22,3 +22,4 @@ pub mod sort;
 pub mod tag;
 pub mod thumb;
 pub mod timezone;
+pub mod view;

@@ -23,6 +23,7 @@ use crate::crops::CropEdit;
 use crate::cull::AcceptState;
 use crate::photo::PhotoId;
 use crate::tag::{Color, Tag, TagId};
+use crate::view::{BoardItem, Pos, ViewId};
 
 /// A single undoable mutation, as dispatched by a command surface. Verdict and
 /// tag intents; board variants land with the board view, added at the end.
@@ -54,6 +55,15 @@ pub enum Command {
     /// Set (or clear, with `None`) the crop+straighten edit on every listed
     /// photo. The `Vec` may contain duplicates; dispatch dedups first.
     SetCrop(Vec<PhotoId>, Option<CropEdit>),
+    /// Place photos on a board at the given scene positions (a drop). Photos
+    /// already on the board are skipped — membership is a set. Dispatch dedups
+    /// the list to unique photos first.
+    AddToBoard(ViewId, Vec<(PhotoId, Pos)>),
+    /// Remove photos from a board. Untouched if a photo isn't placed.
+    RemoveFromBoard(ViewId, Vec<PhotoId>),
+    /// Move placed photos to new scene positions — one entry per dragged photo,
+    /// coalesced from a whole drag gesture so the drop is a single undo step.
+    MoveOnBoard(ViewId, Vec<(PhotoId, Pos)>),
 }
 
 /// One reversible verdict change: the photo, its verdict before, and after.
@@ -62,6 +72,39 @@ pub type VerdictChange = (PhotoId, AcceptState, AcceptState);
 /// One reversible crop change: the photo, its edit before, and after. `None`
 /// means uncropped, so this captures setting, changing, and clearing a crop.
 pub type CropChange = (PhotoId, Option<CropEdit>, Option<CropEdit>);
+
+/// One reversible board change, recorded as the *forward* mutation. A store
+/// replays it forward to apply and backward to revert — no separate inverse
+/// type, mirroring [`CropChange`]. Carries the full [`BoardItem`] on add/remove
+/// so reverting restores the original position, scale, and stacking index.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum BoardDelta {
+    /// A photo was placed on top of the board. Revert: remove it.
+    Added(ViewId, BoardItem),
+    /// A photo was removed from stack index `usize`. Revert: re-insert it there.
+    Removed(ViewId, usize, BoardItem),
+    /// A photo moved from `before` to `after`. Revert: move it back.
+    Moved(ViewId, PhotoId, Pos, Pos),
+}
+
+impl BoardDelta {
+    /// The view this delta concerns.
+    pub fn view(&self) -> ViewId {
+        match self {
+            BoardDelta::Added(v, _)
+            | BoardDelta::Removed(v, _, _)
+            | BoardDelta::Moved(v, _, _, _) => *v,
+        }
+    }
+
+    /// The photo this delta concerns.
+    pub fn photo(&self) -> PhotoId {
+        match self {
+            BoardDelta::Added(_, item) | BoardDelta::Removed(_, _, item) => item.photo,
+            BoardDelta::Moved(_, p, _, _) => *p,
+        }
+    }
+}
 
 /// One reversible tag change. Granular and self-inverting so a command that
 /// touches many photos or several defs records a flat list of these, and undo
@@ -124,6 +167,9 @@ pub enum Patch {
     Tag(Vec<TagDelta>),
     /// Crop deltas, one per changed photo (deduped to unique photos).
     Crop(Vec<CropChange>),
+    /// Board deltas (place/remove/move), in apply order; undo reverts each in
+    /// reverse. One patch per board command — a coalesced drag is one patch.
+    Board(Vec<BoardDelta>),
 }
 
 impl Patch {
@@ -134,6 +180,7 @@ impl Patch {
             Patch::Verdict(c) => c.is_empty(),
             Patch::Tag(d) => d.is_empty(),
             Patch::Crop(c) => c.is_empty(),
+            Patch::Board(d) => d.is_empty(),
         }
     }
 }

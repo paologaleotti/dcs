@@ -21,6 +21,15 @@ impl Session {
         self.sel.count()
     }
 
+    /// The selected photos in visible display order — what a board drag carries
+    /// when the dragged cell is part of a multi-selection.
+    pub fn selected_ids(&self) -> Vec<PhotoId> {
+        self.visible_ids()
+            .into_iter()
+            .filter(|id| self.sel.is_selected(*id))
+            .collect()
+    }
+
     /// Owned verdict for a photo (absent = `Unreviewed`).
     pub fn verdict(&self, id: PhotoId) -> AcceptState {
         self.cull.state(id)
@@ -185,10 +194,12 @@ impl Session {
         if self.read_only {
             return false;
         }
-        if let Some(patch) = self
-            .history
-            .undo(&mut self.cull, &mut self.tags, &mut self.crops)
-        {
+        if let Some(patch) = self.history.undo(
+            &mut self.cull,
+            &mut self.tags,
+            &mut self.crops,
+            &mut self.boards,
+        ) {
             if let Some(log) = &mut self.log {
                 let _ = log.record_undo();
             }
@@ -206,10 +217,12 @@ impl Session {
         if self.read_only {
             return false;
         }
-        if let Some(patch) = self
-            .history
-            .redo(&mut self.cull, &mut self.tags, &mut self.crops)
-        {
+        if let Some(patch) = self.history.redo(
+            &mut self.cull,
+            &mut self.tags,
+            &mut self.crops,
+            &mut self.boards,
+        ) {
             if let Some(log) = &mut self.log {
                 let _ = log.record_redo();
             }
@@ -292,9 +305,13 @@ impl Session {
         if self.read_only {
             return None;
         }
-        let patch =
-            self.history
-                .dispatch(command, &mut self.cull, &mut self.tags, &mut self.crops)?;
+        let patch = self.history.dispatch(
+            command,
+            &mut self.cull,
+            &mut self.tags,
+            &mut self.crops,
+            &mut self.boards,
+        )?;
         if let Some(log) = &mut self.log {
             let _ = log.record_patch(&patch);
         }

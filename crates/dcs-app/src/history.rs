@@ -9,9 +9,10 @@
 
 use std::collections::{HashSet, VecDeque};
 
-use dcs_domain::command::{Command, Patch, TagDelta};
+use dcs_domain::command::{BoardDelta, Command, Patch, TagDelta};
 use dcs_domain::photo::PhotoId;
 
+use crate::boards::BoardStore;
 use crate::crops::CropStore;
 use crate::cull::Cull;
 use crate::tags::TagStore;
@@ -72,6 +73,7 @@ impl History {
         cull: &mut Cull,
         tags: &mut TagStore,
         crops: &mut CropStore,
+        boards: &mut BoardStore,
     ) -> Option<Patch> {
         let patch = match command {
             Command::SetState(ids, target) => Patch::Verdict(cull.apply_set_state(&ids, target)),
@@ -83,6 +85,11 @@ impl History {
             Command::SetTagColor(id, color) => Patch::Tag(tags.apply_recolor(id, color)),
             Command::DeleteTag(id) => Patch::Tag(tags.apply_delete(id)),
             Command::SetCrop(ids, target) => Patch::Crop(crops.apply_set_crop(&ids, target)),
+            Command::AddToBoard(view, items) => Patch::Board(boards.apply_add(view, &items)),
+            Command::RemoveFromBoard(view, photos) => {
+                Patch::Board(boards.apply_remove(view, &photos))
+            }
+            Command::MoveOnBoard(view, items) => Patch::Board(boards.apply_move(view, &items)),
         };
         if patch.is_empty() {
             return None;
@@ -99,9 +106,10 @@ impl History {
         cull: &mut Cull,
         tags: &mut TagStore,
         crops: &mut CropStore,
+        boards: &mut BoardStore,
     ) -> Option<Patch> {
         let patch = self.undo.pop_back()?;
-        Self::revert(&patch, cull, tags, crops);
+        Self::revert(&patch, cull, tags, crops, boards);
         self.redo.push(patch.clone());
         Some(patch)
     }
@@ -113,9 +121,10 @@ impl History {
         cull: &mut Cull,
         tags: &mut TagStore,
         crops: &mut CropStore,
+        boards: &mut BoardStore,
     ) -> Option<Patch> {
         let patch = self.redo.pop()?;
-        Self::apply(&patch, cull, tags, crops);
+        Self::apply(&patch, cull, tags, crops, boards);
         self.undo.push_back(patch.clone());
         Some(patch)
     }
@@ -134,19 +143,33 @@ impl History {
         self.redo.retain(|p| !p.is_empty());
     }
 
-    fn apply(patch: &Patch, cull: &mut Cull, tags: &mut TagStore, crops: &mut CropStore) {
+    fn apply(
+        patch: &Patch,
+        cull: &mut Cull,
+        tags: &mut TagStore,
+        crops: &mut CropStore,
+        boards: &mut BoardStore,
+    ) {
         match patch {
             Patch::Verdict(c) => cull.apply(c),
             Patch::Tag(d) => tags.apply(d),
             Patch::Crop(c) => crops.apply(c),
+            Patch::Board(d) => boards.apply(d),
         }
     }
 
-    fn revert(patch: &Patch, cull: &mut Cull, tags: &mut TagStore, crops: &mut CropStore) {
+    fn revert(
+        patch: &Patch,
+        cull: &mut Cull,
+        tags: &mut TagStore,
+        crops: &mut CropStore,
+        boards: &mut BoardStore,
+    ) {
         match patch {
             Patch::Verdict(c) => cull.revert(c),
             Patch::Tag(d) => tags.revert(d),
             Patch::Crop(c) => crops.revert(c),
+            Patch::Board(d) => boards.revert(d),
         }
     }
 
@@ -168,5 +191,6 @@ fn scrub(patch: &mut Patch, ids: &HashSet<PhotoId>) {
             _ => true,
         }),
         Patch::Crop(changes) => changes.retain(|(id, _, _)| !ids.contains(id)),
+        Patch::Board(deltas) => deltas.retain(|d: &BoardDelta| !ids.contains(&d.photo())),
     }
 }

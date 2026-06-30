@@ -1,6 +1,7 @@
 //! The single durable undo timeline (#10, #18): one stack reverses both verdict
 //! and tag mutations, in order, with PhotoId dedup and no-op suppression.
 
+use dcs_app::boards::BoardStore;
 use dcs_app::crops::CropStore;
 use dcs_app::cull::Cull;
 use dcs_app::history::History;
@@ -9,13 +10,15 @@ use dcs_domain::command::{Command, Patch, TagDelta};
 use dcs_domain::cull::AcceptState;
 use dcs_domain::photo::PhotoId;
 use dcs_domain::tag::{Color, TagId};
+use dcs_domain::view::ViewId;
 
-/// A fresh (history, cull, tags) triple plus a dispatch helper.
+/// A fresh (history, cull, tags, crops, boards) bundle plus a dispatch helper.
 struct Env {
     h: History,
     c: Cull,
     t: TagStore,
     cr: CropStore,
+    b: BoardStore,
 }
 
 impl Env {
@@ -25,20 +28,26 @@ impl Env {
             c: Cull::new(),
             t: TagStore::new(),
             cr: CropStore::new(),
+            b: BoardStore::default(),
         }
     }
     fn run(&mut self, cmd: Command) -> Option<Patch> {
-        self.h.dispatch(cmd, &mut self.c, &mut self.t, &mut self.cr)
+        self.h
+            .dispatch(cmd, &mut self.c, &mut self.t, &mut self.cr, &mut self.b)
     }
     fn undo(&mut self) -> bool {
         self.h
-            .undo(&mut self.c, &mut self.t, &mut self.cr)
+            .undo(&mut self.c, &mut self.t, &mut self.cr, &mut self.b)
             .is_some()
     }
     fn redo(&mut self) -> bool {
         self.h
-            .redo(&mut self.c, &mut self.t, &mut self.cr)
+            .redo(&mut self.c, &mut self.t, &mut self.cr, &mut self.b)
             .is_some()
+    }
+    /// Ensure a board exists and return its id.
+    fn board(&mut self) -> ViewId {
+        self.b.ensure_board().0
     }
     /// Create a tag and return its id.
     fn tag(&mut self, name: &str) -> TagId {
@@ -344,4 +353,137 @@ fn undo_redo_replays_cleanly_after_forget() {
     // The forgotten photo never reappears through replay.
     assert!(!e.t.is_assigned(t, PhotoId(1)));
     assert_eq!(e.c.state(PhotoId(1)), AcceptState::Unreviewed);
+}
+
+fn pos(x: f32, y: f32) -> dcs_domain::view::Pos {
+    dcs_domain::view::Pos::new(x, y)
+}
+
+#[test]
+fn board_add_move_remove_undo_redo_round_trips() {
+    let mut e = Env::new();
+    let v = e.board();
+
+    // Drop two photos.
+    e.run(Command::AddToBoard(
+        v,
+        vec![(PhotoId(1), pos(0.0, 0.0)), (PhotoId(2), pos(5.0, 5.0))],
+    ));
+    assert_eq!(e.b.items(v).len(), 2);
+    assert_eq!(e.h.undo_depth(), 1, "a drop is one entry");
+
+    // Move one.
+    e.run(Command::MoveOnBoard(v, vec![(PhotoId(1), pos(9.0, 9.0))]));
+    assert_eq!(e.b.items(v)[0].pos, pos(9.0, 9.0));
+
+    // Undo the move → back to origin; undo the add → empty board.
+    assert!(e.undo());
+    assert_eq!(e.b.items(v)[0].pos, pos(0.0, 0.0));
+    assert!(e.undo());
+    assert!(e.b.items(v).is_empty());
+
+    // Redo both.
+    assert!(e.redo());
+    assert_eq!(e.b.items(v).len(), 2);
+    assert!(e.redo());
+    assert_eq!(e.b.items(v)[0].pos, pos(9.0, 9.0));
+}
+
+#[test]
+fn board_remove_restores_position_and_stacking_on_undo() {
+    let mut e = Env::new();
+    let v = e.board();
+    e.run(Command::AddToBoard(
+        v,
+        vec![
+            (PhotoId(1), pos(1.0, 1.0)),
+            (PhotoId(2), pos(2.0, 2.0)),
+            (PhotoId(3), pos(3.0, 3.0)),
+        ],
+    ));
+    // Remove the middle one.
+    e.run(Command::RemoveFromBoard(v, vec![PhotoId(2)]));
+    assert_eq!(
+        e.b.items(v).iter().map(|i| i.photo).collect::<Vec<_>>(),
+        vec![PhotoId(1), PhotoId(3)]
+    );
+    // Undo restores it at its original stack index and position.
+    assert!(e.undo());
+    assert_eq!(
+        e.b.items(v).iter().map(|i| i.photo).collect::<Vec<_>>(),
+        vec![PhotoId(1), PhotoId(2), PhotoId(3)]
+    );
+    assert_eq!(e.b.items(v)[1].pos, pos(2.0, 2.0));
+}
+
+#[test]
+fn board_move_coalesces_to_one_entry_and_noop_records_nothing() {
+    let mut e = Env::new();
+    let v = e.board();
+    e.run(Command::AddToBoard(
+        v,
+        vec![(PhotoId(1), pos(0.0, 0.0)), (PhotoId(2), pos(0.0, 0.0))],
+    ));
+    let before = e.h.undo_depth();
+
+    // A whole drag commits as ONE MoveOnBoard over both photos: one entry.
+    e.run(Command::MoveOnBoard(
+        v,
+        vec![(PhotoId(1), pos(4.0, 0.0)), (PhotoId(2), pos(0.0, 4.0))],
+    ));
+    assert_eq!(
+        e.h.undo_depth(),
+        before + 1,
+        "coalesced drag is one undo entry"
+    );
+
+    // A drag that snapped back to the same spots moves nothing → no entry.
+    assert!(
+        e.run(Command::MoveOnBoard(v, vec![(PhotoId(1), pos(4.0, 0.0))]))
+            .is_none(),
+        "no-op move records nothing"
+    );
+}
+
+#[test]
+fn board_add_skips_already_placed_photos() {
+    let mut e = Env::new();
+    let v = e.board();
+    e.run(Command::AddToBoard(v, vec![(PhotoId(1), pos(0.0, 0.0))]));
+    // Re-dropping photo 1 plus a new photo 2 only adds photo 2.
+    let patch = e.run(Command::AddToBoard(
+        v,
+        vec![(PhotoId(1), pos(9.0, 9.0)), (PhotoId(2), pos(1.0, 1.0))],
+    ));
+    match patch {
+        Some(Patch::Board(d)) => assert_eq!(d.len(), 1, "only the new photo is added"),
+        other => panic!("expected a one-delta board patch, got {other:?}"),
+    }
+    assert_eq!(e.b.items(v).len(), 2);
+    // The original position is untouched (re-drop didn't move it).
+    assert_eq!(e.b.items(v)[0].pos, pos(0.0, 0.0));
+}
+
+#[test]
+fn forget_scrubs_board_deltas() {
+    let mut e = Env::new();
+    let v = e.board();
+    e.run(Command::AddToBoard(
+        v,
+        vec![(PhotoId(1), pos(0.0, 0.0)), (PhotoId(2), pos(1.0, 1.0))],
+    ));
+
+    // Photo 1 vanished: scrub live board state and the timeline.
+    let gone: std::collections::HashSet<PhotoId> = [PhotoId(1)].into_iter().collect();
+    e.b.forget(&gone);
+    e.h.forget(&gone);
+
+    assert_eq!(
+        e.b.items(v).iter().map(|i| i.photo).collect::<Vec<_>>(),
+        vec![PhotoId(2)]
+    );
+    // The surviving add entry replays cleanly and never resurrects photo 1.
+    assert!(e.undo());
+    assert!(e.redo());
+    assert!(!e.b.items(v).iter().any(|i| i.photo == PhotoId(1)));
 }

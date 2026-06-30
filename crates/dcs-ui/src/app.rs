@@ -55,6 +55,7 @@ const LOCK_HEARTBEAT: Duration = Duration::from_secs(60);
 enum ViewMode {
     Grid,
     Gallery,
+    Board,
 }
 
 pub struct DcsApp {
@@ -129,6 +130,13 @@ pub struct DcsApp {
     /// Submitting it adds a `Search` chip and clears the buffer. Shared by the
     /// toolbar field and the keyboard-first search dialog.
     search_input: String,
+    /// Board view state: pan/zoom, the left grid panel's collapse, the canvas
+    /// selection, and any live drag. Ephemeral — only the placements (in the
+    /// session's board store) are owned.
+    board: crate::board::BoardUiState,
+    /// The board canvas's own texture cache, kept apart from the grid's so its
+    /// frame bookkeeping is independent of whether the left panel is open.
+    board_textures: TextureCache,
     /// The `Filter: Search…` dialog (⌘F / palette) is open.
     search_dialog_open: bool,
     /// Focus the dialog's field on the frame it opens.
@@ -179,6 +187,8 @@ impl DcsApp {
             export: ExportDialog::default(),
             last_heartbeat: None,
             search_input: String::new(),
+            board: crate::board::BoardUiState::default(),
+            board_textures: TextureCache::new(),
             search_dialog_open: false,
             search_dialog_focus: false,
             search_dialog_input: String::new(),
@@ -230,6 +240,7 @@ impl eframe::App for DcsApp {
         if self.session.is_scanning()
             || self.session.has_pending()
             || self.session.has_gallery_pending()
+            || self.session.has_board_pending()
             || self.session.has_background_work()
         {
             ctx.request_repaint_after(Duration::from_millis(33));
@@ -272,6 +283,8 @@ impl DcsApp {
     fn open_path(&mut self, dir: PathBuf) {
         self.save_now();
         self.textures.clear();
+        self.board_textures.clear();
+        self.board = crate::board::BoardUiState::default();
         self.session.open_folder(dir);
         if let Some(zoom) = self.session.grid_zoom() {
             self.cell = zoom.clamp(CELL_MIN, CELL_MAX);
@@ -332,24 +345,28 @@ impl DcsApp {
                 self.search_dialog_open = true;
                 self.search_dialog_focus = true;
             }
-            E::EnterGrid => {
-                if self.view == ViewMode::Gallery {
-                    self.exit_gallery();
-                }
-            }
+            E::EnterGrid => match self.view {
+                ViewMode::Gallery => self.exit_gallery(),
+                ViewMode::Board => self.exit_board(),
+                ViewMode::Grid => {}
+            },
             E::EnterGallery => {
+                if self.view == ViewMode::Board {
+                    self.exit_board();
+                }
                 if self.view == ViewMode::Grid {
                     self.enter_gallery();
                 }
             }
-            E::ToggleGallery => {
-                if self.view == ViewMode::Gallery {
-                    self.exit_gallery();
-                } else {
-                    self.enter_gallery();
-                }
-            }
+            E::ToggleGallery => match self.view {
+                // Space is the gallery toggle; the board has no gallery, so it's
+                // inert there (Space would otherwise jump out to the gallery).
+                ViewMode::Board => {}
+                ViewMode::Gallery => self.exit_gallery(),
+                ViewMode::Grid => self.enter_gallery(),
+            },
             E::EnterCrop => self.enter_crop(),
+            E::EnterBoard => self.enter_board(),
             E::ShowMetadata => self.show_metadata = true,
             E::ShowAbout => self.show_about = true,
             E::ShowShortcuts => self.show_shortcuts = true,

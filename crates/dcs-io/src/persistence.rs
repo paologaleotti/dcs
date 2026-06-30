@@ -114,6 +114,9 @@ pub struct ProjectSnapshot {
     pub next_tag_id: u32,
     /// Views as raw JSON values; unknown kinds survive a round-trip verbatim.
     pub views: Vec<serde_json::Value>,
+    /// The monotonic view-id counter to persist (max assigned view id + 1), so a
+    /// new board never reuses a retired view's id.
+    pub next_view_id: u32,
     /// Owned project settings.
     pub config: ProjectConfig,
 }
@@ -214,6 +217,10 @@ struct ProjectDto {
     next_tag_id: u32,
     #[serde(default)]
     views: Vec<serde_json::Value>,
+    /// Defaulted so a pre-board project file (none written) loads as 0 —
+    /// additive, no version bump.
+    #[serde(default)]
+    next_view_id: u32,
     #[serde(default)]
     config: ProjectConfig,
 }
@@ -227,6 +234,7 @@ impl ProjectDto {
             tags: s.tags.clone(),
             next_tag_id: s.next_tag_id,
             views: s.views.clone(),
+            next_view_id: s.next_view_id,
             config: s.config.clone(),
         }
     }
@@ -238,6 +246,7 @@ impl ProjectDto {
             tags: self.tags,
             next_tag_id: self.next_tag_id,
             views: self.views,
+            next_view_id: self.next_view_id,
             config: self.config,
         }
     }
