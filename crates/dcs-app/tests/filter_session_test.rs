@@ -78,6 +78,26 @@ fn tag_group_index(session: &Session) -> usize {
 }
 
 #[test]
+fn display_index_of_tracks_the_visible_set() {
+    // The board's canvas menu relies on this to aim the pool selection at a
+    // right-clicked photo, and to hide pool actions for a photo filtered out of
+    // the grid.
+    let mut session = open_four("dispidx");
+    let a = session.photo_at(0).unwrap().id;
+    let b = session.photo_at(1).unwrap().id;
+    assert_eq!(session.display_index_of(a), Some(0));
+    assert_eq!(session.display_index_of(b), Some(1));
+    assert_eq!(session.display_index_of(dcs_domain::photo::PhotoId(9999)), None);
+
+    // Accept only `a`, then filter to accepted: `b` is no longer visible.
+    session.set_focus(0, false);
+    session.accept();
+    session.set_filter(VerdictFilter::Accepted);
+    assert_eq!(session.display_index_of(a), Some(0));
+    assert_eq!(session.display_index_of(b), None, "filtered-out photo has no index");
+}
+
+#[test]
 fn verdict_toggle_round_trips_through_the_filter() {
     let mut session = open_four("verdict");
     assert!(!session.is_filtered());

@@ -350,14 +350,7 @@ impl DcsApp {
                 ViewMode::Board => self.exit_board(),
                 ViewMode::Grid => {}
             },
-            E::EnterGallery => {
-                if self.view == ViewMode::Board {
-                    self.exit_board();
-                }
-                if self.view == ViewMode::Grid {
-                    self.enter_gallery();
-                }
-            }
+            E::EnterGallery => self.enter_gallery(),
             E::ToggleGallery => match self.view {
                 // Space is the gallery toggle; the board has no gallery, so it's
                 // inert there (Space would otherwise jump out to the gallery).

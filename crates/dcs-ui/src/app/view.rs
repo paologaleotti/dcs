@@ -369,10 +369,15 @@ impl DcsApp {
     }
 
     /// Open the gallery on the focused photo (else the first visible), starting
-    /// contain-fit.
+    /// contain-fit. Mode-agnostic: leaves the board behind first if that's where
+    /// we were, so entering the gallery from any view is one call.
     pub(super) fn enter_gallery(&mut self) {
         if self.session.photo_count() == 0 {
             return;
+        }
+        self.discard_crop();
+        if self.view == ViewMode::Board {
+            self.leave_board();
         }
         if self.session.focus().is_none() {
             self.session.set_focus(0, false);
@@ -386,22 +391,21 @@ impl DcsApp {
     /// Leave the gallery back to the grid, dropping its large frames and asking
     /// the grid to scroll the photo we were viewing into view.
     pub(super) fn exit_gallery(&mut self) {
+        self.discard_crop();
+        self.leave_gallery();
         self.view = ViewMode::Grid;
-        self.gallery_full = false;
-        self.session.clear_gallery();
-        self.gallery_textures.clear();
         self.scroll_to_focus = true;
     }
 
     /// Enter the board view. A no-op on an empty pool (the registry already
-    /// gates it); leaves the gallery first if we were there.
+    /// gates it); leaves the gallery behind first if that's where we were.
     pub(super) fn enter_board(&mut self) {
         if self.session.photo_count() == 0 {
             return;
         }
+        self.discard_crop();
         if self.view == ViewMode::Gallery {
-            self.session.clear_gallery();
-            self.gallery_textures.clear();
+            self.leave_gallery();
         }
         self.view = ViewMode::Board;
         self.board.end_drag();
@@ -410,17 +414,46 @@ impl DcsApp {
     /// Leave the board back to the grid. The placements persist in the session;
     /// only the ephemeral canvas state (pan/zoom, selection, drag) is dropped.
     pub(super) fn exit_board(&mut self) {
+        self.discard_crop();
+        self.leave_board();
         self.view = ViewMode::Grid;
-        self.board.end_drag();
-        self.session.clear_board();
-        self.board_textures.clear();
         self.scroll_to_focus = true;
     }
 
-    /// Enter the crop editor on the focused photo. Seeds the working edit from
-    /// the photo's committed crop (or identity) and clears the gallery cache so
-    /// the editor's *uncropped* frame doesn't collide with a cropped one on the
-    /// same id. No-op when nothing croppable is focused.
+    /// Cancel an active crop edit without committing it — the teardown any view
+    /// switch runs, since crop is a modal overlay that a deliberate mode change
+    /// abandons. Drops the editor's *uncropped* frame so the next view re-decodes
+    /// cleanly. No-op when not cropping.
+    fn discard_crop(&mut self) {
+        if self.crop_edit.take().is_some() {
+            self.session.clear_gallery();
+            self.gallery_textures.clear();
+        }
+    }
+
+    /// Drop the gallery's large frames and reset its zoom — the teardown shared
+    /// by every path that leaves the gallery.
+    fn leave_gallery(&mut self) {
+        self.gallery_full = false;
+        self.session.clear_gallery();
+        self.gallery_textures.clear();
+    }
+
+    /// Drop the board's canvas caches and any live drag — the teardown shared by
+    /// every path that leaves the board.
+    fn leave_board(&mut self) {
+        self.board.end_drag();
+        self.session.clear_board();
+        self.board_textures.clear();
+    }
+
+    /// Enter the crop editor on the focused photo. Crop is an overlay *over the
+    /// gallery*, so entering from the grid or board switches into the gallery
+    /// first — then cropping opens and closes against a consistent underlying
+    /// view. Seeds the working edit from the photo's committed crop (or identity)
+    /// and clears the gallery cache so the editor's *uncropped* frame doesn't
+    /// collide with a cropped one on the same id. No-op when nothing croppable is
+    /// focused.
     pub(super) fn enter_crop(&mut self) {
         // Already editing — don't re-seed and clobber the working edit.
         if self.crop_edit.is_some() {
@@ -428,6 +461,9 @@ impl DcsApp {
         }
         if !self.session.focused_is_croppable() {
             return;
+        }
+        if self.view != ViewMode::Gallery {
+            self.enter_gallery();
         }
         let Some(focus) = self.session.focus() else {
             return;
@@ -442,9 +478,9 @@ impl DcsApp {
     }
 
     /// Leave the crop editor back to the gallery, dropping the working edit and
-    /// the editor's uncropped frame so the gallery re-decodes with the crop. The
-    /// underlying `view` is already `Gallery` (crop never changed it), so clearing
-    /// `crop_edit` falls back there.
+    /// the editor's uncropped frame so the gallery re-decodes with the crop.
+    /// `enter_crop` guarantees the underlying view is the gallery, so clearing
+    /// `crop_edit` falls back there consistently.
     pub(super) fn exit_crop(&mut self) {
         self.crop_edit = None;
         self.session.clear_gallery();

@@ -53,6 +53,13 @@ When adding a `use` import, verify it respects this graph.
 - **Comments discipline:** `///` on all public functions/types. Private functions get doc comments only when the logic isn't obvious. No section-separator/banner comments. Inline comments only where the *why* isn't clear from the code.
 - **No spec-reference noise.** Never write comments whose only content is a spec pointer (`§2.13`, `#34`, `(spec §6.9)`, `open Q#8`) — they add tokens and visual noise without explaining anything. Don't append `(§X)` tags to otherwise-fine comments either. A comment must explain a *why* or a non-obvious *what* that the code itself doesn't; if it only points at the spec or restates the code, delete it. Trace design decisions through `spec.md` and commit messages, not inline tags.
 
+### Comments
+
+- **Default to none**: prefer self-explanatory names and structure over comments. Don't restate code, don't add ceremony.
+- **Be concise**: one short line where it genuinely adds something. Explain the **why** (non-obvious intent, a subtle constraint), not the **what** the code already states.
+- **Write timeless comments**: a comment describes the code as it is **now**. Never narrate history, iterations, or transitions ("changed to X", "now resolves instead of...", "previously we...") - that's what `git` is for.
+
+
 ## Error Handling
 
 - Errors carry context: `ExportError::BadTemplate(String)`, not a bare `io::Error`.

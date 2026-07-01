@@ -21,6 +21,14 @@ impl Session {
         self.sel.count()
     }
 
+    /// The display index of a photo in the current visible order, if it's shown
+    /// (a board photo filtered out of the grid has none). Lets the board aim the
+    /// pool selection at a right-clicked canvas image so shared photo actions
+    /// target it.
+    pub fn display_index_of(&self, id: PhotoId) -> Option<usize> {
+        self.visible_ids().iter().position(|&v| v == id)
+    }
+
     /// The selected photos in visible display order — what a board drag carries
     /// when the dragged cell is part of a multi-selection.
     pub fn selected_ids(&self) -> Vec<PhotoId> {

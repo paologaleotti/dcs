@@ -4,8 +4,8 @@
 //! drag source; the rest is an [`egui::Scene`] (pan/zoom) canvas where placed
 //! photos can be dragged around. Dropping a grid cell onto the canvas places it
 //! (`AddToBoard`); dragging a placed photo moves it, coalesced into one undo
-//! entry on release (`MoveOnBoard`, spec #35); an aborted drag (Esc) commits
-//! nothing. `Delete` removes the canvas selection (`RemoveFromBoard`).
+//! entry on release (`MoveOnBoard`); an aborted drag (Esc) commits nothing.
+//! `Delete` removes the canvas selection (`RemoveFromBoard`).
 //!
 //! Only placements are owned (in the session's board store). Everything here —
 //! pan/zoom, panel width, the canvas selection, the live drag — is ephemeral.
@@ -17,7 +17,7 @@ use dcs_domain::photo::PhotoId;
 use dcs_domain::view::{Pos, ViewId};
 use egui::{Color32, Pos2, Rect, Scene, Sense, Stroke, StrokeKind, Vec2};
 
-use crate::context_menu::MenuTarget;
+use crate::context_menu::{self, BoardItemPick, MenuTarget};
 use crate::grid::{self, TexRef, TextureCache};
 use crate::theme;
 
@@ -126,7 +126,7 @@ pub fn show(
         };
     };
 
-    let (action, cols) = left_panel(
+    let (grid_action, cols) = left_panel(
         ui,
         session,
         grid_textures,
@@ -135,8 +135,12 @@ pub fn show(
         grid_ctx,
         scroll_to_focus,
     );
-    canvas(ui, session, canvas_textures, state, view);
-    BoardResponse { action, cols }
+    let canvas_action = canvas(ui, session, canvas_textures, state, view);
+    // Only one menu is ever open at a time, so either side yields at most one.
+    BoardResponse {
+        action: canvas_action.or(grid_action),
+        cols,
+    }
 }
 
 /// The left panel: the grid as a drag source, with a collapse toggle. When
@@ -222,23 +226,32 @@ fn left_panel(
 }
 
 /// The pan/zoom canvas. Paints placed photos, handles drag-to-move (coalesced),
-/// drop-to-place, click-to-select, and `Delete`/`Esc`.
+/// drop-to-place, click-to-select, the per-image right-click menu, and `Delete`.
+/// Returns a registry action chosen from an image's context menu, dispatched by
+/// the app through the one registry path (board-native picks are applied here).
 fn canvas(
     ui: &mut egui::Ui,
     session: &mut Session,
     textures: &mut TextureCache,
     state: &mut BoardUiState,
     view: ViewId,
-) {
+) -> Option<AppAction> {
     textures.begin_frame();
     // Owned placements, snapshotted so the per-item texture borrow of `session`
     // doesn't clash with reading the board.
-    let items: Vec<dcs_domain::view::BoardItem> = session.board_items(view).to_vec();
+    let mut items: Vec<dcs_domain::view::BoardItem> = session.board_items(view).to_vec();
     // Drop any selection entries whose photos left the board (e.g. a missing-file
     // prune), so stale ids don't linger or drive empty work.
     state
         .selection
         .retain(|id| items.iter().any(|it| it.photo == *id));
+    // While dragging, paint the grabbed items last so they ride on top of the
+    // rest — a stable partition of the frame snapshot only. The persisted z-order
+    // isn't touched until the move actually commits (an aborted drag changes
+    // nothing), so this is display-order, not owned state.
+    if let Some(d) = &state.drag {
+        items.sort_by_key(|it| d.photos.contains(&it.photo));
+    }
 
     // A single recenter button pinned to the canvas's bottom-right corner: fit
     // the view to all placed photos (so a lost/panned-away canvas is one click
@@ -265,6 +278,16 @@ fn canvas(
     let mut frame_delta = Vec2::ZERO;
     let mut released = false;
     let mut background_clicked = false;
+    // Context-menu results: a registry action to dispatch, and board-native picks
+    // to apply, all deferred out of the scene closure. `menu_remove` removes the
+    // canvas selection (right-click keeps an existing multi-selection intact).
+    let mut menu_action: Option<AppAction> = None;
+    let mut menu_raise: Option<PhotoId> = None;
+    let mut menu_remove = false;
+    // The grabbed photo to raise once a move actually commits (raise-on-grab
+    // would persist even for an aborted drag — spec #35 says abort commits
+    // nothing).
+    let mut to_raise: Option<PhotoId> = None;
 
     let scene = Scene::new().zoom_range(egui::Rangef::new(0.1, 4.0));
     scene.show(ui, &mut state.scene_rect, |ui| {
@@ -348,6 +371,31 @@ fn canvas(
                     state.selection.insert(item.photo);
                 }
             }
+            // Right-click aims both selections at the photo so the shared photo
+            // actions target it — but right-clicking inside an existing canvas
+            // multi-selection leaves it intact (the file-manager convention, and
+            // what the grid does), so a menu "Remove from board" can act on the
+            // whole set.
+            if resp.secondary_clicked() {
+                if !state.selection.contains(&item.photo) {
+                    state.selection.clear();
+                    state.selection.insert(item.photo);
+                }
+                if let Some(idx) = session.display_index_of(item.photo) {
+                    session.click_select(idx);
+                }
+            }
+            resp.context_menu(|ui| {
+                // `display_index_of` walks the visible order, so compute it only
+                // while the menu is actually open (not per item per frame).
+                let idx = session.display_index_of(item.photo);
+                match context_menu::board_item_menu(ui, session, idx) {
+                    Some(BoardItemPick::Registry(a)) => menu_action = Some(a),
+                    Some(BoardItemPick::Raise) => menu_raise = Some(item.photo),
+                    Some(BoardItemPick::Remove) => menu_remove = true,
+                    None => {}
+                }
+            });
         }
     });
 
@@ -371,9 +419,6 @@ fn canvas(
             grabbed: photo,
             offset: Vec2::ZERO,
         });
-        // Grabbing brings the photo to the front, so the one you're moving is
-        // never hidden under others (takes effect next frame's snapshot).
-        session.raise_on_board(view, photo);
     }
 
     // Accumulate this frame's movement into the live offset. (Esc-to-abort is
@@ -399,12 +444,14 @@ fn canvas(
             })
             .collect();
         to_move = Some(moves);
+        // A committed move brings the grabbed photo to the front.
+        to_raise = Some(d.grabbed);
     }
 
-    // Delete removes the canvas selection from the board.
+    // `Delete` and the menu's "Remove from board" both drop the canvas selection.
     let delete =
         ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
-    if delete && !state.selection.is_empty() {
+    if (delete || menu_remove) && !state.selection.is_empty() {
         let removed: Vec<PhotoId> = state.selection.iter().copied().collect();
         session.remove_from_board(view, removed.clone());
         for id in removed {
@@ -432,8 +479,13 @@ fn canvas(
     if let Some(moves) = to_move {
         session.move_on_board(view, moves);
     }
+    // Raise the grabbed photo after its move commits, and honor a menu raise.
+    if let Some(photo) = to_raise.or(menu_raise) {
+        session.raise_on_board(view, photo);
+    }
 
     textures.evict_over_budget();
+    menu_action
 }
 
 /// A scene rect that frames every placed item, with a margin so nothing sits on
