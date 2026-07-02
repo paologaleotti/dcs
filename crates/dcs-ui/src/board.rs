@@ -449,8 +449,10 @@ fn canvas(
     }
 
     // `Delete` and the menu's "Remove from board" both drop the canvas selection.
-    let delete =
-        ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
+    // Skipped while a text field owns the keyboard — otherwise Backspace while
+    // typing in the search field or a palette would remove board photos.
+    let delete = !ui.ctx().egui_wants_keyboard_input()
+        && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
     if (delete || menu_remove) && !state.selection.is_empty() {
         let removed: Vec<PhotoId> = state.selection.iter().copied().collect();
         session.remove_from_board(view, removed.clone());

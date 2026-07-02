@@ -282,7 +282,12 @@ impl DcsApp {
     /// folder's persisted grid zoom.
     fn open_path(&mut self, dir: PathBuf) {
         self.save_now();
+        // Drop any live crop edit and every texture cache: `PhotoId`s restart
+        // per folder, so stale editor state or cached frames keyed by the old
+        // folder's ids would attach to the wrong photos in the new one.
+        self.crop_edit = None;
         self.textures.clear();
+        self.gallery_textures.clear();
         self.board_textures.clear();
         self.board = crate::board::BoardUiState::default();
         self.session.open_folder(dir);

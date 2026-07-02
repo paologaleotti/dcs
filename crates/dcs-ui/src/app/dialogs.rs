@@ -6,20 +6,30 @@ use crate::picker::{PickerEvent, PickerItem};
 use crate::theme;
 
 impl DcsApp {
-    /// A banner offering "Take over" when another instance holds the lock.
+    /// A banner shown while the session is read-only: a lock held by another
+    /// instance offers "Take over"; an unloadable project file explains why and
+    /// offers no way to write over it.
     pub(super) fn read_only_banner(&mut self, ui: &mut Ui) {
         if !self.session.is_read_only() {
             return;
         }
         egui::Panel::top("readonly").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("read-only — another instance has this project open")
-                        .monospace()
-                        .color(theme::VERDICT_REJECT),
-                );
-                if ui.button("Take over").clicked() {
-                    self.session.take_over();
+                if let Some(err) = self.session.load_error() {
+                    ui.label(
+                        RichText::new(format!("read-only — project could not be loaded: {err}"))
+                            .monospace()
+                            .color(theme::VERDICT_REJECT),
+                    );
+                } else {
+                    ui.label(
+                        RichText::new("read-only — another instance has this project open")
+                            .monospace()
+                            .color(theme::VERDICT_REJECT),
+                    );
+                    if ui.button("Take over").clicked() {
+                        self.session.take_over();
+                    }
                 }
             });
         });

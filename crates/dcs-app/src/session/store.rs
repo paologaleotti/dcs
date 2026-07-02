@@ -94,13 +94,25 @@ impl Session {
         removed
     }
 
-    /// True while another live instance holds the write lock.
+    /// True while another live instance holds the write lock, or the project
+    /// file exists but could not be loaded (see [`Session::load_error`]).
     pub fn is_read_only(&self) -> bool {
         self.read_only
     }
 
+    /// Why the project file failed to load, when it did. While set the session
+    /// is read-only and cannot be taken over — writing would clobber a project
+    /// file that is likely newer or recoverable.
+    pub fn load_error(&self) -> Option<&str> {
+        self.load_error.as_deref()
+    }
+
     /// Forcibly claim the write lock (UI "Take over"); we become read-write.
+    /// Refused while a load error pins the session read-only.
     pub fn take_over(&mut self) {
+        if self.load_error.is_some() {
+            return;
+        }
         if let Some(lock) = &mut self.project_lock {
             lock.take_over();
             self.read_only = !lock.is_owned();

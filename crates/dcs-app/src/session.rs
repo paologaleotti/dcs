@@ -361,6 +361,10 @@ pub struct Session {
     project_lock: Option<ProjectLock>,
     /// Another live instance holds the lock: viewing is allowed, writing is not.
     read_only: bool,
+    /// Why the project file could not be loaded (corrupt, newer version). While
+    /// set the session is pinned read-only so a save can never rotate the
+    /// unreadable — possibly newer — `project.json` into `.bak` and destroy it.
+    load_error: Option<String>,
     /// App-global recent-projects list, persisted outside any project.
     recents: Recents,
     recents_path: Option<PathBuf>,
@@ -433,6 +437,7 @@ impl Session {
             loaded_records: Vec::new(),
             project_lock: None,
             read_only: false,
+            load_error: None,
             // Recents persistence is opt-in: the UI enables it at startup via
             // `enable_default_recents`, so tests never touch the user's real
             // `~/.dcs/recents.json`.
@@ -505,8 +510,20 @@ impl Session {
 
         // project.json is the authoritative verdict state; undo.log only
         // reconstructs the stacks. A missing/fresh folder yields an empty pool
-        // builder and an empty Cull.
-        let snapshot = self.store.load(&sidecar).ok().flatten();
+        // builder and an empty Cull. A file that *exists but can't be loaded*
+        // (corrupt beyond the .bak fallback, or written by a newer version) must
+        // never be mistaken for a fresh project: opening as empty would mark
+        // dirty on the first edit and the next two saves would rotate the real
+        // file into `.bak` and then destroy that too. Pin read-only instead.
+        self.load_error = None;
+        let snapshot = match self.store.load(&sidecar) {
+            Ok(s) => s,
+            Err(e) => {
+                self.read_only = true;
+                self.load_error = Some(e.to_string());
+                None
+            }
+        };
         self.builder = seed_builder(&snapshot);
         self.cull = seed_cull(&snapshot);
         self.tags = seed_tags(&snapshot);

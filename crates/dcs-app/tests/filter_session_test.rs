@@ -87,14 +87,21 @@ fn display_index_of_tracks_the_visible_set() {
     let b = session.photo_at(1).unwrap().id;
     assert_eq!(session.display_index_of(a), Some(0));
     assert_eq!(session.display_index_of(b), Some(1));
-    assert_eq!(session.display_index_of(dcs_domain::photo::PhotoId(9999)), None);
+    assert_eq!(
+        session.display_index_of(dcs_domain::photo::PhotoId(9999)),
+        None
+    );
 
     // Accept only `a`, then filter to accepted: `b` is no longer visible.
     session.set_focus(0, false);
     session.accept();
     session.set_filter(VerdictFilter::Accepted);
     assert_eq!(session.display_index_of(a), Some(0));
-    assert_eq!(session.display_index_of(b), None, "filtered-out photo has no index");
+    assert_eq!(
+        session.display_index_of(b),
+        None,
+        "filtered-out photo has no index"
+    );
 }
 
 #[test]

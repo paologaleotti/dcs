@@ -180,6 +180,94 @@ fn forgotten_file_returning_comes_back_as_a_fresh_unreviewed_photo() {
 }
 
 #[test]
+fn forget_missing_with_focus_on_last_cell_does_not_panic() {
+    let dir = temp_folder("forget_focus");
+    write_jpeg(&dir, "a.jpg", 1);
+    write_jpeg(&dir, "b.jpg", 2);
+    write_jpeg(&dir, "gone.jpg", 3);
+    {
+        let mut s = open(&dir, 3);
+        s.save().unwrap();
+    }
+    std::fs::remove_file(dir.join("gone.jpg")).unwrap();
+
+    let mut s = open(&dir, 3);
+    assert_eq!(s.missing_count(), 1);
+    // Focus the last visible cell: forgetting compacts the pool, so the focused
+    // cell's old pool index is out of range and the visible rebuild must
+    // resolve it leniently rather than index (and panic).
+    s.click_select(s.pool_len() - 1);
+    assert_eq!(s.forget_missing(), 1);
+    assert_eq!(s.pool_len(), 2);
+    assert_eq!(s.missing_count(), 0);
+}
+
+#[test]
+fn corrupt_project_opens_read_only_and_is_never_clobbered() {
+    let dir = temp_folder("corrupt");
+    write_jpeg(&dir, "a.jpg", 4);
+    {
+        let mut s = open(&dir, 1);
+        s.click_select(0);
+        s.accept();
+        s.save().unwrap();
+    }
+    // Corrupt both the main file and the backup — nothing loadable remains.
+    let sidecar = dir.join(".dcs");
+    std::fs::write(sidecar.join("project.json"), b"{ not json").unwrap();
+    std::fs::write(sidecar.join("project.json.bak"), b"{ not json").unwrap();
+
+    let mut s = open(&dir, 1);
+    assert!(s.is_read_only(), "unloadable project pins read-only");
+    assert!(s.load_error().is_some(), "the reason is surfaced");
+
+    // Mutations are blocked and take-over refused — a save must never rotate
+    // the unreadable file into `.bak` and destroy the last recoverable copy.
+    s.click_select(0);
+    s.reject();
+    assert_eq!(s.verdict_counts(), (0, 0, 1), "read-only blocks culling");
+    s.take_over();
+    assert!(s.is_read_only(), "take over is refused under a load error");
+    s.save().unwrap();
+    assert_eq!(
+        std::fs::read(sidecar.join("project.json")).unwrap(),
+        b"{ not json",
+        "project.json untouched"
+    );
+    assert_eq!(
+        std::fs::read(sidecar.join("project.json.bak")).unwrap(),
+        b"{ not json",
+        "backup untouched"
+    );
+}
+
+#[test]
+fn newer_version_project_opens_read_only() {
+    let dir = temp_folder("newer");
+    write_jpeg(&dir, "a.jpg", 6);
+    {
+        let mut s = open(&dir, 1);
+        s.save().unwrap();
+    }
+    let sidecar = dir.join(".dcs");
+    let newer = br#"{"version": 999, "photos": [], "next_id": 0}"#;
+    std::fs::write(sidecar.join("project.json"), newer).unwrap();
+
+    let mut s = open(&dir, 1);
+    assert!(
+        s.is_read_only(),
+        "a newer-version project must not open as fresh and writable"
+    );
+    assert!(s.load_error().is_some());
+    s.save().unwrap();
+    assert_eq!(
+        std::fs::read(sidecar.join("project.json")).unwrap(),
+        newer,
+        "the newer file survives"
+    );
+}
+
+#[test]
 fn missing_photos_issue_no_decode_requests() {
     // A missing file keeps its stored path, so its decode would always fail and
     // never cache — re-requesting every frame. `request_base`/`request_hires`

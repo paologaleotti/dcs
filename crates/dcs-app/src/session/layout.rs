@@ -95,9 +95,14 @@ impl Session {
         // Capture which photo the cursor sits on *before* the order changes, so
         // focus follows the photo across a re-sort/regroup/filter rather than
         // jumping to whatever new photo lands at the old numeric index.
+        // `visible` may hold stale pool indices (e.g. after `forget_missing`
+        // compacted the pool), so resolve them leniently rather than indexing.
         let photos = self.builder.photos();
-        let id_at =
-            |idx: Option<usize>| idx.and_then(|i| self.visible.get(i)).map(|&p| photos[p].id);
+        let id_at = |idx: Option<usize>| {
+            idx.and_then(|i| self.visible.get(i))
+                .and_then(|&p| photos.get(p))
+                .map(|ph| ph.id)
+        };
         let prev_focus_id = id_at(self.sel.focus());
         let prev_anchor_id = id_at(self.sel.anchor());
 
