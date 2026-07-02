@@ -154,3 +154,54 @@ fn tempdir() -> PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
+
+/// An unreadable file must fall back to a path-derived identity and must NOT
+/// cache it: once readable again, the real content hash takes over — a cached
+/// wrong fingerprint would permanently detach the photo from its verdicts.
+#[cfg(unix)]
+#[test]
+fn unreadable_file_gets_uncached_path_identity() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir();
+    let path = dir.join("locked.jpg");
+    write(&path, b"secret bytes");
+    let readable_fp = scan_all(&dir, None)[0].fingerprint;
+
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let cache = Arc::new(Mutex::new(
+        SqliteCache::in_memory(DEFAULT_THUMB_CAP_BYTES).unwrap(),
+    ));
+    let locked = scan_all(&dir, Some(Arc::clone(&cache)));
+    let locked_fp = locked[0].fingerprint;
+    assert_ne!(
+        locked_fp, readable_fp,
+        "unreadable file falls back to path identity"
+    );
+
+    // The fallback identity is never cached, so the next scan (readable again)
+    // recomputes the true content hash instead of serving the fallback.
+    {
+        let guard = cache.lock().unwrap();
+        use dcs_io::cache::FingerprintCache;
+        let meta = std::fs::metadata(&path).unwrap();
+        let mtime = meta
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert_eq!(
+            guard.lookup("locked.jpg", mtime, meta.len()),
+            None,
+            "fallback fingerprint must not be cached"
+        );
+    }
+
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let restored = scan_all(&dir, Some(cache));
+    assert_eq!(
+        restored[0].fingerprint, readable_fp,
+        "content identity returns once the file is readable"
+    );
+}

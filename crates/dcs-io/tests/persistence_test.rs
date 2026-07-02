@@ -254,3 +254,32 @@ fn tempdir() -> std::path::PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
+
+#[test]
+fn save_worker_writes_in_the_background_and_blocks_on_demand() {
+    use dcs_io::persistence::spawn_saver;
+
+    let dir = tempdir();
+    let saver = spawn_saver(JsonProjectStore);
+
+    // Fire-and-forget request → result arrives via poll.
+    assert!(saver.request(dir.clone(), snapshot()));
+    let mut results = Vec::new();
+    for _ in 0..3000 {
+        results.extend(saver.poll());
+        if !results.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(matches!(results.as_slice(), [Ok(())]));
+
+    // Blocking save waits for its own write and absorbs earlier queued ones.
+    assert!(saver.request(dir.clone(), snapshot()));
+    let final_result = saver.save_blocking(dir.clone(), snapshot());
+    assert!(matches!(final_result, Some(Ok(()))));
+    assert!(saver.poll().is_empty(), "no stray results left behind");
+
+    let loaded = JsonProjectStore.load(&dir).unwrap().unwrap();
+    assert_eq!(loaded.photos.len(), snapshot().photos.len());
+}

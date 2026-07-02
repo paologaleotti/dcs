@@ -175,10 +175,19 @@ impl SqliteCache {
              );",
         )
         .map_err(db)?;
+        // Seed the LRU tick past the largest persisted `last_used`: starting at
+        // 1 on a warm db would stamp this session's touches *below* last
+        // session's rows, inverting eviction (hot set evicted first).
+        let max_used: u64 = conn
+            .query_row("SELECT COALESCE(MAX(last_used), 0) FROM thumbs", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map_err(db)?
+            .max(0) as u64;
         let cache = SqliteCache {
             conn,
             thumb_cap_bytes,
-            tick: AtomicU64::new(1),
+            tick: AtomicU64::new(max_used + 1),
             thumb_bytes_est: AtomicU64::new(0),
         };
         // Seed the estimate from the real total (0 for a fresh db, the resident

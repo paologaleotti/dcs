@@ -202,6 +202,107 @@ impl ProjectStore for JsonProjectStore {
     }
 }
 
+/// Handle to a background save worker: `project.json` writes (serialize +
+/// fsync) run off the caller's thread, so a UI thread never blocks on disk.
+/// Requests are processed serially in order — there is exactly one writer.
+/// Dropping the handle joins the worker, so every queued save lands before
+/// the process can exit under it.
+pub struct SaveWorker {
+    tx: Option<crossbeam_channel::Sender<(PathBuf, ProjectSnapshot)>>,
+    results: crossbeam_channel::Receiver<Result<(), PersistError>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+    /// Requests sent but with no result received yet. `Cell`: the handle lives
+    /// on one thread; the worker only touches the channels.
+    outstanding: std::cell::Cell<usize>,
+}
+
+/// Spawn the save worker owning its own store instance.
+pub fn spawn_saver<S: ProjectStore + Send + 'static>(store: S) -> SaveWorker {
+    let (tx, rx) = crossbeam_channel::unbounded::<(PathBuf, ProjectSnapshot)>();
+    let (res_tx, results) = crossbeam_channel::unbounded();
+    let worker = std::thread::spawn(move || {
+        while let Ok((dir, snapshot)) = rx.recv() {
+            if res_tx.send(store.save(&dir, &snapshot)).is_err() {
+                break; // handle dropped: nobody will read further results
+            }
+        }
+    });
+    SaveWorker {
+        tx: Some(tx),
+        results,
+        worker: Some(worker),
+        outstanding: std::cell::Cell::new(0),
+    }
+}
+
+impl SaveWorker {
+    /// Queue a save without waiting. `false` when the worker is gone (it
+    /// panicked); the caller falls back to a direct write.
+    pub fn request(&self, dir: PathBuf, snapshot: ProjectSnapshot) -> bool {
+        let sent = self
+            .tx
+            .as_ref()
+            .is_some_and(|tx| tx.send((dir, snapshot)).is_ok());
+        if sent {
+            self.outstanding.set(self.outstanding.get() + 1);
+        }
+        sent
+    }
+
+    /// True while queued saves haven't reported back yet. A caller deciding
+    /// "is everything on disk?" must consider this alongside its own dirty
+    /// flag — an optimistically-cleaned state may still be in flight.
+    pub fn has_pending(&self) -> bool {
+        self.outstanding.get() > 0
+    }
+
+    /// Results of finished saves, in request order. Non-blocking.
+    pub fn poll(&self) -> Vec<Result<(), PersistError>> {
+        let drained: Vec<_> = self.results.try_iter().collect();
+        self.outstanding
+            .set(self.outstanding.get().saturating_sub(drained.len()));
+        drained
+    }
+
+    /// Queue a save and wait for it to finish. Results of earlier queued saves
+    /// are absorbed (this snapshot supersedes theirs). `None` when the worker
+    /// is gone — including dying mid-drain, where an earlier save's result
+    /// must never pass for this one's — the caller falls back to a direct
+    /// write.
+    pub fn save_blocking(
+        &self,
+        dir: PathBuf,
+        snapshot: ProjectSnapshot,
+    ) -> Option<Result<(), PersistError>> {
+        if !self.request(dir, snapshot) {
+            return None;
+        }
+        let mut last = None;
+        while self.outstanding.get() > 0 {
+            match self.results.recv() {
+                Ok(result) => {
+                    self.outstanding.set(self.outstanding.get() - 1);
+                    last = Some(result);
+                }
+                Err(_) => return None, // worker died before our result arrived
+            }
+        }
+        last
+    }
+}
+
+/// Join the worker on drop: an in-flight `project.json` write finishes before
+/// the handle's owner can proceed to exit — the queue is never abandoned
+/// mid-write.
+impl Drop for SaveWorker {
+    fn drop(&mut self) {
+        self.tx = None; // close the queue so the worker's recv loop ends
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 /// The versioned on-disk envelope. Distinct from `ProjectSnapshot` so the wire
 /// shape can change independently of the app-facing type.
 #[derive(Serialize, Deserialize)]

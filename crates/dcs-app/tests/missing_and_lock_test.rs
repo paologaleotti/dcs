@@ -408,3 +408,102 @@ fn opening_records_a_recent_project() {
         "the opened folder is remembered in recents"
     );
 }
+
+#[test]
+fn autosave_persists_in_the_background() {
+    let dir = temp_folder("autosave");
+    write_jpeg(&dir, "a.jpg", 11);
+    {
+        let mut s = open(&dir, 1);
+        s.click_select(0);
+        s.accept();
+        assert!(s.is_dirty());
+        s.autosave();
+        assert!(!s.is_dirty(), "autosave optimistically marks clean");
+        // Drain the background result; a success must not re-dirty.
+        for _ in 0..3000 {
+            s.tick();
+            if dir.join(".dcs/project.json").exists() && s.save_error().is_none() {
+                break;
+            }
+            sleep(Duration::from_millis(1));
+        }
+        assert!(s.save_error().is_none());
+        assert!(!s.is_dirty());
+    }
+    let s = open(&dir, 1);
+    assert_eq!(s.verdict_counts().0, 1, "autosaved verdict survives reopen");
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_autosave_re_dirties_and_surfaces_the_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = temp_folder("autosave_fail");
+    write_jpeg(&dir, "a.jpg", 12);
+    let mut s = open(&dir, 1);
+    s.click_select(0);
+    s.accept();
+
+    // Make `.dcs/` unwritable so the background write fails.
+    let sidecar = dir.join(".dcs");
+    std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o555)).unwrap();
+    s.autosave();
+    for _ in 0..3000 {
+        s.tick();
+        if s.save_error().is_some() {
+            break;
+        }
+        sleep(Duration::from_millis(1));
+    }
+    assert!(s.save_error().is_some(), "failure reason is surfaced");
+    assert!(
+        s.is_dirty(),
+        "failed autosave re-dirties so the debounce retries"
+    );
+
+    // Writable again: the retry path works and clears the error.
+    std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o755)).unwrap();
+    s.autosave();
+    for _ in 0..3000 {
+        s.tick();
+        if s.save_error().is_none() && !s.is_dirty() {
+            break;
+        }
+        sleep(Duration::from_millis(1));
+    }
+    assert!(s.save_error().is_none());
+    assert!(!s.is_dirty());
+}
+
+#[test]
+fn focus_follows_the_surviving_photo_through_forget_missing() {
+    // The missing photo scans first (pool index 0), so forgetting it shifts
+    // every survivor's pool index — focus must follow the photo's identity,
+    // not its stale index.
+    let dir = temp_folder("forget_focus_follow");
+    write_jpeg(&dir, "0gone.jpg", 3);
+    write_jpeg(&dir, "a.jpg", 1);
+    write_jpeg(&dir, "b.jpg", 2);
+    {
+        let mut s = open(&dir, 3);
+        s.save().unwrap();
+    }
+    std::fs::remove_file(dir.join("0gone.jpg")).unwrap();
+
+    let mut s = open(&dir, 3);
+    let b = (0..s.pool_len())
+        .filter_map(|i| s.photo_at(i))
+        .find(|p| p.file_name() == "b.jpg")
+        .unwrap()
+        .id;
+    s.set_focus(s.display_index_of(b).unwrap(), false);
+    assert_eq!(s.forget_missing(), 1);
+    assert!(s.focus().is_some(), "focus survives the prune");
+    assert_eq!(
+        s.focus(),
+        s.display_index_of(b),
+        "focus follows the photo, not the stale index"
+    );
+}

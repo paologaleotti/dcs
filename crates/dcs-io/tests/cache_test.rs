@@ -251,3 +251,36 @@ fn tempdir() -> std::path::PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
+
+#[test]
+fn lru_order_survives_reopen() {
+    // The tick must resume past the persisted `last_used` values: if it
+    // restarted at 1, this session's touches would stamp *below* last
+    // session's rows and eviction would drop the hot set first.
+    let dir = tempdir();
+    let path = dir.join("cache.sqlite3");
+    let blob = [0u8; 100];
+    {
+        let cache = SqliteCache::open_with_cap(&path, 250).unwrap();
+        cache.put(&fp(1), ThumbTier::Grid, &blob);
+        cache.put(&fp(2), ThumbTier::Grid, &blob);
+    }
+    let cache = SqliteCache::open_with_cap(&path, 250).unwrap();
+    // Touch #1 in the new session, then push over cap: #2 (untouched since
+    // last session) must be the one evicted.
+    assert!(cache.get(&fp(1), ThumbTier::Grid).is_some());
+    cache.put(&fp(3), ThumbTier::Grid, &blob);
+
+    assert!(
+        cache.get(&fp(1), ThumbTier::Grid).is_some(),
+        "blob touched after reopen survives eviction"
+    );
+    assert!(
+        cache.get(&fp(3), ThumbTier::Grid).is_some(),
+        "newest survives"
+    );
+    assert!(
+        cache.get(&fp(2), ThumbTier::Grid).is_none(),
+        "stale blob from the previous session is the one evicted"
+    );
+}

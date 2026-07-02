@@ -583,3 +583,39 @@ fn plan_crop_clamps_degenerate_edits_to_a_valid_recipe() {
         }
     }
 }
+
+/// `sanitized` is the safety valve every externally supplied edit passes
+/// through, so degenerate (NaN/∞/out-of-range) components must clamp to a
+/// finite, in-range edit — never panic (`f32::clamp` panics on a NaN bound)
+/// and never let a NaN survive into owned, JSON-serialized state.
+#[test]
+fn sanitized_clamps_degenerate_edits_without_panicking() {
+    let degenerate = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -5.0, 5.0, 0.0];
+    for &x in &degenerate {
+        for &w in &degenerate {
+            for &angle in &[0.0f32, 12.0, f32::NAN, f32::INFINITY] {
+                let edit = CropEdit {
+                    angle_deg: angle,
+                    rect: NormRect { x, y: x, w, h: w },
+                };
+                let s = edit.sanitized();
+                assert!(s.angle_deg.is_finite(), "angle finite for {angle}");
+                for v in [s.rect.x, s.rect.y, s.rect.w, s.rect.h] {
+                    assert!((0.0..=1.0).contains(&v), "rect in range for x={x} w={w}");
+                }
+                assert!(s.rect.x + s.rect.w <= 1.0 + f32::EPSILON);
+                assert!(s.rect.y + s.rect.h <= 1.0 + f32::EPSILON);
+            }
+        }
+    }
+}
+
+/// A non-finite aspect ratio must fall back to the bound, matching the
+/// zero/negative guard — a NaN would otherwise flow into a NaN rect.
+#[test]
+fn fit_aspect_rejects_non_finite_ratio() {
+    let bound = NormRect::centered(0.8, 0.8);
+    for ratio in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        assert_eq!(fit_aspect(4000.0, 3000.0, bound, ratio), bound);
+    }
+}

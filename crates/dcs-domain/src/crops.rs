@@ -123,13 +123,20 @@ impl CropEdit {
         acc
     }
 
-    /// Clamp the angle into range and the rect into `0..=1`.
+    /// Clamp the angle into range and the rect into `0..=1`. Non-finite input
+    /// never panics or survives: a NaN/∞ angle pins to 0, NaN/∞ rect fields pin
+    /// to their lower bound via `clamp_axis` — this is the safety valve every
+    /// externally supplied edit passes through.
     pub fn sanitized(self) -> CropEdit {
-        let angle_deg = self.angle_deg.clamp(-MAX_ANGLE_DEG, MAX_ANGLE_DEG);
-        let x = self.rect.x.clamp(0.0, 1.0);
-        let y = self.rect.y.clamp(0.0, 1.0);
-        let w = self.rect.w.clamp(0.0, 1.0 - x);
-        let h = self.rect.h.clamp(0.0, 1.0 - y);
+        let angle_deg = if self.angle_deg.is_finite() {
+            self.angle_deg.clamp(-MAX_ANGLE_DEG, MAX_ANGLE_DEG)
+        } else {
+            0.0
+        };
+        let x = clamp_axis(self.rect.x, 0.0, 1.0);
+        let y = clamp_axis(self.rect.y, 0.0, 1.0);
+        let w = clamp_axis(self.rect.w, 0.0, 1.0 - x);
+        let h = clamp_axis(self.rect.h, 0.0, 1.0 - y);
         CropEdit {
             angle_deg,
             rect: NormRect { x, y, w, h },
@@ -186,7 +193,7 @@ pub fn max_inset_rect(src_w: u32, src_h: u32, angle_deg: f32) -> NormRect {
 /// box). `bbox_w`/`bbox_h` give the box's pixel dimensions so the ratio is in
 /// true pixels, not normalized units. Used by the aspect-ratio presets.
 pub fn fit_aspect(bbox_w: f32, bbox_h: f32, bound: NormRect, ratio: f32) -> NormRect {
-    if ratio <= 0.0 || bbox_w <= 0.0 || bbox_h <= 0.0 {
+    if !ratio.is_finite() || ratio <= 0.0 || bbox_w <= 0.0 || bbox_h <= 0.0 {
         return bound;
     }
     // Bound dimensions in pixels.

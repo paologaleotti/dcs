@@ -216,15 +216,16 @@ pub fn plan_export(
 
     for (seq, item) in items.iter().enumerate() {
         let roles = selected_roles(item.photo, request.files, &mut skipped);
-        // The folder of the photo's first copied file; sidecars ride into it.
-        let mut primary_folder: Option<PathBuf> = None;
+        // The photo's first copied file: dest folder, *final placed* stem, and
+        // the source's own stem. Sidecars ride into that folder under the
+        // placed stem, so a collision-renamed photo keeps its sidecars attached
+        // and never adopts another photo's; the source stem lets a sidecar's
+        // suffix convention (`a.JPG.xmp` vs `a.xmp`) survive the mapping.
+        let mut primary: Option<(PathBuf, String, String)> = None;
         for (role, source) in roles {
             let stem = file_stem(item, request, role, seq);
             let ext = extension(source);
             let folder = destination_folder(&request.dest, request.layout, role, item, source_root);
-            if primary_folder.is_none() {
-                primary_folder = Some(folder.clone());
-            }
             // Only the JPEG carries the crop; the RAW (when present) copies as-is.
             let kind = match (role, item.crop) {
                 (FileRole::Jpeg, Some(edit)) => OpKind::RenderCrop {
@@ -233,34 +234,41 @@ pub fn plan_export(
                 },
                 _ => OpKind::Copy,
             };
-            match place(&folder, &stem, &ext, request.collision, &mut claimed) {
-                Some(dest) => {
-                    if dest_was_renamed(&dest, &folder, &stem, &ext) {
-                        collisions += 1;
-                    }
-                    match role {
-                        FileRole::Jpeg => jpeg_count += 1,
-                        FileRole::Raw => raw_count += 1,
-                        FileRole::Sidecar => {}
-                    }
-                    if matches!(kind, OpKind::RenderCrop { .. }) {
-                        crop_count += 1;
-                    }
-                    ops.push(ExportOp {
-                        source: source.to_path_buf(),
-                        dest,
-                        role,
-                        kind,
-                    });
-                }
-                // Skip policy hit a taken name: nothing copied, counted as a collision.
-                None => collisions += 1,
+            // Skip policy hit a taken name: nothing copied, counted as a
+            // collision — and nothing downstream (original, sidecar) may ride
+            // on a file that was never placed.
+            let Some(dest) = place(&folder, &stem, &ext, request.collision, &mut claimed) else {
+                collisions += 1;
+                continue;
+            };
+            if dest_was_renamed(&dest, &folder, &stem, &ext) {
+                collisions += 1;
             }
-            // With the opt-in, a cropped JPEG also drops its untouched original
-            // into an `originals/` subfolder under the destination root — a plain
-            // copy, run through the same collision machinery.
-            if request.include_uncropped_originals && matches!(kind, OpKind::RenderCrop { .. }) {
-                let folder = request.dest.join("originals");
+            match role {
+                FileRole::Jpeg => jpeg_count += 1,
+                FileRole::Raw => raw_count += 1,
+                FileRole::Sidecar => {}
+            }
+            if matches!(kind, OpKind::RenderCrop { .. }) {
+                crop_count += 1;
+            }
+            if primary.is_none() {
+                primary = Some((folder.clone(), stem_of(&dest), stem_of(source)));
+            }
+            // With the opt-in, a *placed* cropped render also drops its untouched
+            // original into an `originals/` subfolder under the destination root
+            // — a plain copy, run through the same collision machinery, under the
+            // render's final stem so the render↔original link survives a rename.
+            let original = (request.include_uncropped_originals
+                && matches!(kind, OpKind::RenderCrop { .. }))
+            .then(|| (request.dest.join("originals"), stem_of(&dest)));
+            ops.push(ExportOp {
+                source: source.to_path_buf(),
+                dest,
+                role,
+                kind,
+            });
+            if let Some((folder, stem)) = original {
                 match place(&folder, &stem, &ext, request.collision, &mut claimed) {
                     Some(dest) => {
                         if dest_was_renamed(&dest, &folder, &stem, &ext) {
@@ -279,16 +287,20 @@ pub fn plan_export(
             }
         }
         // Sidecars only ride along when the photo actually contributed a file, so
-        // a skipped photo never leaves an orphan XMP behind.
+        // a skipped photo never leaves an orphan XMP behind. They take the placed
+        // file's final stem (template- and collision-renamed alike) so the
+        // sidecar↔file link survives the copy; the extension stays their own, and
+        // a suffix beyond the photo's stem (`a.JPG.xmp`'s `.JPG`) is preserved so
+        // the two sidecar naming conventions can't collapse onto one name.
         if request.sidecars
-            && let Some(folder) = &primary_folder
+            && let Some((folder, placed, source_stem)) = &primary
         {
             for source in item.sidecars {
-                // Match the photo's stem (template-renamed or original) so the
-                // sidecar↔file link survives the copy; the extension stays the
-                // sidecar's own.
-                let stem = sidecar_stem(item, request, source, seq);
                 let ext = extension(source);
+                let stem = match stem_of(source).strip_prefix(source_stem.as_str()) {
+                    Some(suffix) => format!("{placed}{suffix}"),
+                    None => placed.clone(),
+                };
                 match place(folder, &stem, &ext, request.collision, &mut claimed) {
                     Some(dest) => {
                         if dest_was_renamed(&dest, folder, &stem, &ext) {
@@ -494,16 +506,14 @@ fn role_source(photo: &Photo, role: FileRole) -> Option<&Path> {
     }
 }
 
-/// The stem for a sidecar op: the template expansion (so the sidecar follows its
-/// renamed photo) when a template is set, else the sidecar file's own stem.
-fn sidecar_stem(item: &ExportItem, request: &ExportRequest, source: &Path, seq: usize) -> String {
-    match &request.template {
-        Some(template) => expand_template(&template.0, item, seq),
-        None => source
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-    }
+/// A path's file stem as an owned string. On a placed destination this is the
+/// *final* stem — after any collision rename — so dependent copies (sidecars,
+/// `originals/`) stay linked to the file as it actually lands, not as it was
+/// named before the cascade.
+fn stem_of(dest: &Path) -> String {
+    dest.file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 fn extension(source: &Path) -> String {

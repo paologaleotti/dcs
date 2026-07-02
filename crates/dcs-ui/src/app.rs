@@ -422,11 +422,15 @@ impl DcsApp {
 
     /// Debounced autosave: once verdicts go dirty, save after a quiet gap so a
     /// burst of A/X keystrokes collapses into a single `project.json` write.
+    /// Fire-and-forget on the session's background saver — serialize + fsync
+    /// must never stall a painted frame. Quit and folder swap use the blocking
+    /// `save_now` instead.
     fn autosave(&mut self, ctx: &egui::Context) {
         if self.session.is_dirty() {
             let since = *self.dirty_since.get_or_insert_with(Instant::now);
             if since.elapsed() >= SAVE_DEBOUNCE {
-                self.save_now();
+                self.session.autosave();
+                self.dirty_since = None;
             } else {
                 ctx.request_repaint_after(SAVE_DEBOUNCE);
             }

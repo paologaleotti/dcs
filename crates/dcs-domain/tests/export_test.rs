@@ -535,6 +535,110 @@ fn sidecar_names_cascade_on_collision() {
 }
 
 #[test]
+fn sidecar_follows_its_photos_collision_rename_not_the_original_stem() {
+    // Only the *second* photo carries a sidecar. Its file renames to a-1.JPG, so
+    // the sidecar must land as a-1.xmp — a.xmp would silently attach the wrong
+    // photo's metadata to photo1's a.JPG.
+    let p1 = photo(1, Some("/src/x/a.JPG"), None);
+    let p2 = photo(2, Some("/src/y/a.JPG"), None);
+    let xmp = PathBuf::from("/src/y/a.xmp");
+    let items = vec![
+        ExportItem {
+            photo: &p1,
+            group_title: None,
+            primary_tag: None,
+            sidecars: &[],
+            crop: None,
+        },
+        ExportItem {
+            photo: &p2,
+            group_title: None,
+            primary_tag: None,
+            sidecars: std::slice::from_ref(&xmp),
+            crop: None,
+        },
+    ];
+    let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
+    req.sidecars = true;
+    let plan = plan_export(&items, Path::new("/src"), &req).unwrap();
+
+    let dests: Vec<&Path> = plan.ops.iter().map(|o| o.dest.as_path()).collect();
+    assert!(dests.contains(&dest(&["a-1.xmp"]).as_path()));
+    assert!(
+        !dests.contains(&dest(&["a.xmp"]).as_path()),
+        "sidecar must not adopt the un-renamed stem of another photo's file"
+    );
+}
+
+#[test]
+fn collision_skipped_photo_ships_no_sidecar() {
+    // Under Skip policy photo2's only file is dropped by the name collision; its
+    // sidecar must not ship — it would sit orphaned next to photo1's a.JPG.
+    let p1 = photo(1, Some("/src/x/a.JPG"), None);
+    let p2 = photo(2, Some("/src/y/a.JPG"), None);
+    let xmp = PathBuf::from("/src/y/a.xmp");
+    let items = vec![
+        ExportItem {
+            photo: &p1,
+            group_title: None,
+            primary_tag: None,
+            sidecars: &[],
+            crop: None,
+        },
+        ExportItem {
+            photo: &p2,
+            group_title: None,
+            primary_tag: None,
+            sidecars: std::slice::from_ref(&xmp),
+            crop: None,
+        },
+    ];
+    let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Skip);
+    req.sidecars = true;
+    let plan = plan_export(&items, Path::new("/src"), &req).unwrap();
+
+    assert_eq!(plan.ops.len(), 1, "only photo1's file copies");
+    assert_eq!(plan.ops[0].dest, dest(&["a.JPG"]));
+    assert_eq!(plan.sidecar_count, 0);
+}
+
+#[test]
+fn sidecar_follows_template_and_collision_cascade_together() {
+    // A template collapses both photos onto one stem; the second cascades to
+    // x-1 and its sidecar follows the *final* stem.
+    let p1 = photo(1, Some("/src/a.JPG"), None);
+    let p2 = photo(2, Some("/src/b.JPG"), None);
+    let x1 = PathBuf::from("/src/a.xmp");
+    let x2 = PathBuf::from("/src/b.xmp");
+    let items = vec![
+        ExportItem {
+            photo: &p1,
+            group_title: None,
+            primary_tag: None,
+            sidecars: std::slice::from_ref(&x1),
+            crop: None,
+        },
+        ExportItem {
+            photo: &p2,
+            group_title: None,
+            primary_tag: None,
+            sidecars: std::slice::from_ref(&x2),
+            crop: None,
+        },
+    ];
+    let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
+    req.sidecars = true;
+    req.template = Some(NameTemplate("x".into()));
+    let plan = plan_export(&items, Path::new("/src"), &req).unwrap();
+
+    let dests: Vec<&Path> = plan.ops.iter().map(|o| o.dest.as_path()).collect();
+    assert!(dests.contains(&dest(&["x.JPG"]).as_path()));
+    assert!(dests.contains(&dest(&["x.xmp"]).as_path()));
+    assert!(dests.contains(&dest(&["x-1.JPG"]).as_path()));
+    assert!(dests.contains(&dest(&["x-1.xmp"]).as_path()));
+}
+
+#[test]
 fn sidecar_rides_into_the_split_jpeg_folder() {
     let p = photo(1, Some("/src/a.JPG"), Some("/src/a.RAF"));
     let xmp = PathBuf::from("/src/a.xmp");
@@ -702,10 +806,10 @@ fn crop_summary_says_export_and_counts_cropped() {
 }
 
 #[test]
-fn include_originals_collisions_cascade_independently_of_renders() {
+fn include_originals_follow_their_renders_final_stem() {
     // Two cropped photos sharing a JPEG basename: the rendered dests collide and
-    // cascade (-1), and the originals/ copies collide and cascade independently in
-    // their own folder. One shared claim set, two folders.
+    // cascade (-1); each originals/ copy takes its render's *final* stem so the
+    // render↔original pairing survives the rename.
     let p1 = photo(1, Some("/src/a.JPG"), None);
     let p2 = photo(2, Some("/src/sub/a.JPG"), None);
     let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
@@ -722,8 +826,9 @@ fn include_originals_collisions_cascade_independently_of_renders() {
     // The render is a RenderCrop, the original is a plain Copy.
     assert!(matches!(plan.ops[0].kind, OpKind::RenderCrop { .. }));
     assert_eq!(plan.ops[1].kind, OpKind::Copy);
-    // Two renamed dests (a-1.JPG and originals/a-1.JPG).
-    assert_eq!(plan.collisions, 2);
+    // One renamed dest (a-1.JPG); its original lands on a-1 directly, no
+    // second cascade.
+    assert_eq!(plan.collisions, 1);
 }
 
 #[test]
@@ -810,4 +915,57 @@ fn group_folders_differing_only_in_case_collide_conservatively() {
             .ends_with("img-1.jpg")
     });
     assert!(renamed, "second file cascades to -1, not overwrite");
+}
+
+#[test]
+fn both_sidecar_naming_conventions_survive_the_placed_stem_mapping() {
+    // One photo carrying both conventions: `a.xmp` (shared stem) and
+    // `a.JPG.xmp` (full filename). The `.JPG` suffix must survive the mapping
+    // onto the placed stem — collapsing both onto one stem would rename or
+    // drop one of them.
+    let p = photo(1, Some("/src/a.JPG"), None);
+    let sidecars = [PathBuf::from("/src/a.xmp"), PathBuf::from("/src/a.JPG.xmp")];
+    let item = ExportItem {
+        photo: &p,
+        group_title: None,
+        primary_tag: None,
+        sidecars: &sidecars,
+        crop: None,
+    };
+    let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
+    req.sidecars = true;
+    let plan = plan_export(&[item], Path::new("/src"), &req).unwrap();
+
+    let dests: Vec<&Path> = plan.ops.iter().map(|o| o.dest.as_path()).collect();
+    assert!(dests.contains(&dest(&["a.xmp"]).as_path()));
+    assert!(dests.contains(&dest(&["a.JPG.xmp"]).as_path()));
+    assert_eq!(plan.collisions, 0, "distinct names, no cascade");
+
+    // Under a collision rename, both sidecars follow the photo's final stem.
+    let p1 = photo(1, Some("/src/x/a.JPG"), None);
+    let p2 = photo(2, Some("/src/y/a.JPG"), None);
+    let side2 = [
+        PathBuf::from("/src/y/a.xmp"),
+        PathBuf::from("/src/y/a.JPG.xmp"),
+    ];
+    let items = vec![
+        ExportItem {
+            photo: &p1,
+            group_title: None,
+            primary_tag: None,
+            sidecars: &[],
+            crop: None,
+        },
+        ExportItem {
+            photo: &p2,
+            group_title: None,
+            primary_tag: None,
+            sidecars: &side2,
+            crop: None,
+        },
+    ];
+    let plan = plan_export(&items, Path::new("/src"), &req).unwrap();
+    let dests: Vec<&Path> = plan.ops.iter().map(|o| o.dest.as_path()).collect();
+    assert!(dests.contains(&dest(&["a-1.xmp"]).as_path()));
+    assert!(dests.contains(&dest(&["a-1.JPG.xmp"]).as_path()));
 }

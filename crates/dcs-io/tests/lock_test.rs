@@ -110,3 +110,41 @@ fn take_over_claims_ownership() {
     reader.take_over();
     assert!(reader.is_owned(), "take over grabs write ownership");
 }
+
+/// Many instances racing to reclaim one stale lock: at most one may win.
+/// Guards the claim-then-create scheme — the old write-then-read-back could
+/// hand ownership to two racers whose writes both preceded both read-backs.
+#[test]
+fn concurrent_stale_reclaim_has_at_most_one_winner() {
+    use std::sync::Barrier;
+
+    for _ in 0..20 {
+        let dir = tempdir();
+        // A stale stamp from a "crashed" instance.
+        std::fs::write(dir.join("lock"), "1 42").unwrap();
+
+        let threads = 8;
+        let barrier = std::sync::Arc::new(Barrier::new(threads));
+        let owners: Vec<bool> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..threads)
+                .map(|_| {
+                    let barrier = std::sync::Arc::clone(&barrier);
+                    let dir = dir.clone();
+                    s.spawn(move || {
+                        barrier.wait();
+                        let (lock, outcome) = ProjectLock::acquire(&dir, STALE);
+                        // Hold to the end so a winner's Drop can't free the
+                        // lock for a late-arriving second winner.
+                        let owned = outcome == LockOutcome::Acquired && lock.is_owned();
+                        std::mem::forget(lock);
+                        owned
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        let winners = owners.iter().filter(|&&o| o).count();
+        assert!(winners <= 1, "single-writer violated: {winners} owners");
+    }
+}

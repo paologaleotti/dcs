@@ -1,9 +1,10 @@
 //! The dumb export executor. Walks a finished `ExportPlan` on a worker
-//! thread, copies each file with the atomic `.part` → fsync → rename contract,
-//! streams progress, and supports cancel between files. It makes no path,
-//! rename, or skip decisions — the planner settled all of those. It only ever
-//! refuses to overwrite: a dest that already exists on disk (a pre-existing
-//! file the pure planner couldn't see) is skipped and reported, never clobbered.
+//! thread, copies each file with the atomic `.part` → fsync → link-into-place
+//! contract, streams progress, and supports cancel between files. It makes no
+//! path, rename, or skip decisions — the planner settled all of those. It only
+//! ever refuses to overwrite: a dest that already exists on disk (a
+//! pre-existing file the pure planner couldn't see) is skipped and reported,
+//! never clobbered.
 
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
@@ -59,14 +60,24 @@ pub fn run_export(plan: ExportPlan) -> ExportHandle {
     let worker_cancel = Arc::clone(&cancel);
     let worker_done = Arc::clone(&done);
     thread::spawn(move || {
+        // Set `done` on every exit path — including a panic mid-op — or
+        // `is_running()` would report a finished export as running forever.
+        let _guard = DoneGuard(worker_done);
         for op in &plan.ops {
             if worker_cancel.load(Ordering::Acquire) {
                 break;
             }
-            // A closed receiver means the session moved on; the send simply fails.
-            let _ = tx.send(execute_op(op));
+            // One op panicking (a decoder bug on one file) must not kill the
+            // rest of the export; report it and move on.
+            let event = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute_op(op)))
+                .unwrap_or_else(|_| ExportEvent::Failed {
+                    error: format!("copy {}: worker panicked", op.source.display()),
+                });
+            // A closed receiver means the session moved on; stop copying.
+            if tx.send(event).is_err() {
+                break;
+            }
         }
-        worker_done.store(true, Ordering::Release);
     });
 
     ExportHandle {
@@ -96,6 +107,24 @@ impl ExportHandle {
     /// Request cancellation; the worker stops after the in-flight file.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Release);
+    }
+}
+
+/// Dropping the handle cancels the worker: an export nobody can observe or
+/// stop (folder swapped, a new export started over this one) must not keep
+/// writing files into the destination.
+impl Drop for ExportHandle {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
+/// Sets the flag on drop — including an unwind — so `done` can never be missed.
+struct DoneGuard(Arc<AtomicBool>);
+
+impl Drop for DoneGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
     }
 }
 
@@ -147,7 +176,10 @@ fn render_crop_atomic(
         CopyError::Io(format!("render {}: decode/encode failed", source.display()))
     })?;
     let tmp = part_path(dest);
-    fs::write(&tmp, &jpeg).map_err(|e| CopyError::Io(format!("write {}: {e}", tmp.display())))?;
+    if let Err(e) = fs::write(&tmp, &jpeg) {
+        let _ = fs::remove_file(&tmp);
+        return Err(CopyError::Io(format!("write {}: {e}", tmp.display())));
+    }
     finalize_atomic(&tmp, dest)
 }
 
@@ -178,32 +210,58 @@ enum CopyError {
 /// never a torn one. Refuses to overwrite an existing dest.
 fn copy_atomic(source: &Path, dest: &Path) -> Result<(), CopyError> {
     let tmp = part_path(dest);
-    fs::copy(source, &tmp).map_err(|e| CopyError::Io(format!("copy {}: {e}", source.display())))?;
+    if let Err(e) = fs::copy(source, &tmp) {
+        let _ = fs::remove_file(&tmp);
+        return Err(CopyError::Io(format!("copy {}: {e}", source.display())));
+    }
     finalize_atomic(&tmp, dest)
 }
 
-/// Finish the atomic write of a populated `.part` file: fsync it, re-check the
-/// dest one last time (never overwrite), rename into place, then fsync the parent
-/// so the rename itself is durable. Shared by the copy and crop-render paths so
-/// the safety-critical "never overwrite, never torn" contract can't drift between
+/// Finish the atomic write of a populated `.part` file: fsync it (a delivered
+/// file must actually be on disk — a failed fsync is a failed op, never a
+/// silent `Copied`), hard-link it to the dest (the link fails if a file
+/// appeared there, unlike rename, which would silently replace it), then fsync
+/// the parent so the new entry is durable. Shared by the copy and crop-render
+/// paths so the "never overwrite, never torn" contract can't drift between
 /// them.
 fn finalize_atomic(tmp: &Path, dest: &Path) -> Result<(), CopyError> {
     // Open for *write* to fsync: a read-only handle's flush is a no-op on
     // Windows (FlushFileBuffers needs write access), which would leave the
     // .part data unflushed before the rename. `write(true)` does not truncate.
-    if let Ok(file) = OpenOptions::new().write(true).open(tmp) {
-        let _ = file.sync_all();
-    }
-    if dest.exists() {
+    let synced = OpenOptions::new()
+        .write(true)
+        .open(tmp)
+        .and_then(|file| file.sync_all());
+    if let Err(e) = synced {
         let _ = fs::remove_file(tmp);
-        return Err(CopyError::DestExists);
+        return Err(CopyError::Io(format!("fsync {}: {e}", tmp.display())));
     }
-    fs::rename(tmp, dest).map_err(|e| {
-        let _ = fs::remove_file(tmp);
-        CopyError::Io(format!("rename into {}: {e}", dest.display()))
-    })?;
-    // Directory fsync makes the rename itself durable; not all platforms permit
-    // it, so failure is non-fatal.
+    match fs::hard_link(tmp, dest) {
+        Ok(()) => {
+            let _ = fs::remove_file(tmp);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = fs::remove_file(tmp);
+            return Err(CopyError::DestExists);
+        }
+        // A filesystem without hard links (e.g. FAT): degrade to a checked
+        // rename — the pre-check narrows the overwrite window to near zero.
+        Err(_) => {
+            if dest.exists() {
+                let _ = fs::remove_file(tmp);
+                return Err(CopyError::DestExists);
+            }
+            if let Err(e) = fs::rename(tmp, dest) {
+                let _ = fs::remove_file(tmp);
+                return Err(CopyError::Io(format!(
+                    "rename into {}: {e}",
+                    dest.display()
+                )));
+            }
+        }
+    }
+    // Directory fsync makes the new entry itself durable; not all platforms
+    // permit it, so failure is non-fatal.
     if let Some(parent) = dest.parent()
         && let Ok(handle) = File::open(parent)
     {

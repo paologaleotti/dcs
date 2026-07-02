@@ -153,6 +153,13 @@ fn walk(root: &Path, tx: &Sender<ScannedFile>, cache: Option<&SharedCache>) {
 /// identity is its JPEG's, so this never touches the photo the user sees.
 fn cheap_fingerprint(path: &Path) -> ContentFingerprint {
     let (_, size) = file_stat(path);
+    path_fingerprint(path, size)
+}
+
+/// blake3 over the (absolute) path and size — the content-free fallback
+/// identity for files whose bytes can't be (fully) read. Never cached, so the
+/// next scan retries the real content hash.
+fn path_fingerprint(path: &Path, size: u64) -> ContentFingerprint {
     let mut hasher = blake3::Hasher::new();
     hasher.update(path.to_string_lossy().as_bytes());
     hasher.update(&size.to_le_bytes());
@@ -178,7 +185,13 @@ fn fingerprint_of(path: &Path, root: &Path, cache: Option<&SharedCache>) -> Cont
         return fingerprint;
     }
 
-    let fingerprint = hash_file(path, size);
+    // A failed or partial read must not produce a content hash: hashing the
+    // bytes that happened to arrive would mint a wrong-but-plausible identity
+    // for unchanged content — and caching it would silently detach the photo
+    // from its verdicts and tags. Fall back to path identity, uncached.
+    let Some(fingerprint) = hash_file(path, size) else {
+        return path_fingerprint(path, size);
+    };
     if let Some(cache) = cache
         && let Ok(guard) = cache.lock()
     {
@@ -202,50 +215,46 @@ fn file_stat(path: &Path) -> (i64, u64) {
     (mtime, meta.len())
 }
 
-/// blake3 over `head[64K] ‖ tail[64K] ‖ size`. Files at
-/// or below `2 * FP_CHUNK` are hashed whole. An unreadable file still gets a
-/// stable fingerprint from its path + size, so the scan never aborts.
-fn hash_file(path: &Path, size: u64) -> ContentFingerprint {
+/// blake3 over `head[64K] ‖ tail[64K] ‖ size`. Files at or below
+/// `2 * FP_CHUNK` are hashed whole. `None` when the file can't be opened or
+/// any read errors — those bytes are unknown, not merely absent, and a hash
+/// over what happened to arrive would be a wrong-but-plausible identity.
+fn hash_file(path: &Path, size: u64) -> Option<ContentFingerprint> {
     let mut hasher = blake3::Hasher::new();
-    match File::open(path) {
-        Ok(mut file) => {
-            if size <= 2 * FP_CHUNK {
-                let mut buf = Vec::new();
-                let _ = file.read_to_end(&mut buf);
-                hasher.update(&buf);
-            } else {
-                let mut head = vec![0u8; FP_CHUNK as usize];
-                let n = read_into(&mut file, &mut head);
-                hasher.update(&head[..n]);
-                if file.seek(SeekFrom::Start(size - FP_CHUNK)).is_ok() {
-                    let mut tail = vec![0u8; FP_CHUNK as usize];
-                    let n = read_into(&mut file, &mut tail);
-                    hasher.update(&tail[..n]);
-                }
-            }
-        }
-        Err(_) => {
-            // Unreadable: fall back to a path-derived identity so the photo is
-            // still distinguishable and the scan continues.
-            hasher.update(path.to_string_lossy().as_bytes());
-        }
+    let mut file = File::open(path).ok()?;
+    if size <= 2 * FP_CHUNK {
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).ok()?;
+        hasher.update(&buf);
+    } else {
+        let mut head = vec![0u8; FP_CHUNK as usize];
+        let n = read_into(&mut file, &mut head)?;
+        hasher.update(&head[..n]);
+        // A failed seek means the tail bytes are unknown too, not absent.
+        file.seek(SeekFrom::Start(size - FP_CHUNK)).ok()?;
+        let mut tail = vec![0u8; FP_CHUNK as usize];
+        let n = read_into(&mut file, &mut tail)?;
+        hasher.update(&tail[..n]);
     }
     hasher.update(&size.to_le_bytes());
-    ContentFingerprint::from_bytes(*hasher.finalize().as_bytes())
+    Some(ContentFingerprint::from_bytes(
+        *hasher.finalize().as_bytes(),
+    ))
 }
 
-/// Read up to `buf.len()` bytes, returning how many were read. Tolerates short
-/// reads; the caller hashes only the bytes returned.
-fn read_into(file: &mut File, buf: &mut [u8]) -> usize {
+/// Read up to `buf.len()` bytes, returning how many were read. A short read
+/// (EOF) is fine — the caller hashes only the bytes returned — but an I/O
+/// error is `None`.
+fn read_into(file: &mut File, buf: &mut [u8]) -> Option<usize> {
     let mut read = 0;
     while read < buf.len() {
         match file.read(&mut buf[read..]) {
             Ok(0) => break,
             Ok(n) => read += n,
-            Err(_) => break,
+            Err(_) => return None,
         }
     }
-    read
+    Some(read)
 }
 
 fn is_hidden(path: &Path) -> bool {

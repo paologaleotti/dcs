@@ -43,6 +43,7 @@ use dcs_io::imaging::{ThumbDecoder, ThumbDecoderPool};
 use dcs_io::lock::{self, LockOutcome, ProjectLock};
 use dcs_io::persistence::{
     JsonProjectStore, PersistError, PhotoRecord, ProjectConfig, ProjectSnapshot, ProjectStore,
+    SaveWorker, spawn_saver,
 };
 use dcs_io::recents::Recents;
 use dcs_io::source::{ScanHandle, scan};
@@ -342,6 +343,13 @@ pub struct Session {
     /// `.dcs/` sidecar for the open folder; `None` when no folder is open.
     sidecar: Option<PathBuf>,
     store: JsonProjectStore,
+    /// Background `project.json` writer — the one writer for every save, so
+    /// the UI thread never blocks on serialize + fsync and two saves can never
+    /// interleave on the same temp file.
+    saver: SaveWorker,
+    /// Why the last background save failed, if it did; cleared by a later
+    /// successful save. The state stays dirty so the debounce retries.
+    save_error: Option<String>,
     /// Append handle to the durable undo log; `None` if it couldn't open
     /// (history is disposable, so the failure never blocks culling).
     log: Option<UndoLog>,
@@ -429,6 +437,8 @@ impl Session {
             epoch: 0,
             sidecar: None,
             store: JsonProjectStore,
+            saver: spawn_saver(JsonProjectStore),
+            save_error: None,
             log: None,
             cache: None,
             boards: BoardStore::default(),
@@ -476,7 +486,8 @@ impl Session {
         self.fp_to_id.clear();
         self.index_started = false;
         self.ai_status = AiStatus::Disabled;
-        // Abandon any running export from the previous folder (its handle drops).
+        // Abandon any running export from the previous folder — dropping the
+        // handle cancels its worker after the in-flight file.
         self.export_handle = None;
         self.export_status = None;
         self.base.reset(BASE_CACHE_BYTES);
@@ -609,6 +620,7 @@ impl Session {
         // Indexing is the lowest priority: only sweep once every thumbnail is warm.
         self.maybe_start_indexing();
         self.poll_export();
+        self.poll_saves();
     }
 
     /// This photo's current crop generation, masked to the 15 bits the decode key

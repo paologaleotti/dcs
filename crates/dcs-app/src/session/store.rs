@@ -10,6 +10,7 @@ use dcs_io::recents;
 use dcs_io::undo_log::{self, UndoLog};
 
 use crate::export::{ExportScope, ExportStatus};
+use crate::selection::Selection;
 
 use super::{SaveError, Session, UNDO_LOG_FILE, relativize};
 
@@ -20,9 +21,12 @@ impl Session {
     }
 
     /// Persist owned state if it changed since the last save; no-op when clean.
-    /// The UI calls this on a debounce, on quit, and on an interval.
+    /// The UI calls this on quit and on folder swap. "Clean" must also mean no
+    /// autosave is still in flight — `autosave` optimistically clears `dirty`
+    /// at request time, so trusting the flag alone would let quit proceed over
+    /// an unfinished (or unreported-failed) background write.
     pub fn save_if_dirty(&mut self) -> Result<(), SaveError> {
-        if !self.dirty {
+        if !self.dirty && !self.saver.has_pending() {
             return Ok(());
         }
         self.save()
@@ -33,13 +37,24 @@ impl Session {
     /// durable `undo.log` compacted. The log is rebuildable, so a compaction
     /// failure is swallowed and never fails the precious save. A read-only
     /// instance can't write, so this is a no-op there.
+    ///
+    /// Blocks until written — the quit/folder-swap path. The write still goes
+    /// through the background saver so it serializes behind any in-flight
+    /// [`Session::autosave`]; two writers must never interleave on the temp
+    /// file. Frame-driven saves use `autosave` instead.
     pub fn save(&mut self) -> Result<(), SaveError> {
         if self.read_only {
             return Ok(());
         }
         let sidecar = self.sidecar.clone().ok_or(SaveError::NoFolder)?;
         let snapshot = self.build_snapshot();
-        self.store.save(&sidecar, &snapshot)?;
+        match self.saver.save_blocking(sidecar.clone(), snapshot) {
+            Some(result) => result?,
+            // Saver thread died: degrade to a direct write (state unchanged
+            // since the snapshot above, so rebuilding it is equivalent).
+            None => self.store.save(&sidecar, &self.build_snapshot())?,
+        }
+        self.save_error = None;
         let (undo, redo) = self.history.stacks();
         let stacks = undo_log::Stacks { undo, redo };
         let log_path = sidecar.join(UNDO_LOG_FILE);
@@ -54,6 +69,49 @@ impl Session {
         self.refresh_lock(); // keep our lock fresh on every save
         self.dirty = false;
         Ok(())
+    }
+
+    /// Fire-and-forget save on the background saver: the UI thread never
+    /// blocks on serialize + fsync. Optimistically marks clean; a failure
+    /// reported back through `tick` re-dirties the session (so the debounce
+    /// retries) and sets [`Session::save_error`]. Skips the undo-log
+    /// compaction — that runs on the blocking [`Session::save`] at quit and
+    /// folder swap, and the log is rebuildable in between.
+    pub fn autosave(&mut self) {
+        if self.read_only || !self.dirty {
+            return;
+        }
+        let Some(sidecar) = self.sidecar.clone() else {
+            return;
+        };
+        let snapshot = self.build_snapshot();
+        if self.saver.request(sidecar, snapshot) {
+            self.dirty = false;
+            self.refresh_lock();
+        } else if let Err(e) = self.save() {
+            // Saver thread died: the blocking path has a direct-write fallback.
+            self.save_error = Some(e.to_string());
+        }
+    }
+
+    /// Why the most recent save failed, when it did. Cleared by the next
+    /// successful save.
+    pub fn save_error(&self) -> Option<&str> {
+        self.save_error.as_deref()
+    }
+
+    /// Absorb finished background saves: a failure re-dirties (the state was
+    /// optimistically marked clean at request time) and records the reason.
+    pub(super) fn poll_saves(&mut self) {
+        for result in self.saver.poll() {
+            match result {
+                Ok(()) => self.save_error = None,
+                Err(e) => {
+                    self.dirty = true;
+                    self.save_error = Some(e.to_string());
+                }
+            }
+        }
     }
 
     /// Photos whose files are currently absent on disk.
@@ -79,6 +137,16 @@ impl Session {
             return 0;
         }
         let removed = ids.len();
+        // Capture the focused photo's identity while `visible` still maps onto
+        // the un-compacted pool: after `forget` shifts pool indices, focus can
+        // only be restored correctly by id, never by stale index.
+        let focus_id = self
+            .sel
+            .focus()
+            .and_then(|i| self.visible.get(i).copied())
+            .and_then(|p| self.builder.photos().get(p))
+            .map(|ph| ph.id)
+            .filter(|id| !ids.contains(id));
         self.builder.forget(&ids);
         self.cull.forget(&ids);
         self.tags.forget(&ids);
@@ -88,8 +156,13 @@ impl Session {
         // inherit a bumped generation and have its fresh decodes discarded.
         self.crop_gen.retain(|id, _| !ids.contains(id));
         self.history.forget(&ids);
-        self.sel.clear();
+        self.sel = Selection::new();
         self.regroup();
+        if let Some(id) = focus_id
+            && let Some(idx) = self.display_index_of(id)
+        {
+            self.set_focus(idx, false);
+        }
         self.dirty = true;
         removed
     }
@@ -120,10 +193,14 @@ impl Session {
     }
 
     /// Refresh our lock timestamp so other instances keep seeing us as live.
-    /// The UI calls this on a heartbeat while a folder is open.
-    pub fn refresh_lock(&self) {
+    /// The UI calls this on a heartbeat while a folder is open. A refresh that
+    /// discovers a peer took the lock demotes this session to read-only.
+    pub fn refresh_lock(&mut self) {
         if let Some(lock) = &self.project_lock {
             lock.refresh();
+            if !lock.is_owned() {
+                self.read_only = true;
+            }
         }
     }
 

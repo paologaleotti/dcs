@@ -341,3 +341,42 @@ fn render_crop_never_overwrites_an_existing_dest() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Dropping the handle must cancel the worker: nobody can observe or stop an
+/// orphaned export (folder swapped, a new export started over this one), so it
+/// must not keep writing files into the destination.
+#[test]
+fn dropping_the_handle_cancels_the_worker() {
+    let dir = temp_dir("drop_cancel");
+    let src = dir.join("src");
+    let out = dir.join("out");
+    std::fs::create_dir_all(&src).unwrap();
+
+    let total = 300;
+    let ops: Vec<ExportOp> = (0..total)
+        .map(|i| {
+            let s = src.join(format!("f{i}.jpg"));
+            write(&s, "x");
+            op(s, out.join(format!("f{i}.jpg")), FileRole::Jpeg)
+        })
+        .collect();
+    let handle = run_export(plan(ops, out.clone()));
+    drop(handle);
+
+    // Wait until the copied-file count is quiescent, then require it stopped
+    // well short of the full plan — a run-to-completion would hit `total`.
+    let count = || std::fs::read_dir(&out).map(|d| d.count()).unwrap_or(0);
+    let mut last = count();
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let now = count();
+        if now == last {
+            break;
+        }
+        last = now;
+    }
+    assert!(
+        last < total,
+        "dropped export ran to completion ({last}/{total} files)"
+    );
+}
