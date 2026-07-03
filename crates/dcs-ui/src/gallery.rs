@@ -537,7 +537,7 @@ pub(crate) fn paint_filmstrip(
                     ui.painter().rect_filled(slot, 0.0, theme::REJECT_DIM);
                 }
                 crate::grid::paint_tag_strips(ui, slot, &info.tag_colors);
-                paint_strip_glyph(ui, slot, info.state);
+                crate::grid::paint_verdict_glyph(ui, slot, info.state);
                 if info.cropped {
                     crate::grid::paint_crop_badge_at(ui, slot);
                 }
@@ -584,46 +584,5 @@ pub(crate) fn paint_filmstrip(
     StripResponse {
         clicked: hit,
         action: menu_action,
-    }
-}
-
-/// A small verdict tick in the filmstrip thumb's corner — green accept, red
-/// reject, nothing for unreviewed.
-fn paint_strip_glyph(ui: &Ui, slot: Rect, state: AcceptState) {
-    let color = match state {
-        AcceptState::Accepted => theme::VERDICT_ACCEPT,
-        AcceptState::Rejected => theme::VERDICT_REJECT,
-        AcceptState::Unreviewed => return,
-    };
-    // Sized to the thumb so the verdict reads at a glance, not a dot in the
-    // corner; a rounded backdrop lifts it off whatever pixels sit behind.
-    let s = slot.width() * 0.34;
-    let box_rect = Rect::from_min_max(Pos2::new(slot.right() - s, slot.bottom() - s), slot.max);
-    ui.painter().rect_filled(box_rect, 3.0, theme::BADGE_BG);
-    let c = box_rect.center();
-    let r = s * 0.3;
-    let stroke = Stroke::new((s * 0.13).max(2.0), color);
-    match state {
-        AcceptState::Accepted => {
-            ui.painter().add(egui::Shape::line(
-                vec![
-                    Pos2::new(c.x - r, c.y),
-                    Pos2::new(c.x - r * 0.25, c.y + r * 0.7),
-                    Pos2::new(c.x + r, c.y - r * 0.6),
-                ],
-                stroke,
-            ));
-        }
-        AcceptState::Rejected => {
-            ui.painter().line_segment(
-                [Pos2::new(c.x - r, c.y - r), Pos2::new(c.x + r, c.y + r)],
-                stroke,
-            );
-            ui.painter().line_segment(
-                [Pos2::new(c.x + r, c.y - r), Pos2::new(c.x - r, c.y + r)],
-                stroke,
-            );
-        }
-        AcceptState::Unreviewed => {}
     }
 }

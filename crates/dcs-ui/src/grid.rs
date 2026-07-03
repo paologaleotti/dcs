@@ -879,8 +879,9 @@ pub(crate) fn paint_tag_strips(ui: &Ui, cell_rect: Rect, colors: &[Option<Color>
 
 /// Bottom-right verdict glyph: a green check (accepted) or red cross
 /// (rejected); nothing for unreviewed. Drawn as line segments rather than font
-/// glyphs so it renders identically regardless of the loaded font.
-fn paint_verdict_glyph(ui: &Ui, cell_rect: Rect, state: AcceptState) {
+/// glyphs so it renders identically regardless of the loaded font. Shared with
+/// the gallery filmstrip so verdicts look identical in both modes.
+pub(crate) fn paint_verdict_glyph(ui: &Ui, cell_rect: Rect, state: AcceptState) {
     let color = match state {
         AcceptState::Accepted => theme::VERDICT_ACCEPT,
         AcceptState::Rejected => theme::VERDICT_REJECT,
