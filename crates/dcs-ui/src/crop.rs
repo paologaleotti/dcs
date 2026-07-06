@@ -23,6 +23,12 @@ use crate::theme;
 
 /// Tool-bar height in points (aspect presets + straighten + actions).
 const TOOLBAR_H: f32 = 44.0;
+/// Visible span of the straighten slider, in degrees. Narrower than
+/// [`MAX_ANGLE_DEG`] so each pixel maps to a tiny angle for precise horizon
+/// leveling; the `DragValue` still reaches the full ±`MAX_ANGLE_DEG` by typing.
+const STRAIGHTEN_SLIDER_DEG: f32 = 15.0;
+/// Width of the straighten slider track, in points.
+const STRAIGHTEN_SLIDER_W: f32 = 260.0;
 /// Half-size of a crop handle's hit/draw box, in points.
 const HANDLE: f32 = 7.0;
 
@@ -292,14 +298,19 @@ fn paint_toolbar(ui: &mut Ui, rect: Rect, state: &mut CropEditState, resp: &mut 
         );
         ui.add(
             egui::DragValue::new(&mut state.angle_deg)
-                .speed(0.1)
+                .speed(0.05)
                 .range(-MAX_ANGLE_DEG..=MAX_ANGLE_DEG)
                 .fixed_decimals(1)
                 .suffix("°"),
         );
+        ui.spacing_mut().slider_width = STRAIGHTEN_SLIDER_W;
         ui.add(
-            egui::Slider::new(&mut state.angle_deg, -MAX_ANGLE_DEG..=MAX_ANGLE_DEG)
-                .show_value(false),
+            egui::Slider::new(
+                &mut state.angle_deg,
+                -STRAIGHTEN_SLIDER_DEG..=STRAIGHTEN_SLIDER_DEG,
+            )
+            .clamping(egui::SliderClamping::Never)
+            .show_value(false),
         );
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
