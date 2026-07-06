@@ -276,6 +276,16 @@ impl DcsApp {
                     }
                     if ui
                         .add_enabled(
+                            self.session.pool_len() > 0,
+                            egui::Button::new("Export Contact Sheet…"),
+                        )
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::OpenContactSheet);
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
                             self.session.has_folder(),
                             egui::Button::new("Reveal in File Manager"),
                         )

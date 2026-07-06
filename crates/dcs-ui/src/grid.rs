@@ -829,7 +829,13 @@ fn paint_cell(
         paint_crop_badge(ui, cell_rect);
     }
 
-    paint_verdict_glyph(ui, cell_rect, info.state);
+    let has_tags = info.tag_colors.iter().flatten().count() > 0;
+    paint_verdict_glyph(
+        ui,
+        cell_rect,
+        info.state,
+        tag_strip_height(cell_rect, has_tags),
+    );
     paint_tag_strips(ui, cell_rect, &info.tag_colors);
 
     // The run's first frame carries the burst label (id is 0-based → 1-based).
@@ -860,12 +866,22 @@ fn paint_cell(
 /// Bottom-edge tag strip: a band spanning the full cell width, split into equal
 /// segments — one color per assigned tag (a single tag fills the whole edge).
 /// Shared with the gallery filmstrip so a thumb reads the same in both views.
+/// The tag-strip band height for a cell, or 0 when it carries no tags. Shared so
+/// the verdict glyph can sit just above the strip instead of colliding with it.
+pub(crate) fn tag_strip_height(cell_rect: Rect, has_tags: bool) -> f32 {
+    if has_tags {
+        (cell_rect.width() * 0.05).clamp(3.0, 7.0)
+    } else {
+        0.0
+    }
+}
+
 pub(crate) fn paint_tag_strips(ui: &Ui, cell_rect: Rect, colors: &[Option<Color>]) {
     let count = colors.iter().flatten().count();
     if count == 0 {
         return;
     }
-    let h = (cell_rect.width() * 0.05).clamp(3.0, 7.0);
+    let h = tag_strip_height(cell_rect, true);
     let y = cell_rect.bottom() - h;
     let seg = cell_rect.width() / count as f32;
     for (i, color) in colors.iter().flatten().enumerate() {
@@ -880,17 +896,19 @@ pub(crate) fn paint_tag_strips(ui: &Ui, cell_rect: Rect, colors: &[Option<Color>
 /// Bottom-right verdict glyph: a green check (accepted) or red cross
 /// (rejected); nothing for unreviewed. Drawn as line segments rather than font
 /// glyphs so it renders identically regardless of the loaded font. Shared with
-/// the gallery filmstrip so verdicts look identical in both modes.
-pub(crate) fn paint_verdict_glyph(ui: &Ui, cell_rect: Rect, state: AcceptState) {
+/// the gallery filmstrip so verdicts look identical in both modes. `bottom_inset`
+/// lifts the glyph above the tag-colour strip so the two never overlap.
+pub(crate) fn paint_verdict_glyph(ui: &Ui, cell_rect: Rect, state: AcceptState, bottom_inset: f32) {
     let color = match state {
         AcceptState::Accepted => theme::VERDICT_ACCEPT,
         AcceptState::Rejected => theme::VERDICT_REJECT,
         AcceptState::Unreviewed => return,
     };
     let s = (cell_rect.width() * 0.2).clamp(14.0, 26.0);
+    let bottom = cell_rect.bottom() - bottom_inset;
     let box_rect = Rect::from_min_max(
-        Pos2::new(cell_rect.right() - s, cell_rect.bottom() - s),
-        cell_rect.max,
+        Pos2::new(cell_rect.right() - s, bottom - s),
+        Pos2::new(cell_rect.right(), bottom),
     );
     ui.painter().rect_filled(box_rect, 0.0, theme::BADGE_BG);
     let stroke = Stroke::new((s * 0.12).max(1.5), color);

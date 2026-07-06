@@ -38,6 +38,10 @@ in a small, readable project file next to your photos.
   even if you rename or move the file.
 - **Crop and straighten.** Fixed ratios, free crop, and a straighten slider,
   applied as a clearable, non-destructive `CropEdit`.
+- **Freeform board.** A pan-and-zoom canvas (`B`) for arranging a curated set of
+  photos by hand: drag frames anywhere, layer them, and build a loose layout.
+  Membership, positions, and z-order are the only owned board state; everything
+  else stays derived.
 - **Derived grouping.** Grouping, bursts, sort, and titles are recomputed from
   metadata, never persisted.
 - **Local, offline AI search.** Free-text semantic search powered by an embedded
@@ -46,6 +50,12 @@ in a small, readable project file next to your photos.
 - **Pure export planner.** All export logic (scope, layout, name templates,
   collision renaming) is pure and computed up front into a plan. Copy-only,
   never overwrites, the live preview is the plan that runs.
+- **Contact sheet export.** Print your grid — filters applied — as an analog
+  contact sheet: numbered frames in a monospace, film-rebate style on a chosen
+  paper size (A4/A3/Letter/Legal), black or white background, with optional
+  filename and exposure captions. A live WYSIWYG preview *is* the plan that gets
+  rendered to a multi-page PDF; export it, or print it through your system
+  viewer.
 - **Durable, cross-session undo.** Every mutation is an entry in a persisted
   command log, so undo and redo still work after you close and reopen the app.
 
@@ -153,7 +163,7 @@ Four crates, dependencies pointing downward only:
 
 | Crate | Role |
 |---|---|
-| `dcs-ui` | egui binary: grid / gallery / crop views, ephemeral UI state |
+| `dcs-ui` | egui binary: grid / gallery / crop / board views, contact-sheet dialog, ephemeral UI state |
 | `dcs-app` | conductor: session, command registry, dispatch, undo |
 | `dcs-io` | infrastructure behind traits: imaging, scan, persistence, embeddings |
 | `dcs-domain` | pure core: types and pure functions (no I/O, no async, no egui) |

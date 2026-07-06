@@ -537,7 +537,13 @@ pub(crate) fn paint_filmstrip(
                     ui.painter().rect_filled(slot, 0.0, theme::REJECT_DIM);
                 }
                 crate::grid::paint_tag_strips(ui, slot, &info.tag_colors);
-                crate::grid::paint_verdict_glyph(ui, slot, info.state);
+                let has_tags = info.tag_colors.iter().flatten().count() > 0;
+                crate::grid::paint_verdict_glyph(
+                    ui,
+                    slot,
+                    info.state,
+                    crate::grid::tag_strip_height(slot, has_tags),
+                );
                 if info.cropped {
                     crate::grid::paint_crop_badge_at(ui, slot);
                 }

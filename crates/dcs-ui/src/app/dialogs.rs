@@ -889,7 +889,7 @@ fn frame_ms(fps: f32) -> f32 {
 }
 
 /// Fraction copied so far, for the export progress bar.
-fn progress(done: usize, total: usize) -> f32 {
+pub(super) fn progress(done: usize, total: usize) -> f32 {
     if total == 0 {
         1.0
     } else {
@@ -918,7 +918,7 @@ fn swatch_menu(ui: &mut Ui, current: egui::Color32) -> Option<dcs_app::Color> {
 
 /// A titled settings block in the export dialog: a heading, the controls
 /// indented beneath it, and surrounding space to set it off from its neighbors.
-fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
+pub(super) fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
     ui.add_space(8.0);
     ui.label(RichText::new(title).strong());
     ui.add_space(2.0);

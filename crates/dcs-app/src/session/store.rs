@@ -1,14 +1,17 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use dcs_domain::contact_sheet::{self, ContactSheetPlan, ContactSheetSettings, SheetItem};
 use dcs_domain::cull::AcceptState;
 use dcs_domain::export::{self, ExportItem, ExportPlan, ExportRequest};
 use dcs_domain::photo::{Photo, PhotoId};
+use dcs_io::contact_sheet::{ContactSheetEvent, SheetThumbSource, ThumbSrc, run_contact_sheet};
 use dcs_io::export::{ExportEvent, run_export};
 use dcs_io::persistence::{PhotoRecord, ProjectSnapshot, ProjectStore};
-use dcs_io::recents;
 use dcs_io::undo_log::{self, UndoLog};
+use dcs_io::{print, recents};
 
+use crate::contact_sheet::ContactSheetStatus;
 use crate::export::{ExportScope, ExportStatus};
 use crate::selection::Selection;
 
@@ -438,6 +441,127 @@ impl Session {
         }
     }
 
+    /// Plan a contact sheet over `scope` with the dialog's `settings`, via the
+    /// pure planner. The result drives both the live preview and the render, so
+    /// the sheet always matches the grid. Pure: no disk access, no pixels.
+    pub fn plan_contact_sheet(
+        &self,
+        scope: ExportScope,
+        settings: &ContactSheetSettings,
+    ) -> Result<ContactSheetPlan, contact_sheet::ContactSheetError> {
+        let photos = self.builder.photos();
+        let indices = self.scope_indices(scope);
+        // Owned so the borrowed slices in each `SheetItem` outlive the call.
+        let names: Vec<String> = indices.iter().map(|&i| stem_of(&photos[i])).collect();
+        let exposures: Vec<Option<String>> = indices
+            .iter()
+            .map(|&i| photos[i].meta.exposure_triangle())
+            .collect();
+        let items: Vec<SheetItem> = indices
+            .iter()
+            .enumerate()
+            .map(|(k, &i)| SheetItem {
+                id: photos[i].id,
+                orientation: photos[i].orientation,
+                name: &names[k],
+                exposure: exposures[k].as_deref(),
+            })
+            .collect();
+        contact_sheet::plan_contact_sheet(&items, settings)
+    }
+
+    /// Hand a planned contact sheet to the `dcs-io` renderer and begin tracking
+    /// it. `open_after` opens the finished PDF in the OS viewer for printing.
+    pub fn start_contact_sheet(&mut self, plan: ContactSheetPlan, open_after: bool) {
+        let total = plan.pages.len();
+        self.contact_sheet_dest = Some(plan.dest.clone());
+        self.contact_sheet_open_after = open_after;
+        let thumbs = self.sheet_thumb_source();
+        self.contact_sheet_handle = Some(run_contact_sheet(plan, thumbs));
+        self.contact_sheet_status = Some(ContactSheetStatus {
+            total_pages: total,
+            running: true,
+            ..ContactSheetStatus::default()
+        });
+    }
+
+    /// The decodable file + orientation for every photo that has one. The
+    /// renderer looks up each frame's `PhotoId` here; RAW-only and missing photos
+    /// are simply absent (drawn as placeholder frames).
+    fn sheet_thumb_source(&self) -> SheetThumbSource {
+        self.builder
+            .photos()
+            .iter()
+            .filter_map(|p| {
+                p.decodable_path().map(|path| {
+                    (
+                        p.id,
+                        ThumbSrc {
+                            path: path.to_path_buf(),
+                            orientation: p.orientation,
+                        },
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// Progress of the running or last-finished contact-sheet render.
+    pub fn contact_sheet_status(&self) -> Option<ContactSheetStatus> {
+        self.contact_sheet_status
+    }
+
+    /// Request cancellation of the running contact-sheet render.
+    pub fn cancel_contact_sheet(&self) {
+        if let Some(handle) = &self.contact_sheet_handle {
+            handle.cancel();
+        }
+    }
+
+    /// Forget the last render's finished status (the dialog dismissing its toast).
+    pub fn clear_contact_sheet_status(&mut self) {
+        if self.contact_sheet_handle.is_none() {
+            self.contact_sheet_status = None;
+        }
+    }
+
+    /// Drain renderer events into the live status; on finish, open the PDF in the
+    /// OS viewer when requested, then clear the handle.
+    pub(super) fn poll_contact_sheet(&mut self) {
+        let Some(handle) = self.contact_sheet_handle.as_ref() else {
+            return;
+        };
+        let mut events = handle.poll();
+        let running = handle.is_running();
+        if !running {
+            events.extend(handle.poll());
+        }
+        if let Some(status) = self.contact_sheet_status.as_mut() {
+            for event in events {
+                match event {
+                    ContactSheetEvent::PageRendered { .. } => status.rendered += 1,
+                    ContactSheetEvent::Failed { .. } => status.failed += 1,
+                }
+            }
+            status.running = running;
+            if !running {
+                status.succeeded = status.failed == 0;
+            }
+        }
+        if !running {
+            let succeeded = self.contact_sheet_status.is_some_and(|s| s.succeeded);
+            if succeeded
+                && self.contact_sheet_open_after
+                && let Some(dest) = &self.contact_sheet_dest
+            {
+                print::open_in_default_app(dest);
+            }
+            self.contact_sheet_open_after = false;
+            self.contact_sheet_dest = None;
+            self.contact_sheet_handle = None;
+        }
+    }
+
     /// Snapshot every known photo (not just culled ones, and including missing
     /// placeholders) so a rename-in-place reclaims its id and a vanished file
     /// keeps its state. Paths are stored relative to the root.
@@ -524,4 +648,13 @@ impl Session {
             })
             .collect()
     }
+}
+
+/// A photo's displayed-file stem, for the contact-sheet filename caption.
+fn stem_of(photo: &Photo) -> String {
+    photo
+        .display_path()
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }

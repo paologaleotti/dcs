@@ -53,6 +53,14 @@ impl DcsApp {
             }
             return;
         }
+        // The contact-sheet dialog is modal too.
+        if self.contact_sheet.open {
+            if ctx.input(|i| i.key_pressed(Key::Escape)) && !ctx.egui_wants_keyboard_input() {
+                self.contact_sheet.open = false;
+                self.session.clear_contact_sheet_status();
+            }
+            return;
+        }
         // A focused text field owns the keyboard so its edits don't leak to the
         // grid.
         if ctx.egui_wants_keyboard_input() {

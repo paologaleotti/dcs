@@ -55,6 +55,15 @@ half = "2"
 # so Explorer, the taskbar, and the installer shortcut show the app icon.
 winresource = "0.1"
 rfd = "0.15"
+# PDF generation for the contact-sheet renderer (dcs-io only). Pure Rust, no C
+# deps; ships the standard-14 PDF fonts (Helvetica) so no font file is bundled.
+# default-features off drops the `html` layout engine (kuchiki/fontconfig/azul)
+# we don't use. `images` enables image XObjects; `jpeg` lets embedded thumbnails
+# use DCTDecode (JPEG) so a whole-roll sheet is a few MB, not hundreds.
+printpdf = { version = "0.9", default-features = false, features = [
+    "images",
+    "jpeg",
+] }
 egui = "0.34.3"
 # wgpu backend → Metal on macOS, Vulkan/DX12 elsewhere. Unlike the glow
 # (OpenGL) backend, Metal drives ProMotion (120 Hz); Apple caps GL surfaces

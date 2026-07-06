@@ -8,6 +8,7 @@
 
 pub mod burst;
 pub mod command;
+pub mod contact_sheet;
 pub mod crops;
 pub mod cull;
 pub mod export;

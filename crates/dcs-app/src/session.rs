@@ -37,6 +37,7 @@ use dcs_domain::pairing::PoolBuilder;
 use dcs_domain::photo::PhotoId;
 use dcs_domain::sort::Sort;
 use dcs_io::cache::{SharedCache, SqliteCache};
+use dcs_io::contact_sheet::ContactSheetHandle;
 use dcs_io::embedding::Embedder;
 use dcs_io::export::ExportHandle;
 use dcs_io::imaging::{ThumbDecoder, ThumbDecoderPool};
@@ -53,6 +54,7 @@ use thiserror::Error;
 
 use self::search::AiInit;
 use crate::boards::BoardStore;
+use crate::contact_sheet::ContactSheetStatus;
 use crate::crops::CropStore;
 use crate::cull::Cull;
 use crate::export::ExportStatus;
@@ -389,6 +391,14 @@ pub struct Session {
     /// so the dialog's per-frame re-plan doesn't re-stat the disk. Derived (file
     /// facts, never persisted); cleared when a folder opens.
     sidecar_cache: RefCell<HashMap<PhotoId, Vec<PathBuf>>>,
+    /// Running contact-sheet renderer, polled in `tick`. `None` when idle.
+    contact_sheet_handle: Option<ContactSheetHandle>,
+    /// Progress of the running or last-finished contact-sheet render.
+    contact_sheet_status: Option<ContactSheetStatus>,
+    /// Whether to open the finished PDF in the OS viewer (for printing).
+    contact_sheet_open_after: bool,
+    /// Destination of the running render, opened on completion when requested.
+    contact_sheet_dest: Option<PathBuf>,
 }
 
 impl Session {
@@ -458,6 +468,10 @@ impl Session {
             export_handle: None,
             export_status: None,
             sidecar_cache: RefCell::new(HashMap::new()),
+            contact_sheet_handle: None,
+            contact_sheet_status: None,
+            contact_sheet_open_after: false,
+            contact_sheet_dest: None,
         }
     }
 
@@ -490,6 +504,11 @@ impl Session {
         // handle cancels its worker after the in-flight file.
         self.export_handle = None;
         self.export_status = None;
+        // Abandon any running contact-sheet render the same way.
+        self.contact_sheet_handle = None;
+        self.contact_sheet_status = None;
+        self.contact_sheet_open_after = false;
+        self.contact_sheet_dest = None;
         self.base.reset(BASE_CACHE_BYTES);
         self.hires.reset(HIRES_CACHE_BYTES);
         self.gallery.reset(GALLERY_CACHE_BYTES);
@@ -620,6 +639,7 @@ impl Session {
         // Indexing is the lowest priority: only sweep once every thumbnail is warm.
         self.maybe_start_indexing();
         self.poll_export();
+        self.poll_contact_sheet();
         self.poll_saves();
     }
 

@@ -11,6 +11,7 @@
 
 mod app;
 mod board;
+mod contact_sheet;
 mod context_menu;
 mod crop;
 mod export;

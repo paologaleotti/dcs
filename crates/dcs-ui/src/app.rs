@@ -3,6 +3,7 @@
 //! Ephemeral UI state — zoom, the GPU texture cache, debug flags — lives here
 //! and never travels down.
 
+mod contact_sheet;
 mod dialogs;
 mod input;
 mod menus;
@@ -16,6 +17,7 @@ use dcs_app::Session;
 use dcs_domain::grouping::GroupKind;
 use egui::Ui;
 
+use crate::contact_sheet::ContactSheetDialog;
 use crate::context_menu::MenuTarget;
 use crate::export::ExportDialog;
 use crate::grid::TextureCache;
@@ -124,6 +126,8 @@ pub struct DcsApp {
     grid_ctx: Option<MenuTarget>,
     /// Export dialog state; persisted across opens.
     export: ExportDialog,
+    /// Contact-sheet dialog state; persisted across opens.
+    contact_sheet: ContactSheetDialog,
     /// Last time we refreshed the project lock; throttles the heartbeat.
     last_heartbeat: Option<Instant>,
     /// The AI-search text field's backing buffer (needs to persist across frames).
@@ -185,6 +189,7 @@ impl DcsApp {
             collapsed: HashSet::new(),
             grid_ctx: None,
             export: ExportDialog::default(),
+            contact_sheet: ContactSheetDialog::default(),
             last_heartbeat: None,
             search_input: String::new(),
             board: crate::board::BoardUiState::default(),
@@ -222,6 +227,7 @@ impl eframe::App for DcsApp {
         self.shortcuts_window(&ctx);
         self.metadata_window(&ctx);
         self.export_dialog(&ctx);
+        self.contact_sheet_dialog(&ctx);
         self.zone_picker(&ctx);
         self.camera_zone_picker(&ctx);
         self.command_palette(&ctx);
@@ -386,6 +392,17 @@ impl DcsApp {
                 if self.session.selection_count() > 0 {
                     self.export.scope = dcs_app::ExportScope::Selection;
                 }
+            }
+            E::OpenContactSheet => {
+                self.contact_sheet.open = true;
+                self.contact_sheet.preview_page = 0;
+                // Default to what's on screen: the current filter if one is
+                // active, else everything.
+                self.contact_sheet.scope = if self.session.is_filtered() {
+                    dcs_app::ExportScope::CurrentFilter
+                } else {
+                    dcs_app::ExportScope::Everything
+                };
             }
             E::CollapseAllGroups => {
                 let titles: Vec<String> = self

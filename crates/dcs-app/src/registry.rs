@@ -111,6 +111,7 @@ pub enum AppAction {
     SetCameraZone,
     ShowMetadata,
     OpenExport,
+    OpenContactSheet,
     RevealRejected,
     /// Open the project folder in the OS file manager.
     RevealFolder,
@@ -201,6 +202,7 @@ impl AppAction {
             AppAction::SetCameraZone => "set-camera-zone",
             AppAction::ShowMetadata => "show-metadata",
             AppAction::OpenExport => "open-export",
+            AppAction::OpenContactSheet => "open-contact-sheet",
             AppAction::RevealRejected => "reveal-rejected",
             AppAction::RevealFolder => "reveal-folder",
             AppAction::RevealSelection => "reveal-selection",
@@ -248,6 +250,8 @@ pub enum ActionEffect {
     ExpandAllGroups,
     /// Open the export dialog (it owns the staged settings + live preview).
     OpenExport,
+    /// Open the contact-sheet dialog (it owns the staged settings + live preview).
+    OpenContactSheet,
     /// Open the tag palette to add or create a named tag on the selection.
     OpenTagPalette,
     /// Open the tag palette to remove a tag from the selection.
@@ -469,6 +473,12 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
 
     if session.pool_len() > 0 {
         push(&mut e, AppAction::OpenExport, "Export…", Category::File);
+        push(
+            &mut e,
+            AppAction::OpenContactSheet,
+            "Export contact sheet…",
+            Category::File,
+        );
     }
     if session.has_folder() {
         push(
@@ -685,6 +695,7 @@ impl Session {
             AppAction::SetCameraZone => ActionEffect::OpenCameraZonePicker,
             AppAction::ShowMetadata => ActionEffect::ShowMetadata,
             AppAction::OpenExport => ActionEffect::OpenExport,
+            AppAction::OpenContactSheet => ActionEffect::OpenContactSheet,
             AppAction::RevealRejected => {
                 self.reveal_rejected();
                 ActionEffect::None

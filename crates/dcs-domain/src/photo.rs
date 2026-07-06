@@ -88,17 +88,30 @@ impl CaptureMeta {
     /// The exposure triplet as one compact line — `35mm · f/2.8 · 1/250 · ISO
     /// 400` — omitting any field that's missing. `None` when nothing is known.
     pub fn exposure_line(&self) -> Option<String> {
-        let parts: Vec<String> = [
+        join_labels([
             self.focal_label(),
             self.aperture_label(),
             self.shutter_label(),
             self.iso_label(),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        (!parts.is_empty()).then(|| parts.join(" · "))
+        ])
     }
+
+    /// Just the exposure triangle — `f/2.8 · 1/250 · ISO 400` — dropping the
+    /// focal length. Used by the contact sheet, where the focal length is noise.
+    /// `None` when none of the three is known.
+    pub fn exposure_triangle(&self) -> Option<String> {
+        join_labels([
+            self.aperture_label(),
+            self.shutter_label(),
+            self.iso_label(),
+        ])
+    }
+}
+
+/// Join the present labels with the ` · ` separator; `None` when all are absent.
+fn join_labels<const N: usize>(labels: [Option<String>; N]) -> Option<String> {
+    let parts: Vec<String> = labels.into_iter().flatten().collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 /// Format an f-number: drop a trailing `.0` so `2.8` stays `f/2.8` but `8.0`

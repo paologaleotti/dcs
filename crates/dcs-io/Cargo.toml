@@ -28,6 +28,9 @@ blake3.workspace = true
 # disposable cache store
 rusqlite.workspace = true
 
+# contact-sheet PDF renderer
+printpdf.workspace = true
+
 # threading: one-directional channels
 crossbeam-channel.workspace = true
 
