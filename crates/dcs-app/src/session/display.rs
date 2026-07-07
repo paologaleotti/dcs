@@ -311,10 +311,13 @@ impl Session {
         self.request_gallery_at(display_index + 1, edge);
     }
 
-    /// Request a 1:1 (native-resolution) decode of one photo, capped at the GPU
-    /// texture limit — the `Z` zoom-to-100% path.
-    pub fn request_gallery_full(&mut self, display_index: usize) {
-        self.request_gallery_at(display_index, GALLERY_FULL_EDGE);
+    /// Ensure the focused gallery frame covers `target_px` on-screen device
+    /// pixels while zoomed in, quantized up a fixed tier ladder so a continuous
+    /// zoom steps through a handful of decodes rather than re-decoding every
+    /// frame; the GPU bilinear-scales between tiers, so zoom stays crisp without
+    /// thrash. Capped at [`GALLERY_FULL_EDGE`].
+    pub fn request_gallery_zoom(&mut self, display_index: usize, target_px: u32) {
+        self.request_gallery_at(display_index, gallery_tier(target_px));
     }
 
     /// The resident gallery frame for a photo, if decoded. Marks it recently used.
@@ -711,4 +714,40 @@ fn board_tier(edge: u32) -> u32 {
         .into_iter()
         .find(|&t| t >= edge)
         .unwrap_or(super::BOARD_MAX_EDGE)
+}
+
+/// Quantize a wanted on-screen edge up to a fixed gallery-zoom decode tier, so a
+/// continuous zoom-in steps through a handful of decode sizes instead of
+/// re-decoding at a new arbitrary pixel count every frame. Capped at
+/// [`GALLERY_FULL_EDGE`]; values above the top rung resolve there.
+pub(crate) fn gallery_tier(edge: u32) -> u32 {
+    const TIERS: [u32; 6] = [1024, 1600, 2400, 3200, 4800, 6400];
+    TIERS
+        .into_iter()
+        .find(|&t| t >= edge)
+        .unwrap_or(GALLERY_FULL_EDGE)
+}
+
+#[cfg(test)]
+mod tier_tests {
+    use super::{GALLERY_FULL_EDGE, gallery_tier};
+
+    #[test]
+    fn gallery_tier_quantizes_up_and_caps() {
+        assert_eq!(gallery_tier(1), 1024);
+        assert_eq!(gallery_tier(1024), 1024);
+        assert_eq!(gallery_tier(1025), 1600);
+        assert_eq!(gallery_tier(3000), 3200);
+        assert_eq!(gallery_tier(6400), 6400);
+        // Above the top rung resolves at the full-res cap.
+        assert_eq!(gallery_tier(7000), GALLERY_FULL_EDGE);
+        assert_eq!(gallery_tier(99_999), GALLERY_FULL_EDGE);
+        // Monotonic non-decreasing.
+        let mut prev = 0;
+        for e in (0..8000).step_by(37) {
+            let t = gallery_tier(e);
+            assert!(t >= prev);
+            prev = t;
+        }
+    }
 }

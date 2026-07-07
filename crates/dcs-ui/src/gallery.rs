@@ -1,8 +1,9 @@
-//! Gallery view mode: one photo big, judged at quality. The focused
-//! photo fills the frame (contain-fit, else 1:1 under `Z`); a docked filmstrip
-//! shows the visible order with the current frame centered. Keyboard lives in
-//! `app.rs` (full parity with the grid); this module only paints and reports the
-//! pointer events back up.
+//! Gallery view mode: one photo big, judged at quality. The focused photo fills
+//! the frame (contain-fit at rest) and zooms in to 1:1 — cursor-centered under
+//! wheel, pinch, drag, `Z` and double-click, with a minimap while zoomed. A
+//! docked filmstrip shows the visible order with the current frame centered.
+//! Navigation keys live in `app.rs`; the zoom transform is driven here (it needs
+//! the fit geometry) and resets to fit per-photo.
 //!
 //! Two texture caches feed it: `frame_textures` holds the large gallery decode
 //! (`Session::gallery_image`), `strip_textures` holds the cheap base thumbs the
@@ -11,9 +12,13 @@
 
 use dcs_app::{AppAction, Session};
 use dcs_domain::cull::AcceptState;
+use dcs_domain::photo::PhotoId;
 use dcs_domain::tag::Color;
 use dcs_domain::thumb::ThumbImage;
-use egui::{Align2, Color32, FontId, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
+use egui::{
+    Align2, Color32, Event, FontId, Id, Key, MouseWheelUnit, Pos2, Rect, Sense, Stroke, StrokeKind,
+    Ui, Vec2,
+};
 
 use crate::context_menu::cell_menu;
 use crate::grid::{TextureCache, contain_fit, full_uv};
@@ -28,16 +33,77 @@ const STRIP_THUMB: f32 = 64.0;
 /// Gap between filmstrip thumbs.
 const STRIP_GAP: f32 = 6.0;
 
+/// Minimap panel longest edge, points.
+const MINIMAP_MAX: f32 = 160.0;
+/// Per-notch zoom sensitivity for a line/page mouse wheel.
+const WHEEL_ZOOM_LINE: f32 = 0.10;
+/// Per-pixel zoom sensitivity for a modifier-held trackpad scroll (point units).
+const WHEEL_ZOOM_POINT: f32 = 0.004;
+
 /// The ephemeral gallery view state the caller drives each frame.
 pub struct GalleryState {
     /// Display index of the photo being judged.
     pub focus: usize,
-    /// `false` = contain-fit, `true` = 1:1 (`Z`).
-    pub full_zoom: bool,
     /// Filmstrip dock hidden.
     pub strip_collapsed: bool,
     /// The focus just moved — recenter the filmstrip this frame.
     pub center_focus: bool,
+}
+
+/// The gallery zoom transform: contain-fit at rest, cursor-centered zoom in to
+/// 1:1, with panning. `zoom` is a multiple of the contain-fit size (1.0 = fit,
+/// ceiling = native 1:1). Input sets `target_zoom`/`target_offset`; `zoom` eases
+/// toward the target each frame and the live `offset` is derived so the point
+/// under `anchor_rel` stays fixed throughout the ease. Ephemeral UI state owned
+/// by the app; reset to fit whenever the focused photo changes.
+pub struct GalleryZoom {
+    for_focus: Option<PhotoId>,
+    zoom: f32,
+    offset: Vec2,
+    target_zoom: f32,
+    target_offset: Vec2,
+    /// The last zoom pivot, relative to the frame center — the point kept fixed
+    /// while `zoom` eases toward `target_zoom`.
+    anchor_rel: Vec2,
+    /// A pan gesture that began on the minimap drives the viewport inversely; the
+    /// latch holds for the whole drag so it doesn't flip when the cursor leaves.
+    dragging_minimap: bool,
+}
+
+impl Default for GalleryZoom {
+    fn default() -> Self {
+        Self {
+            for_focus: None,
+            zoom: 1.0,
+            offset: Vec2::ZERO,
+            target_zoom: 1.0,
+            target_offset: Vec2::ZERO,
+            anchor_rel: Vec2::ZERO,
+            dragging_minimap: false,
+        }
+    }
+}
+
+impl GalleryZoom {
+    /// Snap back to contain-fit when the focused photo changes, so 1:1 framing is
+    /// per-photo. Keyed on `PhotoId`, not display index — a filter or folder
+    /// change can reuse an index for a different photo. Idempotent while focus holds.
+    fn sync_focus(&mut self, id: PhotoId) {
+        if self.for_focus != Some(id) {
+            *self = Self {
+                for_focus: Some(id),
+                ..Self::default()
+            };
+        }
+    }
+
+    fn is_zoomed(&self) -> bool {
+        self.zoom > 1.0001 || self.target_zoom > 1.0001
+    }
+
+    fn settled(&self) -> bool {
+        (self.zoom - self.target_zoom).abs() < 1e-3
+    }
 }
 
 /// What the gallery reports back after a frame.
@@ -55,11 +121,11 @@ pub fn show(
     session: &mut Session,
     frame_textures: &mut TextureCache,
     strip_textures: &mut TextureCache,
+    zoom: &mut GalleryZoom,
     state: &GalleryState,
 ) -> GalleryResponse {
     let GalleryState {
         focus,
-        full_zoom,
         strip_collapsed,
         center_focus,
     } = *state;
@@ -75,6 +141,7 @@ pub fn show(
             action: None,
         };
     };
+    zoom.sync_focus(id);
 
     // Carve the area top→bottom: image, then the docked info bar, then the
     // filmstrip. The bar never overlaps the photo (it sits in its own band), so
@@ -87,24 +154,31 @@ pub fn show(
         Pos2::new(area.max.x, image_bottom + INFO_BAR_H),
     );
 
-    // Quality: ask for a decode sized to the frame (device pixels), and the full
-    // 1:1 decode when zoomed. Neighbours preload inside `request_gallery`.
+    // Quality: ask for a decode sized to the frame (device pixels). Higher tiers
+    // are requested from `paint_frame` only as the user zooms in, so navigating
+    // the gallery at fit stays cheap. Neighbours preload inside `request_gallery`.
     let ppp = ui.ctx().pixels_per_point();
     let fit_edge = (image_rect.size().max_elem() * ppp).ceil() as u32;
     session.request_gallery(focus, fit_edge.max(1));
-    if full_zoom {
-        session.request_gallery_full(focus);
-    }
 
-    paint_frame(ui, session, frame_textures, id, image_rect, full_zoom, ppp);
+    let frame_resp = paint_frame(
+        ui,
+        session,
+        frame_textures,
+        strip_textures,
+        id,
+        focus,
+        image_rect,
+        zoom,
+        ppp,
+    );
     paint_info_bar(ui, &frame_info(session, focus), bar_rect);
 
     let mut action = None;
     // Right-click the photo → the same per-photo menu as a grid cell, acting on
-    // the displayed photo. Only in fit mode: the 1:1 scroll area owns pointer
-    // drags for panning, so an overlaid interact would fight it.
-    if !full_zoom {
-        let frame_resp = ui.interact(image_rect, Id::new("dcs_gallery_frame"), Sense::click());
+    // the displayed photo. Works at any zoom: `paint_frame` owns the pan drag on
+    // the same response, so the menu and panning no longer fight.
+    if let Some(frame_resp) = frame_resp {
         if frame_resp.secondary_clicked() {
             // Normalize the selection to the one photo on screen, so Accept /
             // Reject / tag hit exactly it rather than a selection carried in
@@ -164,46 +238,316 @@ fn to_color_image(image: &ThumbImage) -> egui::ColorImage {
 
 /// The big frame: the resident gallery decode if ready, else the base thumb
 /// upscaled as an instant stand-in that sharpens when the full decode lands.
-/// Contain-fit, or 1:1 in a scroll area under `Z`.
+/// Contain-fit at rest; cursor-centered zoom/pan under wheel, pinch, drag, `Z`
+/// and double-click, with a minimap while zoomed. Returns the frame interaction
+/// so the caller can hang the right-click menu on it. `None` when nothing has
+/// decoded yet.
+#[allow(clippy::too_many_arguments)]
 fn paint_frame(
     ui: &mut Ui,
     session: &mut Session,
     textures: &mut TextureCache,
-    id: dcs_domain::photo::PhotoId,
+    strip_textures: &mut TextureCache,
+    id: PhotoId,
+    focus: usize,
     rect: Rect,
-    full_zoom: bool,
+    zoom: &mut GalleryZoom,
     ppp: f32,
-) {
+) -> Option<egui::Response> {
     // Prefer the sharp gallery frame; fall back to the base thumb so something
-    // shows immediately. Each is fetched then handed straight to the texture
-    // cache, so the session borrow ends before the next call.
-    let tex = if session.gallery_image(id).is_some() {
-        let view = session.gallery_image(id);
-        textures.view_texture(ui, id, view)
-    } else {
-        let view = session.thumb(id);
-        textures.view_texture(ui, id, view)
+    // shows immediately. Read the gallery frame's true source dimensions first
+    // (they drive a stable zoom ceiling), then drop that borrow before re-fetching
+    // to upload — `gallery_image` takes `&mut self`.
+    let (has_gallery, source_px) = {
+        let gv = session.gallery_image(id);
+        let source_px = gv
+            .as_ref()
+            .map(|v| Vec2::new(v.image.source_width as f32, v.image.source_height as f32));
+        (gv.is_some(), source_px)
     };
-    let Some(tex) = tex else {
+    let tex = if has_gallery {
+        textures.view_texture(ui, id, session.gallery_image(id))
+    } else {
+        textures.view_texture(ui, id, session.thumb(id))
+    };
+    let tex = tex?;
+
+    // Guard degenerate dims so no division below yields NaN/Inf. A valid decode is
+    // always ≥1px; this only defends against an upstream bug producing a 0 dim.
+    let img_pts = Vec2::new((tex.size.x / ppp).max(1.0), (tex.size.y / ppp).max(1.0));
+    let fit = fit_size(rect, img_pts);
+    // The 1:1 ceiling comes from the source pixels, so the zoom range is stable
+    // from the first (preview) tier rather than growing as bigger tiers land.
+    let zoom_100 = match source_px {
+        Some(sp) if sp.x > 0.0 => (sp.x / (fit.x * ppp)).max(1.0),
+        _ => native_zoom(rect, img_pts),
+    };
+    let center = rect.center();
+    let ctx = ui.ctx().clone();
+
+    let map_rect = zoom.is_zoomed().then(|| minimap_rect(rect, img_pts));
+    let resp = ui.interact(rect, Id::new("dcs_gallery_frame"), Sense::click_and_drag());
+    let cursor = ctx.input(|i| i.pointer.latest_pos());
+    handle_zoom_input(&ctx, &resp, rect, zoom, zoom_100, cursor);
+    handle_pan_drag(&resp, zoom, fit, map_rect);
+
+    // Clamp the target, ease `zoom` toward it, and derive the live `offset` so the
+    // pivot stays fixed through the whole ease — a plain lerp of `offset` drifts
+    // because the cursor-fixed relationship is nonlinear in zoom.
+    zoom.target_zoom = zoom.target_zoom.clamp(1.0, zoom_100);
+    zoom.target_offset = clamp_offset(rect, fit * zoom.target_zoom, zoom.target_offset);
+    let t = animation_t(&ctx);
+    zoom.zoom += (zoom.target_zoom - zoom.zoom) * t;
+    zoom.zoom = zoom.zoom.clamp(1.0, zoom_100);
+    let anchor = center + zoom.anchor_rel;
+    zoom.offset = zoom_about(
+        anchor,
+        center,
+        zoom.target_offset,
+        zoom.target_zoom,
+        zoom.zoom,
+    );
+    let display = fit * zoom.zoom;
+    zoom.offset = clamp_offset(rect, display, zoom.offset);
+    if !zoom.settled() {
+        ctx.request_repaint();
+    }
+
+    // Paint clipped to the frame so zoomed pixels never bleed onto the info bar
+    // or filmstrip.
+    let placed = Rect::from_center_size(center + zoom.offset, display);
+    ui.painter()
+        .with_clip_rect(rect)
+        .image(tex.id, placed, full_uv(), Color32::WHITE);
+
+    // Full-res only on zoom-in: quantized higher-tier decode while enlarged; the
+    // GPU bilinear-scales between tiers so it stays crisp without re-decoding.
+    if zoom.zoom > 1.0001 {
+        let target_px = (display.max_elem() * ppp).ceil() as u32;
+        session.request_gallery_zoom(focus, target_px.max(1));
+    }
+
+    if zoom.is_zoomed()
+        && let Some(map) = map_rect
+    {
+        paint_minimap(ui, session, strip_textures, id, rect, map, display, zoom);
+    }
+
+    Some(resp)
+}
+
+/// The contain-fit size (points) of an image of `img_pts` inside `frame`.
+fn fit_size(frame: Rect, img_pts: Vec2) -> Vec2 {
+    let s = (frame.width() / img_pts.x).min(frame.height() / img_pts.y);
+    img_pts * s
+}
+
+/// Native (1:1) zoom multiple relative to fit — the zoom ceiling, never below 1
+/// (small photos are never enlarged past their pixels).
+fn native_zoom(frame: Rect, img_pts: Vec2) -> f32 {
+    (img_pts.x / fit_size(frame, img_pts).x).max(1.0)
+}
+
+/// Clamp a pan offset so the image never pulls its edges inside the frame; locks
+/// to center on an axis where the image is no larger than the frame.
+fn clamp_offset(frame: Rect, display: Vec2, offset: Vec2) -> Vec2 {
+    let slack_x = ((display.x - frame.width()) * 0.5).max(0.0);
+    let slack_y = ((display.y - frame.height()) * 0.5).max(0.0);
+    Vec2::new(
+        offset.x.clamp(-slack_x, slack_x),
+        offset.y.clamp(-slack_y, slack_y),
+    )
+}
+
+/// The pan offset for a zoom about `cursor` that keeps the image point under the
+/// cursor fixed. Offsets are frame-center-relative.
+fn zoom_about(cursor: Pos2, center: Pos2, offset: Vec2, z_old: f32, z_new: f32) -> Vec2 {
+    let ratio = z_new / z_old;
+    let anchor = cursor - center;
+    (offset - anchor) * ratio + anchor
+}
+
+/// Frame-rate-independent easing factor toward the zoom/pan targets.
+fn animation_t(ctx: &egui::Context) -> f32 {
+    let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 0.1);
+    1.0 - (-dt / 0.05).exp()
+}
+
+/// Retarget the zoom to `new_zoom`, pivoting about `anchor` so that point stays
+/// put, and clamped to the fit↔100% range. Records the pivot so the per-frame
+/// ease keeps the same point fixed while `zoom` catches up to the target.
+fn apply_zoom(zoom: &mut GalleryZoom, center: Pos2, anchor: Pos2, new_zoom: f32, zoom_100: f32) {
+    let z_new = new_zoom.clamp(1.0, zoom_100);
+    let z_old = zoom.target_zoom.max(1e-3);
+    zoom.target_offset = zoom_about(anchor, center, zoom.target_offset, z_old, z_new);
+    zoom.target_zoom = z_new;
+    zoom.anchor_rel = anchor - center;
+}
+
+/// Toggle between contain-fit and 1:1, pivoting about `anchor`.
+fn toggle_zoom(zoom: &mut GalleryZoom, center: Pos2, anchor: Pos2, zoom_100: f32) {
+    let target = if zoom.target_zoom > 1.0001 {
+        1.0
+    } else {
+        zoom_100
+    };
+    apply_zoom(zoom, center, anchor, target, zoom_100);
+}
+
+/// Route a pan drag to the target offset: a gesture that began over the minimap
+/// moves the viewport inversely (scaled by the on-screen image size), latched for
+/// the whole drag so it doesn't flip when the cursor leaves the panel; otherwise
+/// the frame drags the image directly. Offset is derived from the target each
+/// frame, so writing only the target is enough.
+fn handle_pan_drag(
+    resp: &egui::Response,
+    zoom: &mut GalleryZoom,
+    fit: Vec2,
+    map_rect: Option<Rect>,
+) {
+    if resp.drag_started() {
+        zoom.dragging_minimap = map_rect
+            .zip(resp.interact_pointer_pos())
+            .is_some_and(|(m, p)| m.contains(p));
+    }
+    if !resp.dragged() {
+        zoom.dragging_minimap = false;
+        return;
+    }
+    if !zoom.is_zoomed() {
+        return;
+    }
+    let d = resp.drag_delta();
+    match map_rect.filter(|_| zoom.dragging_minimap) {
+        Some(m) => {
+            let display = fit * zoom.target_zoom;
+            zoom.target_offset -=
+                Vec2::new(d.x * display.x / m.width(), d.y * display.y / m.height());
+        }
+        None => zoom.target_offset += d,
+    }
+}
+
+/// Read this frame's pointer/keyboard into the zoom targets: pinch and mouse
+/// wheel (and modifier-held scroll) zoom toward the cursor; plain trackpad scroll
+/// pans; `Z` and double-click snap fit↔100%.
+fn handle_zoom_input(
+    ctx: &egui::Context,
+    resp: &egui::Response,
+    rect: Rect,
+    zoom: &mut GalleryZoom,
+    zoom_100: f32,
+    cursor: Option<Pos2>,
+) {
+    let center = rect.center();
+    let anchor = cursor.filter(|p| rect.contains(*p)).unwrap_or(center);
+
+    // Bare `Z` toggles fit↔100% (the registry binds Cmd+Z / Cmd+Shift+Z to
+    // undo/redo, so guard the modifiers or those would flip the zoom too).
+    if ctx.input(|i| i.key_pressed(Key::Z) && !i.modifiers.command && !i.modifiers.shift) {
+        toggle_zoom(zoom, center, anchor, zoom_100);
+    }
+    if resp.double_clicked() {
+        toggle_zoom(zoom, center, anchor, zoom_100);
+    }
+
+    if !cursor.is_some_and(|p| rect.contains(p)) {
+        return;
+    }
+    ctx.input(|i| {
+        // Pinch (trackpad) and ctrl+scroll arrive folded into `zoom_delta` on
+        // every platform — the reliable pinch signal, since macOS exposes no raw
+        // multi-touch to egui.
+        let zd = i.zoom_delta();
+        if (zd - 1.0).abs() > 1e-3 {
+            apply_zoom(zoom, center, anchor, zoom.target_zoom * zd, zoom_100);
+        }
+        for ev in &i.events {
+            let Event::MouseWheel {
+                unit,
+                delta,
+                modifiers,
+                ..
+            } = ev
+            else {
+                continue;
+            };
+            // ctrl+scroll is already counted in `zoom_delta`; don't double-apply.
+            if modifiers.ctrl {
+                continue;
+            }
+            let as_zoom =
+                matches!(unit, MouseWheelUnit::Line | MouseWheelUnit::Page) || modifiers.command;
+            if as_zoom {
+                let rate = if matches!(unit, MouseWheelUnit::Point) {
+                    WHEEL_ZOOM_POINT
+                } else {
+                    WHEEL_ZOOM_LINE
+                };
+                let factor = (delta.y * rate).clamp(-0.5, 0.5).exp();
+                apply_zoom(zoom, center, anchor, zoom.target_zoom * factor, zoom_100);
+            } else if zoom.is_zoomed() {
+                zoom.target_offset += *delta;
+            }
+        }
+    });
+}
+
+/// The minimap panel rect: an image-aspect box inset in the frame's bottom-right,
+/// longest edge [`MINIMAP_MAX`].
+fn minimap_rect(frame: Rect, img_pts: Vec2) -> Rect {
+    let aspect = img_pts.x / img_pts.y;
+    let (w, h) = if aspect >= 1.0 {
+        (MINIMAP_MAX, MINIMAP_MAX / aspect)
+    } else {
+        (MINIMAP_MAX * aspect, MINIMAP_MAX)
+    };
+    let pad = 12.0;
+    Rect::from_min_size(
+        Pos2::new(frame.right() - w - pad, frame.bottom() - h - pad),
+        Vec2::new(w, h),
+    )
+}
+
+/// The minimap overlay while zoomed: the whole image (cheap base thumb) with a
+/// box marking the visible viewport, so the pan position reads at a glance.
+#[allow(clippy::too_many_arguments)]
+fn paint_minimap(
+    ui: &mut Ui,
+    session: &mut Session,
+    strip_textures: &mut TextureCache,
+    id: PhotoId,
+    frame: Rect,
+    map: Rect,
+    display: Vec2,
+    zoom: &GalleryZoom,
+) {
+    let view = session.thumb(id);
+    let Some(tex) = strip_textures.view_texture(ui, id, view) else {
         return;
     };
+    let p = ui.painter().with_clip_rect(frame);
+    p.rect_filled(map.expand(4.0), 3.0, theme::CHROME_BG);
+    p.image(tex.id, map, full_uv(), Color32::WHITE);
+    p.rect_stroke(
+        map.expand(4.0),
+        3.0,
+        Stroke::new(1.0, theme::HAIRLINE),
+        StrokeKind::Outside,
+    );
 
-    if full_zoom {
-        // 1:1 — one image pixel per device pixel, scrollable when larger than
-        // the frame. Texture size is in pixels; divide by the scale factor.
-        let native = tex.size / ppp;
-        egui::ScrollArea::both()
-            .id_salt("gallery_zoom")
-            .show_viewport(ui, |ui, _vp| {
-                let (r, _) = ui.allocate_exact_size(native.max(rect.size()), Sense::hover());
-                let placed = Rect::from_center_size(r.center(), native);
-                ui.painter()
-                    .image(tex.id, placed, full_uv(), Color32::WHITE);
-            });
-    } else {
-        let fit = contain_fit(rect, tex.size);
-        ui.painter().image(tex.id, fit, full_uv(), Color32::WHITE);
-    }
+    let fx = (frame.width() / display.x).min(1.0);
+    let fy = (frame.height() / display.y).min(1.0);
+    let cx = 0.5 - zoom.offset.x / display.x;
+    let cy = 0.5 - zoom.offset.y / display.y;
+    let box_c = Pos2::new(map.left() + cx * map.width(), map.top() + cy * map.height());
+    let box_rect = Rect::from_center_size(box_c, Vec2::new(fx * map.width(), fy * map.height()));
+    p.rect_stroke(
+        box_rect,
+        0.0,
+        Stroke::new(1.5, theme::FOCUS_OUTLINE),
+        StrokeKind::Inside,
+    );
 }
 
 /// The facts shown in the info bar for one photo, assembled from the session so
@@ -590,5 +934,59 @@ pub(crate) fn paint_filmstrip(
     StripResponse {
         clicked: hit,
         action: menu_action,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approx(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-3
+    }
+
+    #[test]
+    fn fit_contains_and_native_is_the_ceiling() {
+        // A 4000×2000 image into a 1000×1000 frame fits the width → 1000×500,
+        // and 1:1 is 4× that fit.
+        let frame = Rect::from_min_size(Pos2::ZERO, Vec2::splat(1000.0));
+        let img = Vec2::new(4000.0, 2000.0);
+        let fit = fit_size(frame, img);
+        assert!(approx(fit.x, 1000.0) && approx(fit.y, 500.0));
+        assert!(approx(native_zoom(frame, img), 4.0));
+
+        // A tiny image is never enlarged past 1:1 — the ceiling floors at 1.0.
+        let small = Vec2::new(100.0, 100.0);
+        assert!(approx(native_zoom(frame, small), 1.0));
+    }
+
+    #[test]
+    fn offset_locks_to_center_when_not_larger_and_clamps_when_larger() {
+        let frame = Rect::from_min_size(Pos2::ZERO, Vec2::splat(1000.0));
+        // Display no larger than the frame → any pan snaps back to center.
+        let locked = clamp_offset(frame, Vec2::splat(800.0), Vec2::new(200.0, -300.0));
+        assert!(approx(locked.x, 0.0) && approx(locked.y, 0.0));
+
+        // Display larger → pan clamps to the half-overhang, no gaps at the edges.
+        let display = Vec2::new(1600.0, 1000.0);
+        let clamped = clamp_offset(frame, display, Vec2::new(9999.0, 50.0));
+        assert!(approx(clamped.x, 300.0)); // (1600-1000)/2
+        assert!(approx(clamped.y, 0.0)); // height not larger → locked
+    }
+
+    #[test]
+    fn zoom_about_keeps_the_cursor_point_fixed() {
+        let center = Pos2::new(500.0, 500.0);
+        let cursor = Pos2::new(800.0, 500.0);
+        let display_old = Vec2::new(1000.0, 1000.0);
+        let offset_old = Vec2::new(-40.0, 10.0);
+        let (z_old, z_new) = (1.0, 2.5);
+        let offset_new = zoom_about(cursor, center, offset_old, z_old, z_new);
+        let display_new = display_old * (z_new / z_old);
+
+        // The image-normalized point under the cursor is unchanged by the zoom.
+        let u_old = (cursor - (center + offset_old)) / display_old;
+        let u_new = (cursor - (center + offset_new)) / display_new;
+        assert!(approx(u_old.x, u_new.x) && approx(u_old.y, u_new.y));
     }
 }

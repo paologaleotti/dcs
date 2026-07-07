@@ -235,6 +235,45 @@ fn decode_oriented_full_applies_orientation_before_pixels() {
 }
 
 #[test]
+fn thumbnail_reports_true_source_dims_regardless_of_tier() {
+    // A 3000×2000 source decoded to a 256 box still reports the full 3000×2000 as
+    // its source — so a viewer's 1:1 zoom ceiling is correct from the first tier.
+    let path = write_jpeg("dcs_thumb_srcdims.jpg", 3000, 2000);
+    let thumb = decode_thumbnail(&path, Orientation::Normal, 256, None).expect("decode");
+    assert!(
+        thumb.width.max(thumb.height) <= 256,
+        "downscaled to the box"
+    );
+    assert_eq!((thumb.source_width, thumb.source_height), (3000, 2000));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn source_dims_swap_under_rotation() {
+    // Rotate90 makes the upright image portrait, so the reported source dims swap
+    // to match the pixels' orientation.
+    let path = write_jpeg("dcs_thumb_srcdims_rot.jpg", 3000, 2000);
+    let thumb = decode_thumbnail(&path, Orientation::Rotate90, 256, None).expect("decode");
+    assert_eq!((thumb.source_width, thumb.source_height), (2000, 3000));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn cropped_source_dims_are_the_crop_windows_native_pixels() {
+    // A centered 30%×30% crop of a 2000×1000 source spans 600×300 native px; the
+    // reported source dims are that window (not the downscaled thumb, not the full
+    // frame), so 1:1 aligns with the visible cropped pixels.
+    let path = write_jpeg("dcs_thumb_srcdims_crop.jpg", 2000, 1000);
+    let edit = CropEdit {
+        angle_deg: 0.0,
+        rect: NormRect::centered(0.3, 0.3),
+    };
+    let thumb = decode_thumbnail(&path, Orientation::Normal, 128, Some(&edit)).expect("decode");
+    assert_eq!((thumb.source_width, thumb.source_height), (600, 300));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn decode_thumbnail_with_a_crop_does_not_panic_and_stays_within_edge() {
     // A small crop window forces a scaled-up source decode (crop_decode_edge);
     // the result is the cropped region fit to `edge`. Smoke-covers the cropped

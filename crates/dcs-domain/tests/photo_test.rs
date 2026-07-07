@@ -112,3 +112,23 @@ fn exposure_line_joins_present_fields_and_omits_missing() {
 
     assert_eq!(CaptureMeta::default().exposure_line(), None);
 }
+
+#[test]
+fn orientation_swaps_axes_only_for_quarter_turns_and_transposes() {
+    for o in [
+        Orientation::Rotate90,
+        Orientation::Rotate270,
+        Orientation::Transpose,
+        Orientation::Transverse,
+    ] {
+        assert!(o.swaps_axes(), "{o:?} swaps width/height");
+    }
+    for o in [
+        Orientation::Normal,
+        Orientation::FlipH,
+        Orientation::FlipV,
+        Orientation::Rotate180,
+    ] {
+        assert!(!o.swaps_axes(), "{o:?} keeps width/height");
+    }
+}

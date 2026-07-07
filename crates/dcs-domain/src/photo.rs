@@ -37,6 +37,20 @@ pub enum Orientation {
     Rotate270,
 }
 
+impl Orientation {
+    /// Whether applying this orientation swaps the image's width and height (the
+    /// 90°/270° rotations and the two diagonal transposes).
+    pub fn swaps_axes(self) -> bool {
+        matches!(
+            self,
+            Orientation::Rotate90
+                | Orientation::Rotate270
+                | Orientation::Transpose
+                | Orientation::Transverse
+        )
+    }
+}
+
 /// The file paths backing one photo. At least one is always present.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AssociatedFiles {

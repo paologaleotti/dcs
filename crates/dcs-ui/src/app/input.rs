@@ -197,19 +197,15 @@ impl DcsApp {
         }
     }
 
-    /// Gallery keys: `←`/`↑` previous, `→`/`↓` next over the visible order; `Z`
-    /// toggles fit ↔ 1:1; `Esc` returns to the grid. Space (toggle gallery),
-    /// `A`/`X`, and undo are registry bindings, dispatched before this runs.
+    /// Gallery keys: `←`/`↑` previous, `→`/`↓` next over the visible order; `Esc`
+    /// returns to the grid. `Z`/double-click/wheel/pinch zoom live in the gallery
+    /// paint (they need the fit geometry); the zoom resets to fit per-photo there.
+    /// Space (toggle gallery), `A`/`X`, and undo are registry bindings, dispatched
+    /// before this runs.
     fn handle_gallery_keys(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.exit_gallery();
             return;
-        }
-        // Bare `Z` only — the registry runs first and binds Cmd+Z / Cmd+Shift+Z
-        // to undo/redo, so without the modifier guard those would also flip the
-        // 1:1 zoom as a side effect.
-        if ctx.input(|i| i.key_pressed(Key::Z) && !i.modifiers.command && !i.modifiers.shift) {
-            self.gallery_full = !self.gallery_full;
         }
         let prev = ctx.input(|i| i.key_pressed(Key::ArrowLeft) || i.key_pressed(Key::ArrowUp));
         let next = ctx.input(|i| i.key_pressed(Key::ArrowRight) || i.key_pressed(Key::ArrowDown));
@@ -222,10 +218,6 @@ impl DcsApp {
                 } else {
                     cur.saturating_sub(1)
                 };
-                // 1:1 framing is per-photo, so reset to fit when stepping on.
-                if target != cur {
-                    self.gallery_full = false;
-                }
                 self.session.set_focus(target, false);
                 self.scroll_to_focus = true;
             }

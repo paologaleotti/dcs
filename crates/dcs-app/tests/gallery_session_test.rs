@@ -90,6 +90,27 @@ fn smaller_repeat_request_does_not_drop_a_resident_frame() {
 }
 
 #[test]
+fn request_gallery_zoom_decodes_the_focus_frame() {
+    let (mut session, dir) = opened_with(1, "zoom");
+    let id0 = session.photo_at(0).unwrap().id;
+
+    // A zoom request decodes the focus via the tier ladder, and a repeat at the
+    // same target is already satisfied — nothing new goes in flight.
+    session.request_gallery_zoom(0, 1200);
+    pump(&mut session, |s| s.gallery_image(id0).is_some());
+    assert!(session.gallery_image(id0).is_some(), "zoom frame decoded");
+
+    session.request_gallery_zoom(0, 1200);
+    session.tick();
+    assert!(
+        !session.has_gallery_pending(),
+        "same-tier repeat is deduped"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn clear_gallery_frees_the_frames() {
     let (mut session, dir) = opened_with(2, "clear");
     let id0 = session.photo_at(0).unwrap().id;

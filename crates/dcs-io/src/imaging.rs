@@ -267,9 +267,15 @@ fn encode_blob(thumb: &ThumbImage) -> Option<Vec<u8>> {
 /// and post-resize, so this is a straight decompress — no further transforms.
 fn decode_blob(blob: &[u8]) -> Option<ThumbImage> {
     let image = turbojpeg::decompress(blob, PixelFormat::RGBA).ok()?;
+    let (w, h) = (image.width as u32, image.height as u32);
     Some(ThumbImage {
-        width: image.width as u32,
-        height: image.height as u32,
+        width: w,
+        height: h,
+        // Cached blobs are stored post-resize with no record of the source size;
+        // the thumbnail's own dims stand in (cache is grid/base thumbs, not the
+        // gallery zoom path, which is never disk-cached).
+        source_width: w,
+        source_height: h,
         rgba: image.pixels,
     })
 }
@@ -288,20 +294,46 @@ pub fn decode_thumbnail(
     crop: Option<&CropEdit>,
 ) -> Option<ThumbImage> {
     let decode_edge = crop.map_or(edge, |e| crop_decode_edge(e, edge));
-    let img = decode_scaled(path, decode_edge).or_else(|| image::open(path).ok())?;
+    // Prefer the turbojpeg path, which hands back the source dims from the header
+    // it already parsed; the `image` fallback reads them off the decoded image.
+    let (img, raw_source) = match decode_scaled(path, decode_edge) {
+        Some((img, src)) => (img, src),
+        None => {
+            let img = image::open(path).ok()?;
+            let dims = (img.width(), img.height());
+            (img, dims)
+        }
+    };
     let img = apply_orientation(img, orientation);
+    // Full-resolution size of the region these pixels represent — orientation
+    // applied, and for a crop narrowed to the crop window's native px — so the
+    // zoom ceiling is correct from the first (downscaled) tier.
+    let (sw, sh) = if orientation.swaps_axes() {
+        (raw_source.1, raw_source.0)
+    } else {
+        raw_source
+    };
+    let source = match crop {
+        Some(edit) => {
+            let plan = plan_crop(sw, sh, edit);
+            (plan.out_w.max(1), plan.out_h.max(1))
+        }
+        None => (sw, sh),
+    };
     let img = match crop {
         Some(edit) => apply_crop(&img.into_rgba8(), edit, edge),
         None => img,
     };
-    Some(finish(img, edge))
+    Some(finish(img, edge, Some(source)))
 }
 
 /// Decode a JPEG at full resolution with EXIF orientation baked into the pixels,
 /// as an `RgbaImage`. For the export render path, which needs the original
 /// resolution (no thumbnail downscale). `None` if the file can't be decoded.
 pub fn decode_oriented_full(path: &Path, orientation: Orientation) -> Option<RgbaImage> {
-    let img = decode_scaled(path, u32::MAX).or_else(|| image::open(path).ok())?;
+    let img = decode_scaled(path, u32::MAX)
+        .map(|(img, _)| img)
+        .or_else(|| image::open(path).ok())?;
     Some(apply_orientation(img, orientation).into_rgba8())
 }
 
@@ -336,16 +368,20 @@ fn crop_decode_edge(edit: &CropEdit, edge: u32) -> u32 {
 
 /// Contain-fit into an `edge × edge` box, never upscaling beyond it. The input is
 /// already RGBA, so `into_rgba8` moves rather than converts.
-fn finish(img: DynamicImage, edge: u32) -> ThumbImage {
+fn finish(img: DynamicImage, edge: u32, source: Option<(u32, u32)>) -> ThumbImage {
     let resized = if img.width() > edge || img.height() > edge {
         img.resize(edge, edge, FilterType::Triangle)
     } else {
         img
     };
     let rgba = resized.into_rgba8();
+    let (w, h) = (rgba.width(), rgba.height());
+    let (source_width, source_height) = source.unwrap_or((w, h));
     ThumbImage {
-        width: rgba.width(),
-        height: rgba.height(),
+        width: w,
+        height: h,
+        source_width,
+        source_height,
         rgba: rgba.into_raw(),
     }
 }
@@ -431,7 +467,10 @@ thread_local! {
 
 /// Decode a JPEG with libjpeg-turbo, scaled down to roughly `edge` on its
 /// longest side. The DCT scaling makes a full-resolution frame cheap to read.
-fn decode_scaled(path: &Path, edge: u32) -> Option<DynamicImage> {
+/// Also returns the source's full-resolution dimensions (pre-orientation,
+/// pre-scale) from the header the decode already parsed, so callers get them
+/// without a second file read.
+fn decode_scaled(path: &Path, edge: u32) -> Option<(DynamicImage, (u32, u32))> {
     let data = std::fs::read(path).ok()?;
     DECOMPRESSOR.with(|cell| {
         let mut slot = cell.borrow_mut();
@@ -441,6 +480,7 @@ fn decode_scaled(path: &Path, edge: u32) -> Option<DynamicImage> {
         let decompressor = slot.as_mut()?;
 
         let header = decompressor.read_header(&data).ok()?;
+        let source = (header.width as u32, header.height as u32);
         let factor = pick_scaling(header.width, header.height, edge as usize);
         decompressor.set_scaling_factor(factor).ok()?;
         let width = factor.scale(header.width);
@@ -459,7 +499,7 @@ fn decode_scaled(path: &Path, edge: u32) -> Option<DynamicImage> {
         };
         decompressor.decompress(&data, image).ok()?;
         image::RgbaImage::from_raw(width as u32, height as u32, pixels)
-            .map(DynamicImage::ImageRgba8)
+            .map(|img| (DynamicImage::ImageRgba8(img), source))
     })
 }
 

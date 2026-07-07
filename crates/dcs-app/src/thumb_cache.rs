@@ -124,6 +124,8 @@ mod tests {
         ThumbImage {
             width: 1,
             height: bytes as u32,
+            source_width: 1,
+            source_height: bytes as u32,
             rgba: vec![0u8; bytes],
         }
     }

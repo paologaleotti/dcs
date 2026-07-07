@@ -68,8 +68,9 @@ pub struct DcsApp {
     /// Texture cache for the gallery's large frames, kept apart from the grid's
     /// thumb cache so one `PhotoId` never holds both a big frame and a thumb.
     gallery_textures: TextureCache,
-    /// Gallery zoom: `false` = contain-fit, `true` = 1:1 (`Z` toggles).
-    gallery_full: bool,
+    /// Gallery zoom transform (contain-fit at rest, cursor-centered zoom to 1:1,
+    /// pan). Reset to fit whenever the focused photo changes.
+    gallery_zoom: crate::gallery::GalleryZoom,
     /// The live crop-editor working state. Crop is not a view mode — it's a
     /// transient editor layered over the gallery: when this is `Some` the central
     /// area renders the editor instead of `view`, and committing/cancelling drops
@@ -164,7 +165,7 @@ impl DcsApp {
             // each is large — a dedicated, smaller VRAM budget keeps the two
             // caches from together pinning ~1.5 GB.
             gallery_textures: TextureCache::with_budget(GALLERY_TEXTURE_BYTES),
-            gallery_full: false,
+            gallery_zoom: crate::gallery::GalleryZoom::default(),
             crop_edit: None,
             strip_collapsed: false,
             cell: 92.0,

@@ -283,7 +283,6 @@ impl DcsApp {
                         // Recenter the filmstrip only when the focus just moved.
                         let state = gallery::GalleryState {
                             focus,
-                            full_zoom: self.gallery_full,
                             strip_collapsed: self.strip_collapsed,
                             center_focus: std::mem::take(&mut self.scroll_to_focus),
                         };
@@ -292,6 +291,7 @@ impl DcsApp {
                             &mut self.session,
                             &mut self.gallery_textures,
                             &mut self.textures,
+                            &mut self.gallery_zoom,
                             &state,
                         );
                         if let Some(idx) = resp.clicked {
@@ -385,7 +385,7 @@ impl DcsApp {
             self.session.set_focus(0, false);
         }
         self.view = ViewMode::Gallery;
-        self.gallery_full = false;
+        self.gallery_zoom = crate::gallery::GalleryZoom::default();
         // Center the filmstrip on the opening photo.
         self.scroll_to_focus = true;
     }
@@ -436,7 +436,7 @@ impl DcsApp {
     /// Drop the gallery's large frames and reset its zoom — the teardown shared
     /// by every path that leaves the gallery.
     fn leave_gallery(&mut self) {
-        self.gallery_full = false;
+        self.gallery_zoom = crate::gallery::GalleryZoom::default();
         self.session.clear_gallery();
         self.gallery_textures.clear();
     }
@@ -487,6 +487,9 @@ impl DcsApp {
         self.crop_edit = None;
         self.session.clear_gallery();
         self.gallery_textures.clear();
+        // A commit changes the frame's aspect/extent, so any carried zoom/pan would
+        // be framed against the old image — return to fit.
+        self.gallery_zoom = crate::gallery::GalleryZoom::default();
         self.view = ViewMode::Gallery;
         self.scroll_to_focus = true;
     }
