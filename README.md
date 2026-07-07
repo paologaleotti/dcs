@@ -8,7 +8,7 @@
 
 <p align="center">
   A fast, keyboard-first contact sheet for your photos. Scan, cull, tag, and
-  export thousands of JPEGs without ever opening a heavy editor.
+  export thousands of JPEGs without opening a heavy editor.
 </p>
 
 <p align="center">
@@ -21,43 +21,40 @@
 ## What it does
 
 You just got back from a trip with three thousand photos. You don't want to
-edit them yet, you want to look through them, throw out the bad ones, keep the
+edit them yet. You want to look through them, throw out the bad ones, keep the
 good ones, and pull your favourites into a folder to share. That's the job dcs
 does, and it does it fast. Originals are never touched; everything you do lives
 in a small, readable project file next to your photos.
 
 ## Features
 
-- **Native, cross-platform UI.** Runs on macOS, Linux, and Windows. The grid and
-  gallery has been optimized for speed and low memory usage, even with thousands of photos.
-- **Keyboard-first.** Accept, reject, tag, crop, search, undo, all on the
-  keyboard and all remappable from a config file.
-- **Non-destructive culling and tagging.** Accept / reject verdicts and tags
-  persist between sessions; originals are never modified. A photo is identified
-  by its content fingerprint, not its path, so it keeps its verdicts and tags
-  even if you rename or move the file.
-- **Crop and straighten.** Fixed ratios, free crop, and a straighten slider,
-  applied as a clearable, non-destructive `CropEdit`.
-- **Freeform board.** A pan-and-zoom canvas (`B`) for arranging a curated set of
-  photos by hand: drag frames anywhere, layer them, and build a loose layout.
-  Membership, positions, and z-order are the only owned board state; everything
-  else stays derived.
-- **Derived grouping.** Grouping, bursts, sort, and titles are recomputed from
-  metadata, never persisted.
-- **Local, offline AI search.** Free-text semantic search powered by an embedded
-  SigLIP model. Fully on-device, no API, no upload. Off by default, enabled per
-  project. See [Semantic search](#semantic-search).
-- **Pure export planner.** All export logic (scope, layout, name templates,
-  collision renaming) is pure and computed up front into a plan. Copy-only,
-  never overwrites, the live preview is the plan that runs.
-- **Contact sheet export.** Print your grid — filters applied — as an analog
-  contact sheet: numbered frames in a monospace, film-rebate style on a chosen
-  paper size (A4/A3/Letter/Legal), black or white background, with optional
-  filename and exposure captions. A live WYSIWYG preview *is* the plan that gets
-  rendered to a multi-page PDF; export it, or print it through your system
-  viewer.
-- **Durable, cross-session undo.** Every mutation is an entry in a persisted
-  command log, so undo and redo still work after you close and reopen the app.
+- **Fast and native.** Runs on macOS, Linux, and Windows, and stays smooth with
+  thousands of photos.
+- **Keyboard-first.** Accept, reject, tag, crop, search, and undo from the
+  keyboard. Shortcuts are remappable.
+- **Never touches your originals.** Verdicts and tags are saved alongside your
+  photos, and stick even if you rename or move the files.
+- **Crop and straighten** with fixed ratios, free crop, and a straighten slider.
+- **Automatic grouping.** Photos organize themselves by day, time, and bursts.
+- **Freeform board.** Drag photos onto a canvas and arrange them by hand.
+- **Search by describing.** Find photos by what's in them ("temple", "red car"),
+  entirely on your machine. See [Semantic search](#semantic-search).
+- **Export your keepers** to a folder. Copies only, never overwrites.
+- **Print contact sheets.** Turn your grid into a physical sheet on paper. See
+  [Contact sheets](#contact-sheets).
+- **Undo that lasts.** Undo and redo keep working after you close and reopen.
+
+## Contact sheets
+
+Make the *digital* contact sheet physical again: print your grid on paper.
+
+Frames come out numbered in a film-rebate style with monospace captions, on the
+paper size you choose (A4, A3, Letter, or Legal), against a black or white
+background, with optional filename and exposure captions. Filters apply, so you
+print exactly the set you're looking at, and the live preview is what gets
+rendered. It saves to a multi-page PDF or prints straight through your system
+viewer, so you can cull on paper the old-fashioned way, or show off a set you've
+already picked.
 
 ## Semantic search
 
@@ -74,14 +71,15 @@ A few things worth knowing:
 - **It's optional and per project.** Search is **off by default**. You turn it
   on for a given project, and that choice is saved with the project.
 - **It needs to index first.** When enabled, dcs builds an index of your photos
-  in the background, at the lowest priority, so it never slows down loading or
+  in the background at the lowest priority, so it never slows down loading or
   scrolling. Search gets better as indexing finishes. The index is a disposable
   cache (about 3 KB per photo); it's never part of your owned project data.
-- **Indexing can be GPU accellerated** Indexing and queries run on the GPU where available:
-  Metal on macOS (on by default), CUDA on Nvidia, with a CPU fallback
-  everywhere else. Queries are extremely fast (sub-100ms) even on CPU, expect slower indexing on CPU.
-- **The model ships inside the app.** No separate download at runtime, it works
-  out of the box. This is what makes the binary large (see below).
+- **Indexing can be GPU-accelerated.** Indexing and queries run on the GPU where
+  available: Metal on macOS (on by default), CUDA on Nvidia, with a CPU fallback
+  everywhere else. Queries are fast (sub-100ms) even on CPU; expect slower
+  indexing on CPU.
+- **The model ships inside the app.** No separate download at runtime, so it
+  works out of the box. This is what makes the binary large (see below).
 
 ## Install
 
@@ -104,13 +102,13 @@ cargo build --release -p dcs-ui --bin dcs
 > **The first build downloads the search model (~800 MB, once).** `build.rs`
 > fetches the pinned SigLIP model, checks its SHA-256, converts it to fp16, and
 > bakes it into the binary. The embedded model adds about **390 MB** to the
-> executable. It's cached per revision under `target/`, so only the first build,
-> or a build after `cargo clean`, pays the download.
+> executable. It's cached per revision under `target/`, so only the first build
+> (or a build after `cargo clean`) pays the download.
 
 #### Prerequisites
 
 - **Rust** stable (`rustup` recommended).
-- **NASM** + **CMake**, because `turbojpeg` builds libjpeg-turbo's SIMD from
+- **NASM** and **CMake**, because `turbojpeg` builds libjpeg-turbo's SIMD from
   source. CMake ships on most systems; install NASM through your package
   manager.
 - **Linux only**, the GUI dev headers:
