@@ -58,6 +58,8 @@ When adding a `use` import, verify it respects this graph.
 - **Default to none**: prefer self-explanatory names and structure over comments. Don't restate code, don't add ceremony.
 - **Be concise**: one short line where it genuinely adds something. Explain the **why** (non-obvious intent, a subtle constraint), not the **what** the code already states.
 - **Write timeless comments**: a comment describes the code as it is **now**. Never narrate history, iterations, or transitions ("changed to X", "now resolves instead of...", "previously we...") - that's what `git` is for.
+- **No design-narration on UI/styling code.** This is the #1 offense. Do NOT annotate a `Frame`, fill, stroke, margin, font, hairline, or widget with a comment describing what it looks like or what effect it has ("reads as one segmented control", "a deliberate hairline where chrome meets the sheet", "the active segment filled", "kept deep so controls pop"). The property name and value already say it. Setting a color/size/layout is self-evident — **it gets no comment**. If the reader can see the effect by reading the line, delete the comment.
+- **The bar for an inline comment is high**: it survives only if it documents something the code genuinely cannot show — a real external gotcha (e.g. "egui paints selected text in selection.stroke's color; NONE = invisible"), a non-obvious ordering/invariant dependency, or a workaround for an upstream bug. "Why I picked this aesthetic" is NOT such a thing. When in doubt, delete it.
 
 
 ## Error Handling

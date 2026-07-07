@@ -1,7 +1,7 @@
 use dcs_app::AppAction;
 use dcs_domain::cull::AcceptState;
 use dcs_domain::filter::{ChipOp, FilterChip};
-use egui::{Align, Color32, FontId, Layout, RichText, Sense, Stroke, Ui, Vec2};
+use egui::{Align, Color32, Layout, RichText, Sense, Stroke, Ui, Vec2};
 
 use super::{DcsApp, PALETTE_MOD, ViewMode};
 use crate::crop;
@@ -43,14 +43,14 @@ impl DcsApp {
             save_state
         );
         let import = self.session.import_progress();
-        egui::Panel::bottom("status").show_inside(ui, |ui| {
+        let bar = egui::Panel::bottom("status").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(text).font(FontId::monospace(12.0)));
+                ui.label(RichText::new(text).font(theme::data()));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let hint = format!("{PALETTE_MOD}P commands");
                     ui.label(
                         RichText::new(hint)
-                            .font(FontId::monospace(12.0))
+                            .font(theme::data())
                             .color(theme::TEXT_DIM),
                     );
                     if let Some(p) = import {
@@ -59,13 +59,18 @@ impl DcsApp {
                         ui.add(
                             egui::ProgressBar::new(frac).desired_width(140.0).text(
                                 RichText::new(format!("importing {}/{}", p.done, p.total))
-                                    .font(FontId::monospace(11.0)),
+                                    .font(theme::data_small()),
                             ),
                         );
                     }
                 });
             });
         });
+        ui.painter().hline(
+            bar.response.rect.x_range(),
+            bar.response.rect.top(),
+            Stroke::new(1.0, theme::HAIRLINE),
+        );
     }
 
     /// The active-filter bar: a slim accent row that appears **only when a chip
@@ -86,8 +91,8 @@ impl DcsApp {
                     // Small inset above the accent rule; the breathing room goes
                     // *below* it (added before the chips), not above.
                     .inner_margin(egui::Margin {
-                        left: 8,
-                        right: 8,
+                        left: theme::PANEL_H,
+                        right: theme::PANEL_H,
                         top: 5,
                         bottom: 8,
                     }),
@@ -104,19 +109,19 @@ impl DcsApp {
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     ui.label(
                         RichText::new("FILTER")
-                            .font(FontId::monospace(10.0))
+                            .font(theme::label_micro())
                             .color(theme::FILTER_ACCENT),
                     );
                     ui.add_space(2.0);
                     for (gi, group) in filter.groups.iter().enumerate() {
                         if gi > 0 {
-                            ui.label(RichText::new("and").monospace().color(theme::TEXT_DIM));
+                            ui.label(RichText::new("and").color(theme::TEXT_DIM));
                         }
                         // Brackets only earn their ink when a group has a
                         // combinator to show (2+ chips).
                         let bracketed = group.chips.len() > 1;
                         if bracketed {
-                            ui.label(RichText::new("(").monospace().color(theme::TEXT_DIM));
+                            ui.label(RichText::new("(").color(theme::TEXT_DIM));
                         }
                         for (ci, chip) in group.chips.iter().enumerate() {
                             if ci > 0 {
@@ -125,7 +130,7 @@ impl DcsApp {
                                     ChipOp::And => "and",
                                 };
                                 if ui
-                                    .small_button(RichText::new(op).monospace())
+                                    .small_button(op)
                                     .on_hover_text("toggle and / or")
                                     .clicked()
                                 {
@@ -140,21 +145,18 @@ impl DcsApp {
                             }
                         }
                         if bracketed {
-                            ui.label(RichText::new(")").monospace().color(theme::TEXT_DIM));
+                            ui.label(RichText::new(")").color(theme::TEXT_DIM));
                         }
                     }
                     ui.add_space(4.0);
-                    if ui
-                        .small_button(RichText::new("clear").monospace())
-                        .clicked()
-                    {
+                    if ui.small_button("clear").clicked() {
                         clicked = Some(AppAction::ClearFilters);
                     }
                     ui.add_space(8.0);
                     // Tag the whole result set. Generic path opens the tag picker;
                     // a lone search also gets a one-click "tag all as <query>".
                     if ui
-                        .small_button(RichText::new("+ tag results").monospace())
+                        .small_button("+ tag results")
                         .on_hover_text("Add a tag to every photo matching this filter")
                         .clicked()
                     {
@@ -162,7 +164,7 @@ impl DcsApp {
                     }
                     if let Some(query) = self.session.single_search_query()
                         && ui
-                            .small_button(RichText::new(format!("+ tag all “{query}”")).monospace())
+                            .small_button(format!("+ tag all “{query}”"))
                             .on_hover_text(format!(
                                 "Tag every result with a “{query}” tag (created if new)"
                             ))
@@ -177,7 +179,7 @@ impl DcsApp {
                                 self.session.photo_count(),
                                 self.session.displayable_count()
                             ))
-                            .font(FontId::monospace(12.0))
+                            .font(theme::data())
                             .color(theme::FILTER_ACCENT),
                         );
                     });
@@ -198,7 +200,7 @@ impl DcsApp {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
                 ui.painter().rect_filled(rect, 2.0, color);
             }
-            ui.label(RichText::new(label).monospace());
+            ui.label(label);
             if ui.small_button("×").clicked() {
                 remove = true;
             }
@@ -227,7 +229,7 @@ impl DcsApp {
                     .fill(theme::SHEET_BG)
                     // Match the toolbar's horizontal inset so the first column
                     // lines up under it.
-                    .inner_margin(egui::Margin::symmetric(8, 6)),
+                    .inner_margin(theme::panel_margin()),
             )
             .show_inside(ui, |ui| {
                 // Hold the grid back until the scan has counted and grouped the
@@ -495,16 +497,11 @@ impl DcsApp {
         let found = self.session.pool_len();
         ui.vertical_centered(|ui| {
             ui.add_space((ui.available_height() * 0.5 - 20.0).max(0.0));
-            ui.label(
-                RichText::new("scanning…")
-                    .monospace()
-                    .strong()
-                    .color(theme::TEXT_DIM),
-            );
+            ui.label(RichText::new("scanning…").strong().color(theme::TEXT_DIM));
             ui.add_space(4.0);
             ui.label(
                 RichText::new(format!("{found} found"))
-                    .font(FontId::monospace(12.0))
+                    .font(theme::data())
                     .color(theme::HAIRLINE),
             );
         });
@@ -529,15 +526,16 @@ impl DcsApp {
             };
             if no_folder {
                 pad(ui, 120.0);
-                ui.label(RichText::new("dcs").monospace().strong().size(22.0));
                 ui.label(
-                    RichText::new("digital contact sheet")
-                        .monospace()
-                        .color(theme::TEXT_DIM),
+                    RichText::new("dcs")
+                        .font(theme::header())
+                        .strong()
+                        .size(22.0),
                 );
+                ui.label(RichText::new("digital contact sheet").color(theme::TEXT_DIM));
                 ui.add_space(16.0);
                 if ui
-                    .button(RichText::new("Open folder…").monospace().size(14.0))
+                    .button(RichText::new("Open folder…").size(14.0))
                     .clicked()
                 {
                     open_clicked = true;
@@ -545,7 +543,6 @@ impl DcsApp {
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new("or drag a folder in")
-                        .monospace()
                         .size(11.0)
                         .color(theme::HAIRLINE),
                 );
@@ -555,22 +552,14 @@ impl DcsApp {
                 pad(ui, 40.0);
                 ui.add(egui::Spinner::new());
                 ui.add_space(8.0);
-                ui.label(
-                    RichText::new("searching…")
-                        .monospace()
-                        .color(theme::TEXT_DIM),
-                );
+                ui.label(RichText::new("searching…").color(theme::TEXT_DIM));
             } else if filtered_out {
                 // Pool has photos; the active filter hides them all.
                 pad(ui, 60.0);
-                ui.label(
-                    RichText::new("no photos match the filter")
-                        .monospace()
-                        .color(theme::TEXT_DIM),
-                );
+                ui.label(RichText::new("no photos match the filter").color(theme::TEXT_DIM));
                 ui.add_space(8.0);
                 if ui
-                    .button(RichText::new("Clear filters").monospace().size(13.0))
+                    .button(RichText::new("Clear filters").size(13.0))
                     .clicked()
                 {
                     clear_clicked = true;
@@ -581,7 +570,6 @@ impl DcsApp {
                 pad(ui, 40.0);
                 ui.label(
                     RichText::new("no displayable photos — this folder has only RAW files")
-                        .monospace()
                         .color(theme::TEXT_DIM),
                 );
             }

@@ -1,5 +1,5 @@
 use egui::containers::menu::{MenuButton, MenuConfig};
-use egui::{Align, FontId, Layout, PopupCloseBehavior, RichText, Sense, Ui, Vec2};
+use egui::{Align, Layout, PopupCloseBehavior, RichText, Sense, Ui, Vec2};
 
 use super::{DcsApp, ViewMode};
 use crate::theme;
@@ -8,58 +8,65 @@ impl DcsApp {
     pub(super) fn top_bar(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         // Dispatch after the closure so the registry stays the only mutation path.
         let mut clicked: Option<dcs_app::AppAction> = None;
-        egui::Panel::top("top")
+        let bar = egui::Panel::top("top")
             .frame(
                 egui::Frame::default()
                     .fill(theme::CHROME_BG)
-                    .inner_margin(egui::Margin::symmetric(8, 5)),
+                    .inner_margin(theme::panel_margin()),
             )
             .show_inside(ui, |ui| {
                 // Center every item on the row's vertical axis so the small section
                 // labels line up with the taller chips.
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     let has_photos = self.session.photo_count() > 0;
-                    micro_label(ui, "MODE");
-                    if ui
-                        .selectable_label(
-                            self.view == ViewMode::Grid,
-                            RichText::new("grid").monospace(),
-                        )
-                        .clicked()
-                    {
-                        clicked = Some(dcs_app::AppAction::EnterGrid);
-                    }
-                    // Gallery needs a photo to open, so grey it out on an empty
-                    // sheet — matching the View menu and `enter_gallery`'s guard.
-                    if ui
-                        .add_enabled_ui(has_photos, |ui| {
-                            ui.selectable_label(
-                                self.view == ViewMode::Gallery,
-                                RichText::new("gallery").monospace(),
-                            )
-                            .on_hover_text("Open the focused photo big (Space)")
-                        })
-                        .inner
-                        .clicked()
-                    {
-                        clicked = Some(dcs_app::AppAction::EnterGallery);
-                    }
-                    // Board is a freeform canvas; needs a photo to place.
-                    if ui
-                        .add_enabled_ui(has_photos, |ui| {
-                            ui.selectable_label(
-                                self.view == ViewMode::Board,
-                                RichText::new("board").monospace(),
-                            )
-                            .on_hover_text("Freeform canvas: drag photos in, arrange them")
-                        })
-                        .inner
-                        .clicked()
-                    {
-                        clicked = Some(dcs_app::AppAction::EnterBoard);
-                    }
+                    egui::Frame::default()
+                        .fill(theme::EXTREME)
+                        .stroke(egui::Stroke::new(1.0, theme::HAIRLINE))
+                        .inner_margin(egui::Margin::same(2))
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            ui.visuals_mut().selection.bg_fill = theme::SEGMENT_ACTIVE;
+                            // selectable_label paints selected text in selection.stroke's color; NONE = invisible.
+                            ui.visuals_mut().selection.stroke =
+                                egui::Stroke::new(1.0, theme::TEXT_HOVER);
+                            ui.visuals_mut().widgets.hovered.weak_bg_fill =
+                                egui::Color32::from_gray(20);
+                            ui.visuals_mut().widgets.hovered.bg_stroke = egui::Stroke::NONE;
+                            if ui
+                                .selectable_label(self.view == ViewMode::Grid, "grid")
+                                .clicked()
+                            {
+                                clicked = Some(dcs_app::AppAction::EnterGrid);
+                            }
+                            // Gallery needs a photo to open, so grey it out on an
+                            // empty sheet — matching the View menu and
+                            // `enter_gallery`'s guard.
+                            if ui
+                                .add_enabled_ui(has_photos, |ui| {
+                                    ui.selectable_label(self.view == ViewMode::Gallery, "gallery")
+                                        .on_hover_text("Open the focused photo big (Space)")
+                                })
+                                .inner
+                                .clicked()
+                            {
+                                clicked = Some(dcs_app::AppAction::EnterGallery);
+                            }
+                            // Board is a freeform canvas; needs a photo to place.
+                            if ui
+                                .add_enabled_ui(has_photos, |ui| {
+                                    ui.selectable_label(self.view == ViewMode::Board, "board")
+                                        .on_hover_text(
+                                            "Freeform canvas: drag photos in, arrange them",
+                                        )
+                                })
+                                .inner
+                                .clicked()
+                            {
+                                clicked = Some(dcs_app::AppAction::EnterBoard);
+                            }
+                        });
 
-                    ui.separator();
+                    thin_sep(ui);
                     micro_label(ui, "GROUP");
                     if let Some(a) = self.group_menu(ui) {
                         clicked = Some(a);
@@ -69,29 +76,26 @@ impl DcsApp {
                         clicked = Some(a);
                     }
 
-                    ui.separator();
+                    thin_sep(ui);
                     micro_label(ui, "FILTER");
                     if let Some(a) = self.filter_menu(ui) {
                         clicked = Some(a);
                     }
 
-                    ui.separator();
+                    thin_sep(ui);
                     micro_label(ui, "TZ");
                     if let Some(a) = self.tz_menu(ui) {
                         clicked = Some(a);
                     }
 
-                    ui.separator();
+                    thin_sep(ui);
                     micro_label(ui, "SEARCH");
                     self.search_box(ui);
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         // Added first so it anchors the far right of the row.
                         if ui
-                            .add_enabled(
-                                self.session.pool_len() > 0,
-                                egui::Button::new(RichText::new("Export…").monospace()),
-                            )
+                            .add_enabled(self.session.pool_len() > 0, egui::Button::new("Export…"))
                             .clicked()
                         {
                             clicked = Some(dcs_app::AppAction::OpenExport);
@@ -100,7 +104,7 @@ impl DcsApp {
                         // Zoom resizes grid cells — meaningless in the gallery, which
                         // zooms one photo with `Z`.
                         if self.view == ViewMode::Grid {
-                            ui.separator();
+                            thin_sep(ui);
                             if ui.button("+").clicked() {
                                 clicked = Some(dcs_app::AppAction::ZoomIn);
                             }
@@ -112,6 +116,11 @@ impl DcsApp {
                     });
                 });
             });
+        ui.painter().hline(
+            bar.response.rect.x_range(),
+            bar.response.rect.bottom(),
+            egui::Stroke::new(1.0, theme::HAIRLINE),
+        );
         if let Some(action) = clicked {
             self.dispatch(action, ctx);
         }
@@ -125,7 +134,7 @@ impl DcsApp {
         match self.session.ai_status().clone() {
             AiStatus::Disabled => {
                 if ui
-                    .link(RichText::new("enable AI search").font(FontId::monospace(11.0)))
+                    .link("enable AI search")
                     .on_hover_text(
                         "Index this project's photos locally so you can search by what's \
                          in them — runs on your machine, nothing is uploaded.",
@@ -137,17 +146,13 @@ impl DcsApp {
             }
             AiStatus::Loading => {
                 ui.add(egui::Spinner::new());
-                ui.label(
-                    RichText::new("loading model…")
-                        .monospace()
-                        .color(theme::TEXT_DIM),
-                );
+                ui.label(RichText::new("loading model…").color(theme::TEXT_DIM));
             }
             AiStatus::Indexing { done, total } => {
                 self.search_field(ui);
                 ui.label(
                     RichText::new(format!("indexing {done}/{total}"))
-                        .font(FontId::monospace(11.0))
+                        .font(theme::data_small())
                         .color(theme::TEXT_DIM),
                 );
                 self.disable_search_button(ui);
@@ -158,11 +163,7 @@ impl DcsApp {
             }
             AiStatus::Error(message) => {
                 if ui
-                    .button(
-                        RichText::new("AI search failed — retry")
-                            .monospace()
-                            .color(theme::TEXT_DIM),
-                    )
+                    .button(RichText::new("AI search failed — retry").color(theme::TEXT_DIM))
                     .on_hover_text(message)
                     .clicked()
                 {
@@ -179,8 +180,7 @@ impl DcsApp {
             .add(
                 egui::TextEdit::singleline(&mut self.search_input)
                     .hint_text("search photos…")
-                    .desired_width(150.0)
-                    .font(FontId::monospace(12.0)),
+                    .desired_width(150.0),
             )
             .on_hover_text("Enter replaces the search · Shift+Enter adds a term");
         if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -197,7 +197,7 @@ impl DcsApp {
     /// A quiet "turn AI search off for this project" affordance next to the field.
     fn disable_search_button(&mut self, ui: &mut Ui) {
         if ui
-            .small_button(RichText::new("off").monospace().color(theme::TEXT_DIM))
+            .small_button(RichText::new("off").color(theme::TEXT_DIM))
             .on_hover_text("Disable AI search for this project")
             .clicked()
         {
@@ -542,7 +542,7 @@ impl DcsApp {
         let mut picked = None;
         // CloseOnClickOutside keeps the dropdown open while you tick several
         // boxes — toggling a checkbox shouldn't dismiss the menu.
-        MenuButton::new(RichText::new(self.filter_summary()).monospace())
+        MenuButton::new(self.filter_summary())
             .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
             .ui(ui, |ui| {
                 ui.set_min_width(180.0);
@@ -574,10 +574,7 @@ impl DcsApp {
                             ui.painter()
                                 .rect_filled(rect, 2.0, theme::tag_color32(tag.color));
                             ui.add_space(4.0);
-                            let lbl = ui.add(
-                                egui::Label::new(RichText::new(&tag.name).monospace())
-                                    .sense(Sense::click()),
-                            );
+                            let lbl = ui.add(egui::Label::new(&tag.name).sense(Sense::click()));
                             if cb.changed() || lbl.clicked() {
                                 picked = Some(AppAction::ToggleFilterTag(tag.id));
                             }
@@ -611,21 +608,21 @@ impl DcsApp {
                     for (group, chip, query) in searches {
                         ui.horizontal(|ui| {
                             if ui
-                                .small_button(RichText::new("×").monospace())
+                                .small_button("×")
                                 .on_hover_text("Remove this search")
                                 .clicked()
                             {
                                 picked = Some(AppAction::RemoveFilterChip { group, chip });
                             }
                             ui.add_space(4.0);
-                            ui.label(RichText::new(query).monospace());
+                            ui.label(query);
                         });
                     }
                 }
 
                 if self.session.is_filtered() {
                     ui.separator();
-                    if ui.button(RichText::new("clear").monospace()).clicked() {
+                    if ui.button("clear").clicked() {
                         picked = Some(AppAction::ClearFilters);
                         ui.close();
                     }
@@ -656,18 +653,12 @@ impl DcsApp {
         use dcs_app::{Axis, TimeGranularity};
         let axis = self.session.axis();
         let mut picked = None;
-        ui.menu_button(RichText::new(self.group_label()).monospace(), |ui| {
-            if ui
-                .selectable_label(axis == Axis::None, RichText::new("None").monospace())
-                .clicked()
-            {
+        ui.menu_button(self.group_label(), |ui| {
+            if ui.selectable_label(axis == Axis::None, "None").clicked() {
                 picked = Some(dcs_app::AppAction::GroupBy(Axis::None));
                 ui.close();
             }
-            if ui
-                .selectable_label(axis == Axis::Tag, RichText::new("Tag").monospace())
-                .clicked()
-            {
+            if ui.selectable_label(axis == Axis::Tag, "Tag").clicked() {
                 picked = Some(dcs_app::AppAction::GroupBy(Axis::Tag));
                 ui.close();
             }
@@ -679,10 +670,7 @@ impl DcsApp {
                 (TimeGranularity::Day, "Day"),
                 (TimeGranularity::Week, "Week"),
             ] {
-                if ui
-                    .selectable_label(axis == Axis::Time(g), RichText::new(label).monospace())
-                    .clicked()
-                {
+                if ui.selectable_label(axis == Axis::Time(g), label).clicked() {
                     picked = Some(dcs_app::AppAction::SetGranularity(g));
                     ui.close();
                 }
@@ -696,15 +684,12 @@ impl DcsApp {
         use dcs_app::{Sort, SortDir, SortKey};
         let active = self.session.sort();
         let mut picked = None;
-        ui.menu_button(RichText::new(self.sort_label()).monospace(), |ui| {
+        ui.menu_button(self.sort_label(), |ui| {
             for (key, name) in [(SortKey::Time, "Time"), (SortKey::Name, "Name")] {
                 for dir in [SortDir::Asc, SortDir::Desc] {
                     let sort = Sort { key, dir };
                     let label = format!("{name} {}", sort_dir_label(dir));
-                    if ui
-                        .selectable_label(active == sort, RichText::new(label).monospace())
-                        .clicked()
-                    {
+                    if ui.selectable_label(active == sort, label).clicked() {
                         picked = Some(dcs_app::AppAction::SetSort(sort));
                         ui.close();
                     }
@@ -721,7 +706,7 @@ impl DcsApp {
         let mut picked = None;
         let travel = self.session.shoot_zone();
         let label = travel.unwrap_or("set").to_string();
-        ui.menu_button(RichText::new(label).monospace(), |ui| {
+        ui.menu_button(label, |ui| {
             ui.set_min_width(240.0);
             ui.label(RichText::new("TIMEZONES").small().weak());
             ui.add_space(2.0);
@@ -790,14 +775,28 @@ impl DcsApp {
     }
 }
 
-/// A small uppercase mono section label, dim — the "edge annotation" style.
-/// One source so every toolbar group labels the same way.
+/// A small uppercase section label, dim — the "edge annotation" style. One
+/// source so every toolbar group labels the same way.
 fn micro_label(ui: &mut Ui, text: &str) {
     ui.label(
         RichText::new(text)
-            .font(FontId::monospace(10.0))
+            .font(theme::label_micro())
             .color(theme::TEXT_DIM),
     );
+}
+
+/// A short centered hairline between toolbar sections — even rhythm instead of
+/// egui's full-height default rule.
+fn thin_sep(ui: &mut Ui) {
+    ui.add_space(4.0);
+    let h = ui.available_height() * 0.6;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(1.0, h), Sense::hover());
+    ui.painter().vline(
+        rect.center().x,
+        rect.y_range(),
+        egui::Stroke::new(1.0, theme::HAIRLINE),
+    );
+    ui.add_space(4.0);
 }
 
 /// One full-width clickable row in the TZ menu: field name + its current value,

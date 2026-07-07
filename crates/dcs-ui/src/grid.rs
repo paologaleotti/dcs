@@ -193,7 +193,7 @@ pub fn row_stride(cell: f32) -> f32 {
 }
 
 /// Header band height in points — a quiet edge annotation, not a cell row.
-const HEADER_H: f32 = 30.0;
+const HEADER_H: f32 = 24.0;
 
 /// What the grid reports back: cells drawn (diagnostics) and the column count
 /// the app's keyboard nav uses for `↑↓` row moves.
@@ -687,7 +687,7 @@ fn paint_header(ui: &Ui, info: &HeaderInfo, rect: Rect, hovered: bool) {
         Pos2::new(rect.left() + 24.0, cy),
         egui::Align2::LEFT_CENTER,
         &info.title,
-        FontId::proportional(14.0),
+        theme::header(),
         title_color,
     );
     let count = if info.count == info.total {
@@ -699,7 +699,7 @@ fn paint_header(ui: &Ui, info: &HeaderInfo, rect: Rect, hovered: bool) {
         Pos2::new(rect.right() - 8.0, cy),
         egui::Align2::RIGHT_CENTER,
         count,
-        FontId::monospace(11.0),
+        theme::data_small(),
         theme::TEXT_DIM,
     );
 }
@@ -846,21 +846,23 @@ fn paint_cell(
     // Selection first, focus on top and brighter — a focused cell that is also
     // selected reads as the focus.
     if info.selected {
-        ui.painter().rect_stroke(
-            cell_rect,
-            0.0,
-            Stroke::new(1.0, theme::SELECT_OUTLINE),
-            StrokeKind::Inside,
-        );
+        paint_outline(ui, cell_rect, theme::SELECT_OUTLINE, 2.0);
     }
     if focused {
-        ui.painter().rect_stroke(
-            cell_rect,
-            0.0,
-            Stroke::new(2.0, theme::FOCUS_OUTLINE),
-            StrokeKind::Inside,
-        );
+        paint_outline(ui, cell_rect, theme::FOCUS_OUTLINE, 3.0);
     }
+}
+
+/// Dark halo under a light line, so the outline holds over any thumbnail.
+fn paint_outline(ui: &Ui, rect: Rect, light: Color32, width: f32) {
+    let p = ui.painter();
+    p.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(width + 2.0, Color32::from_black_alpha(150)),
+        StrokeKind::Inside,
+    );
+    p.rect_stroke(rect, 0.0, Stroke::new(width, light), StrokeKind::Inside);
 }
 
 /// Bottom-edge tag strip: a band spanning the full cell width, split into equal
