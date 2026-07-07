@@ -9,6 +9,7 @@ use std::cell::Cell;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How long since the last refresh before a lock is considered abandoned.
@@ -210,7 +211,7 @@ fn claim(path: &Path, token: u64) -> bool {
 /// filesystems without hard links, degrades to stamp + read-back (the pre-link
 /// behavior: a narrow race window, but never a torn file).
 fn create_lock(path: &Path, token: u64) -> bool {
-    let tmp = path.with_extension(format!("{token}.tmp"));
+    let tmp = unique_tmp(path);
     if fs::write(&tmp, format!("{} {}", now_secs(), token)).is_err() {
         return false;
     }
@@ -227,9 +228,20 @@ fn stamp(path: &Path, token: u64) -> io::Result<()> {
     // Write to a per-token temp then rename: rename is atomic, so a concurrent
     // reader never sees a half-written stamp. Used by `refresh`, where we
     // already own the lock and replacing it is the point.
-    let tmp = path.with_extension(format!("{token}.tmp"));
+    let tmp = unique_tmp(path);
     fs::write(&tmp, format!("{} {}", now_secs(), token))?;
     fs::rename(&tmp, path)
+}
+
+/// A temp path unique to this call, even when two threads share a token (same
+/// pid, same clock tick). A per-call sequence keeps the hard-link in
+/// `create_lock` the sole owner-arbiter: a token-only name let one racer delete
+/// another's temp mid-link, routing it into the two-winner read-back fallback.
+fn unique_tmp(path: &Path) -> PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    path.with_extension(format!("{pid}.{seq}.tmp"))
 }
 
 /// The timestamp field (first token) of the lock file.
