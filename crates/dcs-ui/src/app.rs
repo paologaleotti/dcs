@@ -154,6 +154,9 @@ pub struct DcsApp {
 impl DcsApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply(&cc.egui_ctx);
+        // The gallery owns image zoom; egui's global Cmd/Ctrl +/-/0 UI zoom would
+        // fight it, so turn the built-in keyboard zoom off.
+        cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         let mut session = Session::new();
         // Real app: remember recently-opened projects (~/.dcs/recents.json).
         session.enable_default_recents();
