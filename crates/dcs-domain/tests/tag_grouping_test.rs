@@ -7,11 +7,20 @@ use std::path::PathBuf;
 use dcs_domain::fingerprint::ContentFingerprint;
 use dcs_domain::grouping::{GroupKind, tag_groups};
 use dcs_domain::pairing::{FileKind, ScannedFile, pair};
-use dcs_domain::photo::{CaptureMeta, PhotoId, Pool};
+use dcs_domain::photo::{CaptureMeta, Photo, PhotoId, Pool};
 use dcs_domain::sort::Sort;
 use dcs_domain::tag::TagId;
+use dcs_domain::timezone;
+use time::OffsetDateTime;
 use time::PrimitiveDateTime;
 use time::macros::datetime;
+
+/// Single-zone instants for the pool, so within-band order reduces to naive
+/// capture time — what these tag-grouping tests assert.
+fn utc_instants(photos: &[Photo]) -> Vec<Option<OffsetDateTime>> {
+    let utc = timezone::zone("UTC").expect("UTC is always present");
+    timezone::capture_instants(photos, utc, utc)
+}
 
 fn at(path: &str, when: PrimitiveDateTime) -> ScannedFile {
     let mut bytes = [0u8; 32];
@@ -63,6 +72,7 @@ fn one_band_per_tag_untagged_last() {
     });
     let groups = tag_groups(
         pool.photos(),
+        &utc_instants(pool.photos()),
         &tags,
         &names_map(&[(0, "temples"), (1, "shrines")]),
         Sort::default(),
@@ -90,6 +100,7 @@ fn multi_tagged_photo_projects_into_every_band() {
     });
     let groups = tag_groups(
         pool.photos(),
+        &utc_instants(pool.photos()),
         &tags,
         &names_map(&[(0, "x"), (1, "y")]),
         Sort::default(),
@@ -128,6 +139,7 @@ fn bands_order_by_earliest_member() {
     });
     let groups = tag_groups(
         pool.photos(),
+        &utc_instants(pool.photos()),
         &tags,
         &names_map(&[(1, "one"), (9, "nine")]),
         Sort::default(),
@@ -144,7 +156,13 @@ fn bands_order_by_earliest_member() {
 fn tag_without_a_name_is_skipped() {
     let pool = pair([at("a.JPG", datetime!(2025-05-11 09:00:00))]);
     let tags = photo_tags(&pool, |_| vec![TagId(7)]);
-    let groups = tag_groups(pool.photos(), &tags, &HashMap::new(), Sort::default());
+    let groups = tag_groups(
+        pool.photos(),
+        &utc_instants(pool.photos()),
+        &tags,
+        &HashMap::new(),
+        Sort::default(),
+    );
     assert!(
         groups.is_empty(),
         "no name → no band, and the photo isn't untagged"
@@ -156,6 +174,7 @@ fn empty_pool_has_no_bands() {
     let pool = Pool::default();
     let groups = tag_groups(
         pool.photos(),
+        &utc_instants(pool.photos()),
         &HashMap::new(),
         &HashMap::new(),
         Sort::default(),

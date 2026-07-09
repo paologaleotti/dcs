@@ -373,3 +373,44 @@ fn exif_offset_overrides_camera_zone() {
     assert_eq!(groups[0].title, "Day 1 · 11/05/25");
     // 22:00 +09:00 → 13:00 UTC same day.
 }
+
+#[test]
+fn two_cameras_in_different_zones_order_by_true_instant() {
+    // Issue #3: a second camera set to a different (correct) zone dropped a frame
+    // out of chronological order because sort keyed on the naive wall clock, not
+    // the zone-anchored instant. Cam1 (+09:00) shoots 14:00 then 14:10; cam2
+    // (+06:00) shoots 11:05, whose true instant (05:05 UTC) falls *between* them
+    // (05:00 and 05:10 UTC). By wall clock cam2 reads earliest and would sort
+    // first; by instant it belongs in the middle.
+    let tokyo = timezone::zone("Asia/Tokyo").expect("Tokyo exists");
+    let mut cam1_a = at("cam1_a.JPG", Some(datetime!(2025-05-11 14:00:00)));
+    cam1_a.captured_offset = Some(time::macros::offset!(+09:00));
+    let mut cam2 = at("cam2.JPG", Some(datetime!(2025-05-11 11:05:00)));
+    cam2.captured_offset = Some(time::macros::offset!(+06:00));
+    let mut cam1_c = at("cam1_c.JPG", Some(datetime!(2025-05-11 14:10:00)));
+    cam1_c.captured_offset = Some(time::macros::offset!(+09:00));
+    // Pool order deliberately not chronological, to prove the sort does the work.
+    let pool = pair([cam2, cam1_c, cam1_a]);
+
+    // Flat stream: true-instant order regardless of the display zone.
+    let stream = group(pool.photos(), Axis::None, tokyo, tokyo, Sort::default());
+    assert_eq!(
+        names(&pool, &stream[0].members),
+        ["cam1_a.JPG", "cam2.JPG", "cam1_c.JPG"],
+        "cam2 sits between the two cam1 frames by instant, not first by wall clock"
+    );
+
+    // Same order within a time bucket: bucketing and within-bucket sort agree.
+    let day = group(
+        pool.photos(),
+        Axis::Time(TimeGranularity::Day),
+        tokyo,
+        tokyo,
+        Sort::default(),
+    );
+    assert_eq!(day.len(), 1, "all three share one Tokyo calendar day");
+    assert_eq!(
+        names(&pool, &day[0].members),
+        ["cam1_a.JPG", "cam2.JPG", "cam1_c.JPG"]
+    );
+}

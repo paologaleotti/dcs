@@ -13,6 +13,7 @@ use dcs_domain::command::{Command, Patch, TagDelta};
 use dcs_domain::grouping::{self, DerivedGroup};
 use dcs_domain::photo::PhotoId;
 use dcs_domain::tag::{Color, Tag, TagId};
+use dcs_domain::timezone;
 
 use super::Session;
 
@@ -193,8 +194,14 @@ impl Session {
     /// index directly, so a regroup allocates only the bands it builds.
     pub(super) fn derive_tag_groups(&self) -> Vec<DerivedGroup> {
         let photos = self.builder.photos();
+        let instants = timezone::capture_instants(
+            photos,
+            self.resolve_camera_zone(),
+            self.resolve_display_zone(),
+        );
         grouping::tag_groups(
             photos,
+            &instants,
             self.tags.photo_tag_index(),
             &self.tags.name_map(),
             self.sort,

@@ -6,6 +6,8 @@
 use time::{OffsetDateTime, PrimitiveDateTime, UtcOffset};
 use time_tz::{OffsetDateTimeExt, PrimitiveDateTimeExt, TimeZone, Tz, timezones};
 
+use crate::photo::Photo;
+
 /// Every IANA zone name, sorted — the data behind a timezone picker.
 pub fn zone_names() -> Vec<&'static str> {
     let mut names: Vec<&'static str> = timezones::iter().map(|tz| tz.name()).collect();
@@ -81,4 +83,23 @@ pub fn attributed_instant(
         source_instant(naive, captured_offset, camera_zone),
         display_zone,
     )
+}
+
+/// One [`attributed_instant`] per photo, by index (`None` when undated). The
+/// single time-sort key: sort and grouping share this so a photo's order and its
+/// bucket can never disagree. The offset math runs once per photo here, not once
+/// per sort comparison.
+pub fn capture_instants(
+    photos: &[Photo],
+    camera_zone: &Tz,
+    display_zone: &Tz,
+) -> Vec<Option<OffsetDateTime>> {
+    photos
+        .iter()
+        .map(|p| {
+            p.captured_at.map(|naive| {
+                attributed_instant(naive, p.captured_offset, camera_zone, display_zone)
+            })
+        })
+        .collect()
 }

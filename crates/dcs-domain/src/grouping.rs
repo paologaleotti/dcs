@@ -70,13 +70,13 @@ pub fn group(
     display_zone: &Tz,
     sort: Sort,
 ) -> Vec<DerivedGroup> {
+    let instants = timezone::capture_instants(photos, camera_zone, display_zone);
     match axis {
-        Axis::None => stream(photos, sort),
+        Axis::None => stream(photos, &instants, sort),
         Axis::Time(granularity) => time_groups(
             photos,
+            &instants,
             resolve_auto(photos, camera_zone, display_zone, granularity),
-            camera_zone,
-            display_zone,
             sort,
         ),
         // Tag bands derive from owned assignments, which this pure photo-only
@@ -104,11 +104,12 @@ pub fn group(
 /// skipped.
 pub fn tag_groups(
     photos: &[Photo],
+    instants: &[Option<OffsetDateTime>],
     photo_tags: &HashMap<PhotoId, BTreeSet<TagId>>,
     names: &HashMap<TagId, &str>,
     sort: Sort,
 ) -> Vec<DerivedGroup> {
-    let order = sort::order(photos, sort);
+    let order = sort::order(photos, instants, sort);
     let mut bands: HashMap<TagId, Vec<usize>> = HashMap::new();
     let mut band_order: Vec<TagId> = Vec::new();
     let mut untagged: Vec<usize> = Vec::new();
@@ -215,14 +216,14 @@ impl DayPart {
     }
 }
 
-fn stream(photos: &[Photo], sort: Sort) -> Vec<DerivedGroup> {
+fn stream(photos: &[Photo], instants: &[Option<OffsetDateTime>], sort: Sort) -> Vec<DerivedGroup> {
     if photos.is_empty() {
         return Vec::new();
     }
     vec![DerivedGroup {
         kind: GroupKind::Stream,
         title: String::new(),
-        members: sort::order(photos, sort),
+        members: sort::order(photos, instants, sort),
     }]
 }
 
@@ -254,26 +255,24 @@ enum SubKey {
 
 fn time_groups(
     photos: &[Photo],
+    instants: &[Option<OffsetDateTime>],
     granularity: TimeGranularity,
-    camera_zone: &Tz,
-    display_zone: &Tz,
     sort: Sort,
 ) -> Vec<DerivedGroup> {
     // Pre-derive names once so member sorts don't re-allocate per comparison.
     let names: Vec<String> = photos.iter().map(Photo::file_name).collect();
     let cmp = |x: &usize, y: &usize| {
-        sort::compare(&photos[*x], &names[*x], &photos[*y], &names[*y], sort)
+        sort::compare(instants[*x], &names[*x], instants[*y], &names[*y], sort)
     };
 
     let mut buckets: Vec<(BucketKey, Vec<usize>)> = Vec::new();
     let mut index: HashMap<BucketKey, usize> = HashMap::new();
     let mut undated: Vec<usize> = Vec::new();
-    for (i, p) in photos.iter().enumerate() {
-        let Some(naive) = p.captured_at else {
+    for (i, instant) in instants.iter().enumerate() {
+        let Some(at) = *instant else {
             undated.push(i);
             continue;
         };
-        let at = timezone::attributed_instant(naive, p.captured_offset, camera_zone, display_zone);
         let key = bucket_key(at, granularity);
         let slot = *index.entry(key).or_insert_with(|| {
             buckets.push((key, Vec::new()));

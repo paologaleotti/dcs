@@ -4,6 +4,8 @@
 
 use std::cmp::Ordering;
 
+use time::OffsetDateTime;
+
 use crate::photo::Photo;
 
 /// What to sort by. Always paired with a direction.
@@ -46,30 +48,42 @@ impl Sort {
     };
 }
 
-/// Order pool indices by the given sort. Undated photos always sort last under
-/// `Time` (the `No date` tail) regardless of direction; name breaks ties
-/// so the order is stable and deterministic.
-pub fn order(photos: &[Photo], sort: Sort) -> Vec<usize> {
-    let mut keyed: Vec<(usize, &Photo, String)> = photos
+/// Order pool indices by the given sort. `instants[i]` is the absolute capture
+/// instant of `photos[i]` (`None` when undated), pre-derived by the caller so the
+/// `Time` key orders by the same zone-anchored instant that grouping buckets on,
+/// not the raw wall-clock — two cameras in different zones stay in true
+/// chronological order. Undated photos always sort last under `Time` (the
+/// `No date` tail) regardless of direction; name breaks ties so the order is
+/// stable and deterministic.
+pub fn order(photos: &[Photo], instants: &[Option<OffsetDateTime>], sort: Sort) -> Vec<usize> {
+    let mut keyed: Vec<(usize, Option<OffsetDateTime>, String)> = photos
         .iter()
         .enumerate()
-        .map(|(i, p)| (i, p, p.file_name()))
+        .map(|(i, p)| (i, instants[i], p.file_name()))
         .collect();
-    keyed.sort_by(|(_, a, a_name), (_, b, b_name)| compare(a, a_name, b, b_name, sort));
+    keyed.sort_by(|(_, a, a_name), (_, b, b_name)| compare(*a, a_name, *b, b_name, sort));
     keyed.into_iter().map(|(i, _, _)| i).collect()
 }
 
-/// Order pool indices by capture time ascending — the default sort.
-pub fn by_time_asc(photos: &[Photo]) -> Vec<usize> {
-    order(photos, Sort::TIME_ASC)
+/// Order pool indices by capture time ascending — the default sort. `instants`
+/// mirrors [`order`]: one pre-derived absolute instant per photo, by index.
+pub fn by_time_asc(photos: &[Photo], instants: &[Option<OffsetDateTime>]) -> Vec<usize> {
+    order(photos, instants, Sort::TIME_ASC)
 }
 
-/// Compare two photos under a sort. Pre-derived names are passed in so callers
-/// that sort repeatedly don't re-derive them per comparison. Undated photos
-/// always come last under `Time`, both directions.
-pub fn compare(a: &Photo, a_name: &str, b: &Photo, b_name: &str, sort: Sort) -> Ordering {
+/// Compare two photos under a sort. `Time` compares the pre-derived absolute
+/// capture instants (zone-anchored, so cross-camera order is true chronological);
+/// names are pre-derived so callers that sort repeatedly don't re-derive them per
+/// comparison. Undated photos always come last under `Time`, both directions.
+pub fn compare(
+    a_instant: Option<OffsetDateTime>,
+    a_name: &str,
+    b_instant: Option<OffsetDateTime>,
+    b_name: &str,
+    sort: Sort,
+) -> Ordering {
     match sort.key {
-        SortKey::Time => match (a.captured_at, b.captured_at) {
+        SortKey::Time => match (a_instant, b_instant) {
             (Some(x), Some(y)) => oriented(x.cmp(&y), sort.dir).then_with(|| a_name.cmp(b_name)),
             // Dated before undated, both directions — the `No date` tail stays put.
             (Some(_), None) => Ordering::Less,

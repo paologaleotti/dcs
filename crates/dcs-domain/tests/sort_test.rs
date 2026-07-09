@@ -2,9 +2,18 @@ use std::path::PathBuf;
 
 use dcs_domain::fingerprint::ContentFingerprint;
 use dcs_domain::pairing::{FileKind, ScannedFile, pair};
-use dcs_domain::photo::CaptureMeta;
+use dcs_domain::photo::{CaptureMeta, Photo};
 use dcs_domain::sort::by_time_asc;
+use dcs_domain::timezone;
+use time::OffsetDateTime;
 use time::macros::datetime;
+
+/// Instants for a single-zone pool (no per-photo offset), so ordering reduces to
+/// naive capture time — the property these tests assert.
+fn utc_instants(photos: &[Photo]) -> Vec<Option<OffsetDateTime>> {
+    let utc = timezone::zone("UTC").expect("UTC is always present");
+    timezone::capture_instants(photos, utc, utc)
+}
 
 fn at(path: &str, when: Option<time::PrimitiveDateTime>) -> ScannedFile {
     let mut bytes = [0u8; 32];
@@ -29,7 +38,7 @@ fn orders_by_capture_time_ascending() {
         at("a/a.JPG", Some(datetime!(2025-05-11 09:00:00))),
         at("a/b.JPG", Some(datetime!(2025-05-11 12:00:00))),
     ]);
-    let order = by_time_asc(pool.photos());
+    let order = by_time_asc(pool.photos(), &utc_instants(pool.photos()));
     let names: Vec<_> = order
         .iter()
         .map(|&i| pool.photos()[i].file_name())
@@ -44,7 +53,7 @@ fn undated_photos_sort_last_then_by_name() {
         at("a/b_undated.JPG", None),
         at("a/a_undated.JPG", None),
     ]);
-    let order = by_time_asc(pool.photos());
+    let order = by_time_asc(pool.photos(), &utc_instants(pool.photos()));
     let names: Vec<_> = order
         .iter()
         .map(|&i| pool.photos()[i].file_name())
@@ -55,7 +64,7 @@ fn undated_photos_sort_last_then_by_name() {
 #[test]
 fn empty_pool_yields_empty_order() {
     let pool = pair(std::iter::empty());
-    assert!(by_time_asc(pool.photos()).is_empty());
+    assert!(by_time_asc(pool.photos(), &utc_instants(pool.photos())).is_empty());
 }
 
 #[test]
@@ -65,7 +74,7 @@ fn all_undated_falls_back_to_name_order() {
         at("a/a.JPG", None),
         at("a/b.JPG", None),
     ]);
-    let order = by_time_asc(pool.photos());
+    let order = by_time_asc(pool.photos(), &utc_instants(pool.photos()));
     let names: Vec<_> = order
         .iter()
         .map(|&i| pool.photos()[i].file_name())
@@ -77,6 +86,6 @@ fn all_undated_falls_back_to_name_order() {
 fn equal_times_break_on_name() {
     let t = datetime!(2025-05-11 10:00:00);
     let pool = pair([at("a/b.JPG", Some(t)), at("a/a.JPG", Some(t))]);
-    let order = by_time_asc(pool.photos());
+    let order = by_time_asc(pool.photos(), &utc_instants(pool.photos()));
     assert_eq!(pool.photos()[order[0]].file_name(), "a.JPG");
 }
