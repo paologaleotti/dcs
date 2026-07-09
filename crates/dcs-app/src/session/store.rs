@@ -371,6 +371,41 @@ impl Session {
         found
     }
 
+    /// Estimated bytes an export `plan` will write, for the dialog's space check.
+    /// Sums each op's source size (a `RenderCrop` re-encodes smaller, so charging
+    /// the source over-estimates — safe for "will it fit"). Sizes are stat-ed once
+    /// per source path and memoized, so the per-frame re-plan doesn't touch disk.
+    pub fn export_required_bytes(&self, plan: &ExportPlan) -> u64 {
+        plan.required_bytes(|path| self.source_size(path))
+    }
+
+    /// A source file's size in bytes, memoized per path. A file gone since the
+    /// scan resolves to zero, matching the executor's skip-and-report.
+    fn source_size(&self, path: &Path) -> u64 {
+        if let Some(hit) = self.size_cache.borrow().get(path) {
+            return *hit;
+        }
+        let size = dcs_io::diskspace::file_size(path).unwrap_or(0);
+        self.size_cache
+            .borrow_mut()
+            .insert(path.to_path_buf(), size);
+        size
+    }
+
+    /// Free bytes on the filesystem holding `dest`, or `None` when it can't be
+    /// queried (dest not yet on disk, permission). Cached by path so the dialog's
+    /// per-frame re-plan doesn't spam `statvfs`; a changed dest re-queries.
+    pub fn available_space(&self, dest: &Path) -> Option<u64> {
+        if let Some((cached, bytes)) = self.free_space_cache.borrow().as_ref()
+            && cached == dest
+        {
+            return Some(*bytes);
+        }
+        let bytes = dcs_io::diskspace::available_space(dest).ok()?;
+        *self.free_space_cache.borrow_mut() = Some((dest.to_path_buf(), bytes));
+        Some(bytes)
+    }
+
     /// How many photos `scope` resolves to — the dialog's live per-scope count.
     pub fn export_scope_count(&self, scope: ExportScope) -> usize {
         self.scope_indices(scope).len()
@@ -385,6 +420,9 @@ impl Session {
     /// Hand a planned export to the `dcs-io` executor and begin tracking it.
     pub fn start_export(&mut self, plan: ExportPlan) {
         let total = plan.ops.len();
+        // The run consumes free space; drop the cache so a reopened dialog
+        // re-queries rather than showing the pre-export figure.
+        *self.free_space_cache.borrow_mut() = None;
         self.export_handle = Some(run_export(plan));
         self.export_status = Some(ExportStatus {
             total,

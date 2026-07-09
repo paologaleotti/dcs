@@ -34,6 +34,9 @@ printpdf.workspace = true
 # threading: one-directional channels
 crossbeam-channel.workspace = true
 
+# free-disk-space query for the export space check
+fs2.workspace = true
+
 # AI search: local CLIP-style embedding inference. The SigLIP model is always
 # baked into the binary by build.rs (no runtime download). Hidden behind the
 # `Embedder`/`EmbeddingCache` traits; nothing here leaks above dcs-io.

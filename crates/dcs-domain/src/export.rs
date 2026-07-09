@@ -168,6 +168,43 @@ pub struct ExportPlan {
     pub summary: String,
 }
 
+impl ExportPlan {
+    /// Estimated bytes this plan writes, via `size_of` (a source-path → byte-size
+    /// lookup the caller supplies from disk — the planner itself stays pure). A
+    /// `RenderCrop` op re-encodes smaller than its source, so charging the source
+    /// size over-estimates: the safe direction for a "will it fit" check. A source
+    /// feeding two ops (a cropped render plus its `originals/` copy) is charged
+    /// once per op, matching the two files actually written.
+    pub fn required_bytes(&self, size_of: impl Fn(&Path) -> u64) -> u64 {
+        self.ops.iter().map(|op| size_of(&op.source)).sum()
+    }
+}
+
+/// Human-readable byte count in decimal units (1 kB = 1000 B), matching the free
+/// space OS file managers report. Whole bytes under 1 kB; one decimal for larger
+/// units with a trailing `.0` trimmed (`1.5 GB`, `1 MB`, `999 B`).
+pub fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
+    if bytes < 1000 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1000.0 && unit < UNITS.len() - 1 {
+        value /= 1000.0;
+        unit += 1;
+    }
+    // Rounding to one decimal can lift the value to 1000.0 (999_999_999 B →
+    // 999.9999 MB → "1000.0 MB"); roll into the next unit so it reads "1 GB".
+    if (value * 10.0).round() / 10.0 >= 1000.0 && unit < UNITS.len() - 1 {
+        value /= 1000.0;
+        unit += 1;
+    }
+    let s = format!("{value:.1}");
+    let s = s.strip_suffix(".0").unwrap_or(&s);
+    format!("{s} {}", UNITS[unit])
+}
+
 /// Why a plan could not be produced. Domain-owned; no I/O concepts.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ExportError {

@@ -256,6 +256,21 @@ impl DcsApp {
             .flatten()
             .map(|r| self.session.plan_export(self.export.scope, &r));
 
+        // The space check: bytes the plan will write vs. free space on the chosen
+        // destination. Both resolved here (memoized in the session) so the window
+        // closure only renders. Free space stands alone from the preview so it
+        // shows in the Destination row even when the plan is empty/errored.
+        let dest_free = self
+            .export
+            .dest
+            .as_deref()
+            .and_then(|d| self.session.available_space(d));
+        let required_bytes = match &preview {
+            Some(Ok(plan)) => Some(self.session.export_required_bytes(plan)),
+            _ => None,
+        };
+        let short_on_space = matches!((required_bytes, dest_free), (Some(r), Some(f)) if r > f);
+
         let mut keep_open = true;
         let (mut choose, mut run, mut cancel, mut open_dest, mut close) =
             (false, false, false, false, false);
@@ -424,6 +439,21 @@ impl DcsApp {
                                         .label(RichText::new("none chosen").color(theme::TEXT_DIM)),
                                 };
                             });
+                            if let Some(free) = dest_free {
+                                let color = if short_on_space {
+                                    theme::VERDICT_REJECT
+                                } else {
+                                    theme::TEXT_DIM
+                                };
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} free on disk",
+                                        dcs_domain::export::human_bytes(free)
+                                    ))
+                                    .small()
+                                    .color(color),
+                                );
+                            }
                         });
                     });
 
@@ -455,6 +485,27 @@ impl DcsApp {
                     Some(Err(e)) => {
                         ui.label(RichText::new(e.to_string()).color(theme::VERDICT_REJECT));
                     }
+                }
+                if let Some(required) = required_bytes {
+                    let needed = dcs_domain::export::human_bytes(required);
+                    let (text, color) = match dest_free {
+                        Some(free) if short_on_space => (
+                            format!(
+                                "≈ {needed} needed · only {} free — not enough space",
+                                dcs_domain::export::human_bytes(free)
+                            ),
+                            theme::VERDICT_REJECT,
+                        ),
+                        Some(free) => (
+                            format!(
+                                "≈ {needed} needed · {} free",
+                                dcs_domain::export::human_bytes(free)
+                            ),
+                            theme::TEXT_DIM,
+                        ),
+                        None => (format!("≈ {needed} needed"), theme::TEXT_DIM),
+                    };
+                    ui.label(RichText::new(text).small().color(color));
                 }
                 ui.add_space(6.0);
                 let files = if ops == 1 { "file" } else { "files" };

@@ -7,6 +7,7 @@
 
 pub mod cache;
 pub mod contact_sheet;
+pub mod diskspace;
 pub mod embedding;
 pub mod export;
 pub mod imaging;

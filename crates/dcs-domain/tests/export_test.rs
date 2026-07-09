@@ -969,3 +969,83 @@ fn both_sidecar_naming_conventions_survive_the_placed_stem_mapping() {
     assert!(dests.contains(&dest(&["a-1.xmp"]).as_path()));
     assert!(dests.contains(&dest(&["a-1.JPG.xmp"]).as_path()));
 }
+
+// --- space check: required_bytes + human_bytes ------------------------------
+
+use std::collections::HashMap;
+
+use dcs_domain::export::human_bytes;
+
+/// A size resolver over a path→bytes map; unknown paths resolve to 0, matching a
+/// source that vanished since the scan.
+fn sizes(map: &HashMap<PathBuf, u64>) -> impl Fn(&Path) -> u64 + '_ {
+    move |p| map.get(p).copied().unwrap_or(0)
+}
+
+#[test]
+fn required_bytes_sums_each_ops_source() {
+    let a = photo(1, Some("/src/a.jpg"), None);
+    let b = photo(2, Some("/src/b.jpg"), None);
+    let photos = [a, b];
+    let req = request(FileSelection::Any, Layout::Together, Collision::Rename);
+    let plan = plan_export(&items(&photos), Path::new("/src"), &req).unwrap();
+
+    let mut map = HashMap::new();
+    map.insert(PathBuf::from("/src/a.jpg"), 1000u64);
+    map.insert(PathBuf::from("/src/b.jpg"), 2000u64);
+    assert_eq!(plan.required_bytes(sizes(&map)), 3000);
+}
+
+#[test]
+fn required_bytes_charges_a_shared_source_once_per_op() {
+    // A cropped photo with "include uncropped originals" writes two files from the
+    // same JPEG source — the render and the originals/ copy — so its source size
+    // is charged twice, matching the two files on disk.
+    let p = photo(1, Some("/src/a.jpg"), None);
+    let photos = [p];
+    let req = ExportRequest {
+        include_uncropped_originals: true,
+        ..request(FileSelection::Any, Layout::Together, Collision::Rename)
+    };
+    let it = vec![ExportItem {
+        photo: &photos[0],
+        group_title: None,
+        primary_tag: None,
+        sidecars: &[],
+        crop: Some(CropEdit {
+            angle_deg: 0.0,
+            rect: NormRect::centered(0.5, 0.5),
+        }),
+    }];
+    let plan = plan_export(&it, Path::new("/src"), &req).unwrap();
+    assert_eq!(plan.ops.len(), 2, "render + originals copy");
+
+    let mut map = HashMap::new();
+    map.insert(PathBuf::from("/src/a.jpg"), 500u64);
+    assert_eq!(plan.required_bytes(sizes(&map)), 1000);
+}
+
+#[test]
+fn required_bytes_treats_unknown_sources_as_zero() {
+    let a = photo(1, Some("/src/a.jpg"), None);
+    let photos = [a];
+    let req = request(FileSelection::Any, Layout::Together, Collision::Rename);
+    let plan = plan_export(&items(&photos), Path::new("/src"), &req).unwrap();
+    assert_eq!(plan.required_bytes(|_| 0), 0);
+}
+
+#[test]
+fn human_bytes_formats_decimal_units() {
+    assert_eq!(human_bytes(0), "0 B");
+    assert_eq!(human_bytes(999), "999 B");
+    assert_eq!(human_bytes(1000), "1 kB");
+    assert_eq!(human_bytes(1500), "1.5 kB");
+    assert_eq!(human_bytes(1_000_000), "1 MB");
+    assert_eq!(human_bytes(1_500_000_000), "1.5 GB");
+    assert_eq!(human_bytes(2_500_000_000_000), "2.5 TB");
+    // Beyond the largest unit it stays in TB rather than inventing one.
+    assert_eq!(human_bytes(5_000_000_000_000_000), "5000 TB");
+    // Rounding at a unit boundary rolls up rather than reading "1000 MB".
+    assert_eq!(human_bytes(999_999_999), "1 GB");
+    assert_eq!(human_bytes(999_999), "1 MB");
+}

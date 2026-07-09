@@ -1125,6 +1125,7 @@ dependencies = [
  "candle-transformers",
  "crossbeam-channel",
  "dcs-domain",
+ "fs2",
  "half",
  "image",
  "kamadak-exif",

@@ -391,6 +391,13 @@ pub struct Session {
     /// so the dialog's per-frame re-plan doesn't re-stat the disk. Derived (file
     /// facts, never persisted); cleared when a folder opens.
     sidecar_cache: RefCell<HashMap<PhotoId, Vec<PathBuf>>>,
+    /// Per-source-path file size in bytes, probed lazily at export time and
+    /// memoized so the dialog's per-frame re-plan doesn't re-stat the disk.
+    /// Derived (file facts, never persisted); cleared when a folder opens.
+    size_cache: RefCell<HashMap<PathBuf, u64>>,
+    /// Free space on the last-queried destination, cached by path so the
+    /// per-frame re-plan doesn't spam `statvfs`. Recomputed when the dest changes.
+    free_space_cache: RefCell<Option<(PathBuf, u64)>>,
     /// Running contact-sheet renderer, polled in `tick`. `None` when idle.
     contact_sheet_handle: Option<ContactSheetHandle>,
     /// Progress of the running or last-finished contact-sheet render.
@@ -468,6 +475,8 @@ impl Session {
             export_handle: None,
             export_status: None,
             sidecar_cache: RefCell::new(HashMap::new()),
+            size_cache: RefCell::new(HashMap::new()),
+            free_space_cache: RefCell::new(None),
             contact_sheet_handle: None,
             contact_sheet_status: None,
             contact_sheet_open_after: false,
@@ -520,6 +529,8 @@ impl Session {
         self.bg_cursor = 0;
         self.imported.clear();
         self.sidecar_cache.borrow_mut().clear();
+        self.size_cache.borrow_mut().clear();
+        *self.free_space_cache.borrow_mut() = None;
         self.crop_gen.clear();
         self.epoch += 1;
         self.dirty = false;

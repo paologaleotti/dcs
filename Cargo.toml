@@ -37,6 +37,9 @@ walkdir = "2"
 blake3 = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }
 crossbeam-channel = "0.5"
+# Cross-platform free-disk-space query (statvfs / GetDiskFreeSpaceExW) for the
+# export dialog's space check (dcs-io only). One function, no feature flags.
+fs2 = "0.4"
 # Local CLIP-style embedding inference for AI search (dcs-io only). Pure Rust,
 # no C deps — keeps the binary small and cross-platform trivial.
 candle-core = "0.10"
