@@ -892,12 +892,7 @@ pub(crate) fn paint_filmstrip(
                     crate::grid::paint_crop_badge_at(ui, slot);
                 }
                 if idx == focus {
-                    ui.painter().rect_stroke(
-                        slot,
-                        0.0,
-                        Stroke::new(2.0, theme::FOCUS_OUTLINE),
-                        StrokeKind::Inside,
-                    );
+                    crate::grid::paint_outline(ui, slot, theme::FOCUS_OUTLINE, 2.5);
                 }
             }
 

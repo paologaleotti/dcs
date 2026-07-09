@@ -520,7 +520,15 @@ impl DcsApp {
         // progress, not a false "no matches".
         let searching = filtered_out && self.session.is_search_pending();
         let mut open_clicked = false;
+        let mut recent_clicked = false;
         let mut clear_clicked = false;
+        // The most-recent project, if any — offered as a one-click reopen above
+        // the folder picker.
+        let recent = self.session.recent_projects().first().map(|p| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.to_string_lossy().into_owned())
+        });
         // A top spacer of ~half the leftover height centers the fixed-size block.
         ui.vertical_centered(|ui| {
             let avail = ui.available_height();
@@ -537,6 +545,15 @@ impl DcsApp {
                 );
                 ui.label(RichText::new("digital contact sheet").color(theme::TEXT_DIM));
                 ui.add_space(16.0);
+                if let Some(name) = &recent {
+                    if ui
+                        .button(RichText::new(format!("Open recent: {name}")).size(14.0))
+                        .clicked()
+                    {
+                        recent_clicked = true;
+                    }
+                    ui.add_space(6.0);
+                }
                 if ui
                     .button(RichText::new("Open folder…").size(14.0))
                     .clicked()
@@ -579,6 +596,10 @@ impl DcsApp {
         });
         if open_clicked {
             self.open_folder_dialog();
+        }
+        if recent_clicked {
+            let ctx = ui.ctx().clone();
+            self.dispatch(AppAction::OpenRecent(0), &ctx);
         }
         if clear_clicked {
             let ctx = ui.ctx().clone();

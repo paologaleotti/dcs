@@ -844,22 +844,23 @@ fn paint_cell(
     }
 
     // Selection first, focus on top and brighter — a focused cell that is also
-    // selected reads as the focus.
+    // selected reads as the focus. Outline last so it always frames the cell.
     if info.selected {
         paint_outline(ui, cell_rect, theme::SELECT_OUTLINE, 2.0);
     }
     if focused {
-        paint_outline(ui, cell_rect, theme::FOCUS_OUTLINE, 3.0);
+        paint_outline(ui, cell_rect, theme::FOCUS_OUTLINE, 2.5);
     }
 }
 
 /// Dark halo under a light line, so the outline holds over any thumbnail.
-fn paint_outline(ui: &Ui, rect: Rect, light: Color32, width: f32) {
+/// Shared with the gallery filmstrip so a thumb's focus frame reads identically.
+pub(crate) fn paint_outline(ui: &Ui, rect: Rect, light: Color32, width: f32) {
     let p = ui.painter();
     p.rect_stroke(
         rect,
         0.0,
-        Stroke::new(width + 2.0, Color32::from_black_alpha(150)),
+        Stroke::new(width + 1.0, Color32::from_black_alpha(150)),
         StrokeKind::Inside,
     );
     p.rect_stroke(rect, 0.0, Stroke::new(width, light), StrokeKind::Inside);
@@ -872,7 +873,7 @@ fn paint_outline(ui: &Ui, rect: Rect, light: Color32, width: f32) {
 /// the verdict glyph can sit just above the strip instead of colliding with it.
 pub(crate) fn tag_strip_height(cell_rect: Rect, has_tags: bool) -> f32 {
     if has_tags {
-        (cell_rect.width() * 0.05).clamp(3.0, 7.0)
+        (cell_rect.width() * 0.05).clamp(5.0, 7.0)
     } else {
         0.0
     }
