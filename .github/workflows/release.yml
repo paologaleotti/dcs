@@ -22,10 +22,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # The embedding model is always baked into the binary (build.rs), so AI search
-  # works offline with zero setup. It's fetched once per pinned revision and
-  # cached; build.rs verifies its SHA-256 and fp16-converts it.
-  MODEL_REPO: google/siglip-base-patch16-384
+  # The embedding model (pre-exported fp16 ONNX towers) is baked into the binary
+  # (build.rs), so AI search works offline with zero setup. It's fetched once per
+  # pinned revision and cached; build.rs verifies its SHA-256.
+  MODEL_REPO: Xenova/siglip-base-patch16-384
 
 permissions:
   # Needed only for the tag path, to create/update the GitHub Release.
@@ -43,18 +43,27 @@ jobs:
             name: linux-x86_64
             target: x86_64-unknown-linux-gnu
             formats: deb,appimage
+            ai: true
           - os: macos-latest
             name: macos-arm64
             target: aarch64-apple-darwin
             formats: dmg
+            ai: true
+          # ONNX Runtime ships no prebuilt libraries for macOS x86_64 (dropped
+          # upstream — pykeio/ort#556), so the Intel build compiles without the
+          # default `ai-search` feature: the app works normally and AI search
+          # reports "not included in this build". Artifacts carry a
+          # `no-aisearch` tag so the difference is visible at download time.
           - os: macos-latest
-            name: macos-x86_64
+            name: macos-x86_64-no-aisearch
             target: x86_64-apple-darwin
             formats: dmg
+            ai: false
           - os: windows-latest
             name: windows-x86_64
             target: x86_64-pc-windows-msvc
             formats: nsis
+            ai: true
     steps:
       - uses: actions/checkout@v4
 
@@ -81,14 +90,22 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # cache-directories: ort-sys downloads the prebuilt ONNX Runtime into the
+      # OS cache dir and bakes that absolute path into the cached build output;
+      # restoring target/ without it breaks the relink on warm-cache runs.
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.name }}
+          cache-directories: |
+            ~/.cache/ort.pyke.io
+            ~/Library/Caches/ort.pyke.io
+            ~\AppData\Local\ort.pyke.io
 
       # The pinned model revision lives in crates/dcs-io/model_revision.txt — read it here so the cache
       # key and download URLs can never drift from what the build expects.
       - name: Resolve pinned model revision
+        if: matrix.ai
         id: model
         shell: bash
         run: |
@@ -97,21 +114,25 @@ jobs:
           echo "rev=$rev" >> "$GITHUB_OUTPUT"
 
       - name: Cache embedded model
+        if: matrix.ai
         id: model-cache
         uses: actions/cache@v4
         with:
           path: model
-          key: siglip-${{ steps.model.outputs.rev }}
+          key: siglip-onnx-${{ steps.model.outputs.rev }}-${{ hashFiles('crates/dcs-io/build.rs') }}
 
+      # The ONNX towers live under onnx/ in the repo; build.rs expects them flat
+      # in DCS_MODEL_DIR, so the paths are flattened here.
       - name: Download embedded model (cache miss)
-        if: steps.model-cache.outputs.cache-hit != 'true'
+        if: matrix.ai && steps.model-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           mkdir -p model
           base="https://huggingface.co/${MODEL_REPO}/resolve/${{ steps.model.outputs.rev }}"
-          for f in config.json tokenizer.json model.safetensors; do
-            curl -fSL --retry 3 "$base/$f" -o "model/$f"
-          done
+          curl -fSL --retry 3 "$base/config.json" -o model/config.json
+          curl -fSL --retry 3 "$base/tokenizer.json" -o model/tokenizer.json
+          curl -fSL --retry 3 "$base/onnx/vision_model_fp16.onnx" -o model/vision_model_fp16.onnx
+          curl -fSL --retry 3 "$base/onnx/text_model_fp16.onnx" -o model/text_model_fp16.onnx
 
       # The release profile uses fat LTO + one codegen unit — slow to link, but
       # this is the shipped artifact, so it gets the full optimization. The model
@@ -120,11 +141,73 @@ jobs:
         shell: bash
         env:
           DCS_MODEL_DIR: ${{ github.workspace }}/model
-        run: cargo build --release --locked -p dcs-ui --bin dcs --target ${{ matrix.target }}
+        run: >
+          cargo build --release --locked -p dcs-ui --bin dcs
+          --target ${{ matrix.target }}
+          ${{ matrix.ai == false && '--no-default-features' || '' }}
+
+      # ONNX Runtime's WebGPU execution provider lives in a shared library
+      # (libwebgpu_dawn) that ort's build stages next to the compiled binary; the
+      # packaged app must ship it where the binary's rpaths point. Linux/Windows:
+      # staged into target/webgpu-dist, which the packager `resources` config
+      # copies next to the exe (NSIS) / into usr/lib/dcs (deb, AppImage). Windows
+      # additionally needs Dawn's lazily-loaded DirectX shader compiler
+      # (dxcompiler/dxil) and the MSVC runtime DLLs Dawn imports at load time (not
+      # OS components; app-local deployment is the supported redistribution).
+      # macOS is handled via the packager `frameworks` config instead (a Mach-O
+      # in Contents/Resources fails notarization), so webgpu-dist stays empty
+      # there. `cp -L` dereferences ort's symlink into its download cache.
+      - name: Stage WebGPU runtime libraries
+        shell: bash
+        run: |
+          mkdir -p target/webgpu-dist
+          if [ "${{ matrix.ai }}" = "true" ] && [ "${{ runner.os }}" != "macOS" ]; then
+            found=0
+            for f in target/${{ matrix.target }}/release/libwebgpu_dawn.so \
+                     target/${{ matrix.target }}/release/webgpu_dawn.dll \
+                     target/${{ matrix.target }}/release/dxcompiler.dll \
+                     target/${{ matrix.target }}/release/dxil.dll; do
+              [ -e "$f" ] && cp -L "$f" target/webgpu-dist/ && found=1
+            done
+            test "$found" = "1" || { echo "no WebGPU runtime library found next to the binary"; exit 1; }
+          fi
+          if [ "${{ matrix.ai }}" = "true" ] && [ "${{ runner.os }}" == "Windows" ]; then
+            redist=$(ls -d "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Redist/MSVC/"*/x64/Microsoft.VC143.CRT | head -1)
+            for dll in msvcp140.dll vcruntime140.dll vcruntime140_1.dll; do
+              cp "$redist/$dll" target/webgpu-dist/
+            done
+          fi
+          ls -la target/webgpu-dist
+
+      # The dylib must live in Contents/Frameworks of the .app (notarization
+      # rejects executable code in Resources). The frameworks list can't sit in
+      # the manifest permanently: cargo-packager hard-fails on a missing .dylib
+      # path, which would break the no-AI Intel row. Appended here, on the row
+      # that needs it, under the existing [package.metadata.packager.macos]
+      # section. The path is CWD-relative; cargo packager runs from the
+      # workspace root below.
+      - name: Add Dawn library to macOS packager config
+        if: matrix.ai && runner.os == 'macOS'
+        shell: bash
+        run: |
+          sed -i '' '/^\[package\.metadata\.packager\.macos\]$/a\
+          frameworks = ["target/${{ matrix.target }}/release/libwebgpu_dawn.dylib"]
+          ' crates/dcs-ui/Cargo.toml
+          grep -A2 'packager.macos' crates/dcs-ui/Cargo.toml
+
+      # The no-AI Intel build links no ONNX Runtime, so it keeps the app's own
+      # macOS 11.0 floor; the AI build inherits 13.4 from ort's prebuilt
+      # libraries (the manifest default).
+      - name: Lower macOS minimum version (no-AI build)
+        if: matrix.ai == false && runner.os == 'macOS'
+        shell: bash
+        run: |
+          sed -i '' 's/^minimum-system-version = "13.4"$/minimum-system-version = "11.0"/' crates/dcs-ui/Cargo.toml
+          grep 'minimum-system-version' crates/dcs-ui/Cargo.toml
 
       - name: Install cargo-packager
         shell: bash
-        run: cargo install cargo-packager --locked
+        run: cargo install cargo-packager --version 0.11.8 --locked
 
       # Package the prebuilt binary into the platform's installer(s). On macOS the
       # APPLE_* env vars drive code-signing (cert imported from APPLE_CERTIFICATE
@@ -137,6 +220,9 @@ jobs:
           # appimagetool is itself an AppImage; self-extract instead of mounting
           # via FUSE, which isn't available on the runner. No-op off Linux.
           APPIMAGE_EXTRACT_AND_RUN: "1"
+          # Insurance for linuxdeploy's ldd scan of libwebgpu_dawn.so (normally
+          # resolved through the binary's $ORIGIN rpaths). No-op off Linux.
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/webgpu-dist
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -148,6 +234,18 @@ jobs:
         # the staging/archive/upload steps below read from.
         run: cargo packager --release --target ${{ matrix.target }} --formats ${{ matrix.formats }} --out-dir "$GITHUB_WORKSPACE/dist"
 
+      # Installers from cargo-packager use its own naming (product_version_arch);
+      # tag the no-AI builds so the difference is visible at download time.
+      - name: Tag no-AI-search installers
+        if: matrix.ai == false
+        shell: bash
+        run: |
+          for f in dist/*.*; do
+            base="${f%.*}"; ext="${f##*.}"
+            mv "$f" "${base}-no-aisearch.${ext}"
+          done
+          ls -la dist
+
       # The release binary bundles the SigLIP model (Apache-2.0), so its
       # attribution + license text must accompany the distribution.
       - name: Stage third-party notices
@@ -157,15 +255,32 @@ jobs:
           curl -fSL --retry 3 https://www.apache.org/licenses/LICENSE-2.0.txt \
             -o dist/LICENSE-Apache-2.0.txt
 
-      # Portable archive: the raw binary for users who don't want an installer.
+      # Portable archive: the raw binary, the WebGPU runtime library (which must
+      # sit next to it — macOS stages it from the target dir since webgpu-dist
+      # is empty there), and the third-party notices, for users who don't want
+      # an installer.
       - name: Package archive (unix)
         if: runner.os != 'Windows'
-        run: tar -czf "dist/dcs-${{ matrix.name }}.tar.gz" -C "target/${{ matrix.target }}/release" dcs
+        shell: bash
+        run: |
+          stage=$(mktemp -d)
+          cp "target/${{ matrix.target }}/release/dcs" "$stage/"
+          if [ "${{ matrix.ai }}" = "true" ]; then
+            cp -L target/${{ matrix.target }}/release/libwebgpu_dawn.* "$stage/" 2>/dev/null || true
+            cp target/webgpu-dist/* "$stage/" 2>/dev/null || true
+          fi
+          cp dist/THIRD_PARTY_NOTICES.md dist/LICENSE-Apache-2.0.txt "$stage/"
+          tar -czf "dist/dcs-${{ matrix.name }}.tar.gz" -C "$stage" .
 
       - name: Package archive (windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path "target/${{ matrix.target }}/release/dcs.exe" -DestinationPath "dist/dcs-${{ matrix.name }}.zip"
+        run: |
+          $stage = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP "dcs-zip")
+          Copy-Item "target/${{ matrix.target }}/release/dcs.exe" $stage
+          Copy-Item "target/webgpu-dist/*" $stage -ErrorAction SilentlyContinue
+          Copy-Item "dist/THIRD_PARTY_NOTICES.md","dist/LICENSE-Apache-2.0.txt" $stage
+          Compress-Archive -Path "$stage/*" -DestinationPath "dist/dcs-${{ matrix.name }}.zip"
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
@@ -174,9 +289,18 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+      # Installers + archives only: all four jobs attach concurrently, and the
+      # loose notices files (identical names from every job) would race. The
+      # notices travel inside each archive and installer instead.
       - name: Attach to GitHub Release (tags only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
-          fail_on_unmatched_files: true
+          files: |
+            dist/*.dmg
+            dist/*.exe
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.tar.gz
+            dist/*.zip
+          fail_on_unmatched_files: false

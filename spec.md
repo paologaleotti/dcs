@@ -604,7 +604,7 @@ deferred to v1.1, decision #41).
 | 36 | **Export = pure planner in `dcs-domain` (`plan_export` → `ExportPlan`) + dumb executor in `dcs-io`; `dcs-app` is the thin trigger. The dialog preview *is* the plan, so "reads true aloud" is structural. `dcs-domain` owns its own error enums; domain failures never leak from io (§6.9, §9)** |
 | 37 | **Cross-platform is first-class (non-negotiable #5): Windows, macOS, Linux all run *well*, not just compile. Paths via `Path`/`PathBuf` only (never string-split on `/`); config/cache under each OS's standard dirs; atomic save + lock-file semantics validated on all three filesystems; primary modifier ⌘ on macOS, Ctrl elsewhere; system timezone + GPU backend (Metal/Vulkan/DX12 via wgpu) work per platform. CI = build + test matrix on all three; a single-platform regression blocks release.** |
 | 38 | **`1–9` color-tag keys dropped (confusing); tags are named, via `T`/`Shift+T`. Tag colors auto-assign from a curated distinct-hue cycle, golden-angle past it (unlimited distinct colors). A **simple tag manager** (list + rename/recolor/delete, undoable) ships in v1 as the centralized place to manage tags — the prior "full manager deferred" line is superseded; only the *advanced* manager (bulk merge UI, reorder) stays v1.1.** |
-| 39 | **AI semantic text search ships in v1 (§11b): local SigLIP embeddings via `candle`, the model **embedded in the binary** (pinned + SHA-256-verified + fp16 by `build.rs`; no runtime download). Per-project opt-in, persisted; indexing is lowest-priority (after thumbnails). The index is derived/disposable (cache table); ranking is pure in `dcs-domain`; the `Search` filter chip is no longer a scaffold. Auto-tagging + near-dup reuse the same index but stay v1.1 (§11c).** |
+| 39 | **AI semantic text search ships in v1 (§11b): local SigLIP embeddings via ONNX Runtime (`ort`), the pre-exported fp16 ONNX model **embedded in the binary** (pinned + SHA-256-verified by `build.rs`; no runtime download). GPU on every vendor and OS via the WebGPU execution provider, CPU fallback; zero user-installed dependencies. Behind the default-on `ai-search` cargo feature (off only where ONNX Runtime ships no prebuilt libraries — macOS x86_64). Per-project opt-in, persisted; indexing is lowest-priority (after thumbnails). The index is derived/disposable (cache table); ranking is pure in `dcs-domain`; the `Search` filter chip is no longer a scaffold. Auto-tagging + near-dup reuse the same index but stay v1.1 (§11c).** |
 | 40 | **Shipped in v1, beyond the original cut: a global recent-projects list (`Open Recent`, stored outside any project — moved up from v1.1 deferral); `tag-results` (batch-tag everything the active filter resolves to, plus a one-click "tag all as `<query>`" for a lone search chip); copy-photo-to-clipboard from the gallery (UI-only, no registry command); a second IANA `camera timezone` to anchor offset-less EXIF; a persistent top menu bar as a fourth registry surface (#22).** |
 | 41 | **Solo deferred to v1.1.** Spec'd across §2.8/2.9/2.12 but unbuilt in v1; the `S` key, the solo filter (ghosted non-soloed headers), the Esc-chain solo tail, and the `SoloGroup` export scope all move to v1.1. The header *"select members"* affordance (which solo built on) ships independently. |
 | 42 | **Crop + straighten ships in v1 (§2.14): a third view mode (`C`).** Owned, non-destructive `CropEdit` (angle + normalized rect) in `project.json`, undoable (`Command::SetCrop`, append-only). Stateless — rendered pixels are derived from `original + CropEdit`, never persisted: display caches in RAM (invalidated + epoch-bumped on edit), export renders via the `RenderCrop` op (the one pixel-touching executor path, #19). **JPEG only** (RAW-only photos aren't croppable). The crop *is* the photo in grid/gallery/export; a `⌗` badge marks edited photos; "include uncropped originals" export option drops untouched originals into `originals/`. Geometry is a pure, exhaustively-tested `dcs-domain::crops` module shared by overlay, display, and export — one math path. |
@@ -637,7 +637,7 @@ dcs-domain  PURE core: types + pure functions. no I/O, no async, no egui
 - **dcs-io:** `imaging` (decode, embedded preview, orientation, thumb
   cache, prefetch), `source` (scan, EXIF incl. subseconds, content
   fingerprint, progressive import stream, missing-file detection),
-  `embedding` (local SigLIP inference behind the `Embedder` trait; candle +
+  `embedding` (local SigLIP inference behind the `Embedder` trait; ONNX Runtime +
   GPU/CPU hidden here — §11b), `persistence` (versioned DTOs — serde structs + a version field,
   **derive everything, no hand-written mapper universe**; `views` array
   with unknown-kind preservation; `undo.log` append/compact). The
@@ -823,17 +823,24 @@ Free-text search — type "temple", get temple photos — via CLIP-style image�
 embeddings, fully local and offline. The image and the query land in one shared
 vector space; matches are the photo vectors nearest the query vector.
 
-- **Model:** SigLIP `base-patch16-384` (768-dim), run with `candle`. **Always
-  embedded in the binary** — `build.rs` fetches a pinned commit
-  (`crates/dcs-io/model_revision.txt`), verifies its SHA-256, converts fp32 → fp16,
-  and `include_bytes!`s it. No runtime download. `DCS_MODEL_DIR` builds offline.
-- **Layering:** inference lives in `dcs-io` behind the `Embedder` trait; candle and
-  the tokenizer never leak above it. The ranking math is pure in
+- **Model:** SigLIP `base-patch16-384` (768-dim), run with ONNX Runtime (`ort`),
+  as pre-exported fp16 ONNX towers (vision + text). **Always embedded in the
+  binary** — `build.rs` fetches a pinned commit
+  (`crates/dcs-io/model_revision.txt`), verifies its SHA-256, and
+  `include_bytes!`s it. No runtime download. `DCS_MODEL_DIR` builds offline.
+- **Layering:** inference lives in `dcs-io` behind the `Embedder` trait; ONNX
+  Runtime and the tokenizer never leak above it. The ranking math is pure in
   `dcs-domain::search` (cosine + relative/absolute floors + cap). `dcs-app`
   orchestrates; only `Vec<f32>` crosses up.
-- **Compute:** GPU auto-selected — Metal (macOS, default) / CUDA (`--features cuda`)
-  / CPU fallback; F16 on GPU (probe-then-fallback to F32). Decode + preprocess on
-  rayon, batched single forward.
+- **Compute:** the vision tower runs on the WebGPU execution provider (Dawn:
+  Metal / DX12 / Vulkan — every GPU vendor and OS, no user-installed
+  dependencies), probed at load with CPU fallback; the text tower (one short
+  forward per query) stays on the CPU provider. Decode + preprocess on rayon,
+  batched single forward. Behind the default-on `ai-search` cargo feature; built
+  without it (macOS x86_64, where ONNX Runtime has no prebuilt libraries) the
+  app runs normally and AI search reports "not included in this build". The
+  WebGPU provider lives in a shared library (`libwebgpu_dawn`) shipped next to
+  the binary.
 - **Storage:** embeddings = a disposable table in `cache.sqlite3`
   (`(content_key, model_id) → vec<f32>`), keyed by content **and** model so a swap
   invalidates cleanly. Pruned to the live pool on open. ~3 KB/photo.

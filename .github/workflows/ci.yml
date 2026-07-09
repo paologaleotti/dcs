@@ -58,8 +58,16 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # cache-directories: ort-sys downloads the prebuilt ONNX Runtime into the
+      # OS cache dir and bakes that absolute path into the cached build output;
+      # restoring target/ without it breaks the relink on warm-cache runs.
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-directories: |
+            ~/.cache/ort.pyke.io
+            ~/Library/Caches/ort.pyke.io
+            ~\AppData\Local\ort.pyke.io
 
       # build.rs embeds the model, so it needs the source files. Resolve the pin,
       # restore from cache, download once per revision, and hand the dir to build.rs.
@@ -71,22 +79,27 @@ jobs:
           test -n "$rev" || { echo "could not read model_revision.txt"; exit 1; }
           echo "rev=$rev" >> "$GITHUB_OUTPUT"
 
+      # The key includes build.rs so a change to its FILES list (which this
+      # download step mirrors) can't be served a stale cached dir.
       - name: Cache embedded model
         id: model-cache
         uses: actions/cache@v4
         with:
           path: model
-          key: siglip-${{ steps.model.outputs.rev }}
+          key: siglip-onnx-${{ steps.model.outputs.rev }}-${{ hashFiles('crates/dcs-io/build.rs') }}
 
+      # The ONNX towers live under onnx/ in the repo; build.rs expects them flat
+      # in DCS_MODEL_DIR, so the paths are flattened here.
       - name: Download embedded model (cache miss)
         if: steps.model-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           mkdir -p model
-          base="https://huggingface.co/google/siglip-base-patch16-384/resolve/${{ steps.model.outputs.rev }}"
-          for f in config.json tokenizer.json model.safetensors; do
-            curl -fSL --retry 3 "$base/$f" -o "model/$f"
-          done
+          base="https://huggingface.co/Xenova/siglip-base-patch16-384/resolve/${{ steps.model.outputs.rev }}"
+          curl -fSL --retry 3 "$base/config.json" -o model/config.json
+          curl -fSL --retry 3 "$base/tokenizer.json" -o model/tokenizer.json
+          curl -fSL --retry 3 "$base/onnx/vision_model_fp16.onnx" -o model/vision_model_fp16.onnx
+          curl -fSL --retry 3 "$base/onnx/text_model_fp16.onnx" -o model/text_model_fp16.onnx
 
       - name: Format check
         run: cargo fmt --all --check
@@ -102,3 +115,11 @@ jobs:
       # test build (full codegen) off the GPU stack entirely.
       - name: Test
         run: cargo test --workspace --exclude dcs-ui --locked
+
+      # The stub configuration (no ai-search: macOS Intel releases) must stay
+      # compiling and linted too — one OS is enough for a pure cfg variation.
+      - name: Clippy + test without ai-search
+        if: runner.os == 'Linux'
+        run: |
+          cargo clippy --workspace --all-targets --no-default-features --locked
+          cargo test --workspace --exclude dcs-ui --no-default-features --locked

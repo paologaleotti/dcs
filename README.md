@@ -74,12 +74,17 @@ A few things worth knowing:
   in the background at the lowest priority, so it never slows down loading or
   scrolling. Search gets better as indexing finishes. The index is a disposable
   cache (about 3 KB per photo); it's never part of your owned project data.
-- **Indexing can be GPU-accelerated.** Indexing and queries run on the GPU where
-  available: Metal on macOS (on by default), CUDA on Nvidia, with a CPU fallback
-  everywhere else. Queries are fast (sub-100ms) even on CPU; expect slower
-  indexing on CPU.
+- **Indexing is GPU-accelerated out of the box.** Inference runs on ONNX
+  Runtime's WebGPU backend (Metal on macOS, DirectX 12 on Windows, Vulkan on
+  Linux), so any GPU from any vendor accelerates it with nothing to install.
+  Without a usable GPU it falls back to the CPU: queries stay fast (sub-100ms),
+  indexing gets slower.
 - **The model ships inside the app.** No separate download at runtime, so it
   works out of the box. This is what makes the binary large (see below).
+- **Not available on Intel Macs.** ONNX Runtime (and Microsoft upstream)
+  [dropped prebuilt libraries for macOS x86_64](https://github.com/pykeio/ort/issues/556),
+  so the Intel build ships without AI search; those artifacts are tagged
+  `no-aisearch`. Everything else works normally.
 
 ## Install
 
@@ -99,11 +104,12 @@ Release build:
 cargo build --release -p dcs-ui --bin dcs
 ```
 
-> **The first build downloads the search model (~800 MB, once).** `build.rs`
-> fetches the pinned SigLIP model, checks its SHA-256, converts it to fp16, and
-> bakes it into the binary. The embedded model adds about **390 MB** to the
-> executable. It's cached per revision under `target/`, so only the first build
-> (or a build after `cargo clean`) pays the download.
+> **The first build downloads the search model (~410 MB, once).** `build.rs`
+> fetches the pinned SigLIP ONNX model, checks its SHA-256, and bakes it into
+> the binary, adding about **390 MB** to the executable. It's cached per
+> revision under `target/`, so only the first build (or a build after
+> `cargo clean`) pays the download. (`ort` also fetches its prebuilt ONNX
+> Runtime once per version, cached the same way.)
 
 #### Prerequisites
 
@@ -120,22 +126,32 @@ cargo build --release -p dcs-ui --bin dcs
 
 #### GPU acceleration
 
-Inference picks the best backend automatically, with a CPU fallback:
+One backend everywhere: ONNX Runtime's **WebGPU** execution provider drives the
+GPU through Metal (macOS), DirectX 12 (Windows), or Vulkan (Linux). Every
+vendor works, nothing to install, and it falls back to CPU when no usable GPU
+exists. The provider lives in a small shared library (`libwebgpu_dawn`) that
+must sit next to the binary; cargo places it there automatically, and the
+release packages ship it. (When packaging locally with `cargo packager`, run
+from the workspace root and stage that library into `target/webgpu-dist`
+first; a package without it fails at launch.)
 
-| Platform | Backend | How |
-|---|---|---|
-| macOS | **Metal** | automatic (on by default) |
-| Linux / Windows + Nvidia | **CUDA** | `--features cuda` (needs the CUDA toolkit) |
-| anything else | **CPU** | automatic fallback |
+The prebuilt ONNX Runtime sets the platform floors for AI builds: macOS 13.4+,
+Windows 10 1903+, and Linux with glibc 2.38+ (Ubuntu 24.04, Debian 13, Fedora
+39 or newer). The macOS Intel build has no such floor since it ships without
+the runtime.
 
-```sh
-cargo build --release -p dcs-ui --bin dcs --features cuda    # Nvidia
-```
+AI search is a default-on cargo feature. `--no-default-features` builds a
+search-less binary: the app works normally and the search UI reports that AI
+search is not included. Release CI uses this for macOS Intel, where ONNX
+Runtime ships no prebuilt libraries
+([dropped upstream](https://github.com/pykeio/ort/issues/556)); those
+artifacts are tagged `no-aisearch`.
 
 #### Offline / air-gapped builds
 
-Put the three files (`config.json`, `tokenizer.json`, `model.safetensors` from
-the pinned revision) in a directory and point `build.rs` at it, with no
+Put the four files from the pinned revision (`config.json`, `tokenizer.json`,
+plus `vision_model_fp16.onnx` and `text_model_fp16.onnx` flattened out of the
+repo's `onnx/` folder) in a directory and point `build.rs` at it, with no
 download:
 
 ```sh
@@ -171,8 +187,12 @@ The authoritative design lives in [`spec.md`](spec.md).
 ## Licensing
 
 - **dcs** is licensed under **MIT OR Apache-2.0**, at your option.
-- The embedded **SigLIP** model and tokenizer (`google/siglip-base-patch16-384`)
-  are © Google, licensed under **Apache-2.0**. Because every build ships the
-  model, distributions must include the model attribution and the Apache-2.0
-  license text. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). The
-  weights are converted to fp16 for embedding; no other change is made.
+- The embedded **SigLIP** model and tokenizer are © Google, licensed under
+  **Apache-2.0** (weights from `google/siglip-base-patch16-384`, embedded as the
+  fp16 ONNX export published at `Xenova/siglip-base-patch16-384`). Because every
+  build ships the model, distributions must include the model attribution and
+  the Apache-2.0 license text. See
+  [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+- **ONNX Runtime** (© Microsoft, MIT) is statically linked, and its WebGPU
+  support library (`libwebgpu_dawn`, BSD-3-Clause Dawn) ships next to the
+  binary.

@@ -1,8 +1,30 @@
-//! Embeds the app icon into the Windows `.exe` so Explorer, the taskbar, and the
-//! installer shortcut show it. No-op on every other platform. The runtime
-//! window/dock icon is set separately in `main.rs` via `with_icon`.
+//! Embeds the app icon into the Windows `.exe` (Explorer, taskbar, installer
+//! shortcut — no-op elsewhere; the runtime window/dock icon is set in `main.rs`
+//! via `with_icon`) and, when AI search is compiled in, adds an rpath so the
+//! binary finds the ONNX Runtime WebGPU library (`libwebgpu_dawn`) shipped next
+//! to it. Windows resolves DLLs from the exe directory natively, so only macOS
+//! and Linux need the rpath.
 
 fn main() {
+    if std::env::var_os("CARGO_FEATURE_AI_SEARCH").is_some() {
+        let target = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+        // Several search paths per OS: next to the binary (dev builds, portable
+        // archives, NSIS), plus the spots cargo-packager stages resources in the
+        // .app bundle and the Linux packages.
+        let rpaths: &[&str] = match target.as_str() {
+            "macos" => &[
+                "@executable_path",
+                "@executable_path/../Frameworks",
+                "@executable_path/../Resources",
+            ],
+            "linux" => &["$ORIGIN", "$ORIGIN/../lib", "$ORIGIN/../lib/dcs"],
+            _ => &[],
+        };
+        for rpath in rpaths {
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{rpath}");
+        }
+    }
+
     #[cfg(windows)]
     {
         println!("cargo:rerun-if-changed=../../assets/icon.ico");

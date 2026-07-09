@@ -20,9 +20,9 @@ time-tz.workspace = true
 crossbeam-channel.workspace = true
 
 [features]
-# Forwarded to dcs-io; see its manifest. Lets the binary pick a GPU backend.
-metal = ["dcs-io/metal"]
-cuda = ["dcs-io/cuda"]
+default = ["ai-search"]
+# Forwarded to dcs-io; see its manifest.
+ai-search = ["dcs-io/ai-search"]
 
 [dev-dependencies]
 # Real JPEGs for end-to-end decode/cache tests.
