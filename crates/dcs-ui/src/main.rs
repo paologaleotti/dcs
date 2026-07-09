@@ -13,6 +13,7 @@ mod app;
 mod board;
 mod contact_sheet;
 mod context_menu;
+mod crash;
 mod crop;
 mod export;
 mod gallery;

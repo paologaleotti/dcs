@@ -149,10 +149,14 @@ pub struct DcsApp {
     /// The dialog's own text buffer, separate from the toolbar field so the two
     /// don't mirror each other or clobber each other's unsubmitted text.
     search_dialog_input: String,
+    /// Set once a frame panics: from then on the app paints only the crash screen
+    /// instead of re-entering the code that unwound.
+    crash: Option<crate::crash::CrashReport>,
 }
 
 impl DcsApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        crate::crash::install_hook();
         theme::apply(&cc.egui_ctx);
         // The gallery owns image zoom; egui's global Cmd/Ctrl +/-/0 UI zoom would
         // fight it, so turn the built-in keyboard zoom off.
@@ -201,12 +205,47 @@ impl DcsApp {
             search_dialog_open: false,
             search_dialog_focus: false,
             search_dialog_input: String::new(),
+            crash: None,
         }
     }
 }
 
 impl eframe::App for DcsApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        // Once a frame has panicked, only ever paint the crash screen — never
+        // re-enter the code that unwound.
+        if let Some(report) = &self.crash {
+            crate::crash::show(ui, report);
+            return;
+        }
+        // Catch a main-thread panic so an `unwrap` deep in a frame turns into a
+        // copiable crash screen instead of tearing the process down. The hook
+        // (installed in `new`) captured the details; latch them and repaint.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.frame_body(ui);
+        }));
+        if result.is_err() {
+            self.crash = Some(
+                crate::crash::take_report().unwrap_or_else(crate::crash::CrashReport::unknown),
+            );
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// Final save on quit — the durable backstop behind the debounced autosave.
+    /// After a crash the session may be inconsistent, so the last autosave is the
+    /// trustworthy copy: don't overwrite it on the way out.
+    fn on_exit(&mut self) {
+        if self.crash.is_none() {
+            self.save_now();
+        }
+    }
+}
+
+impl DcsApp {
+    /// One frame of the live app, wrapped by [`eframe::App::ui`] in a
+    /// panic-catcher. Everything the running UI draws and polls lives here.
+    fn frame_body(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.session.tick();
         self.handle_keys(&ctx);
@@ -259,13 +298,6 @@ impl eframe::App for DcsApp {
         }
     }
 
-    /// Final save on quit — the durable backstop behind the debounced autosave.
-    fn on_exit(&mut self) {
-        self.save_now();
-    }
-}
-
-impl DcsApp {
     /// Open a folder dropped onto the window. A dropped file opens its
     /// containing folder, so dropping any photo works as well as a folder.
     fn handle_dropped_folder(&mut self, ctx: &egui::Context) {
