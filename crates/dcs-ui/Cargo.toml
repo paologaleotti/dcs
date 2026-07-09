@@ -20,16 +20,27 @@ authors = ["Paolo Galeotti <paologaleotti2002@gmail.com>"]
 # .icns (macOS), .ico (Windows), .png (Linux).
 icons = ["../../assets/icon.icns", "../../assets/icon.ico", "../../assets/icon.png"]
 # The binary embeds the Apache-2.0 SigLIP weights, so its attribution travels
-# with every package.
-resources = ["../../THIRD_PARTY_NOTICES.md"]
+# with every package. target/webgpu-dist holds the ONNX Runtime WebGPU shared
+# library (staged there by release CI; empty in no-AI builds) — the binary loads
+# it at startup via the rpaths set in build.rs.
+resources = [
+    "../../THIRD_PARTY_NOTICES.md",
+    { src = "../../target/webgpu-dist", target = "." },
+]
 
+# 13.4 is inherited from ort's prebuilt ONNX Runtime libraries (their build
+# floor). Release CI lowers this to 11.0 for the Intel no-AI build, which links
+# no ONNX Runtime. CI also appends a `frameworks` entry here for the AI build
+# (the Dawn dylib must land in Contents/Frameworks; it can't live in the
+# manifest permanently because cargo-packager hard-fails on the path missing).
 [package.metadata.packager.macos]
-minimum-system-version = "11.0"
+minimum-system-version = "13.4"
 
 # Runtime libraries egui/winit/rfd link against on Linux. AppImage bundles them;
-# the .deb declares them so apt resolves them on install.
+# the .deb declares them so apt resolves them on install. libstdc++6 >= 13.2:
+# ort's libwebgpu_dawn.so requires GLIBCXX_3.4.32 at load time.
 [package.metadata.packager.deb]
-depends = ["libgtk-3-0", "libxkbcommon0", "libwayland-client0"]
+depends = ["libgtk-3-0", "libxkbcommon0", "libwayland-client0", "libstdc++6 (>= 13.2)"]
 
 # egui binary: view modes (grid, gallery; board later) + ephemeral UI
 # state. Top of the tree. Depends DOWN on dcs-app + dcs-domain. (§9)
@@ -38,11 +49,11 @@ name = "dcs"
 path = "src/main.rs"
 
 [features]
-# Pass-through GPU backends. `cuda` is opt-in: build with `--features cuda` on an
-# Nvidia machine with the CUDA toolkit installed. `metal` is auto-enabled on macOS
-# (see the target-specific dependency below), so Mac builds get GPU for free.
-metal = ["dcs-app/metal"]
-cuda = ["dcs-app/cuda"]
+default = ["ai-search"]
+# Local AI semantic search (on by default). Build with `--no-default-features`
+# for targets ONNX Runtime ships no prebuilt libraries for (macOS x86_64) — the
+# app works normally, AI search reports "not included in this build".
+ai-search = ["dcs-app/ai-search"]
 
 [dependencies]
 dcs-app.workspace = true
@@ -51,11 +62,6 @@ dcs-domain.workspace = true
 egui.workspace = true
 eframe.workspace = true
 rfd.workspace = true
-
-# Apple Metal needs no external toolkit and ships with macOS, so enable it by
-# default there — embedding indexing runs on the GPU out of the box.
-[target.'cfg(target_os = "macos")'.dependencies]
-dcs-app = { workspace = true, features = ["metal"] }
 
 # Windows-only: embed the app icon into the .exe (see build.rs).
 [target.'cfg(windows)'.build-dependencies]

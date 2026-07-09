@@ -1,10 +1,10 @@
-//! Build-time model embedding. The SigLIP model is always baked into the binary.
+//! Build-time model embedding. With the `ai-search` feature on, the SigLIP ONNX
+//! model is baked into the binary.
 //!
-//! Sources the three model files (from `DCS_MODEL_DIR` if set, else a pinned
-//! HuggingFace download), verifies their SHA-256, converts the weights from
-//! fp32 → fp16 (halving the embedded size with no GPU-runtime quality change), and
-//! writes them into `OUT_DIR` for `include_bytes!`. Nothing is ever committed to
-//! git — only the pin (repo + revision in `model_revision.txt`, hashes below).
+//! Sources the four model files (from `DCS_MODEL_DIR` if set, else a pinned
+//! HuggingFace download), verifies their SHA-256, and stages them for
+//! `include_bytes!`. Nothing is ever committed to git — only the pin (repo +
+//! revision in `model_revision.txt`, hashes below).
 
 use std::path::{Path, PathBuf};
 
@@ -13,28 +13,41 @@ use std::path::{Path, PathBuf};
 /// file has a trailing newline.
 const MODEL_REVISION: &str = include_str!("model_revision.txt");
 
-/// Repo the embedded weights come from. The revision is `MODEL_REVISION`.
-const REPO: &str = "google/siglip-base-patch16-384";
+/// Repo the embedded model comes from: the official ONNX export of
+/// `google/siglip-base-patch16-384`, split into per-tower fp16 graphs. The
+/// revision is `MODEL_REVISION`.
+const REPO: &str = "Xenova/siglip-base-patch16-384";
 
-/// The files to source. `sha256` is the *fp32* (as-downloaded) hash; leave empty
-/// to self-pin on first build (the script prints the computed hash and a warning
-/// to paste it back here, locking future builds against drift/tampering).
+/// The files to source. `remote` is the path inside the repo; `name` is the flat
+/// local name used in the download cache and `DCS_MODEL_DIR`. `sha256` is the
+/// as-downloaded hash; leave empty to self-pin on first build (the script prints
+/// the computed hash and a warning to paste it back here, locking future builds
+/// against drift/tampering).
 struct ModelFile {
     name: &'static str,
+    remote: &'static str,
     sha256: &'static str,
 }
-const FILES: [ModelFile; 3] = [
+const FILES: [ModelFile; 4] = [
     ModelFile {
         name: "config.json",
-        sha256: "bd23a8a92607ff1ebdd84b625772246d9b0160d0a7f4b63bde2bd3ae1baa21de",
+        remote: "config.json",
+        sha256: "25dc1426d9874b8ca99420378d32df58461777b0a9868d45a888775c02d25090",
     },
     ModelFile {
         name: "tokenizer.json",
-        sha256: "c6e405cb7c670d56636a9402c81023a55bc6c3c53d89cf02b92f5c5005bfe920",
+        remote: "tokenizer.json",
+        sha256: "798a8118466a62b99c98fc111134d76b0905f92debc0536d2602aa5bd97c0ab9",
     },
     ModelFile {
-        name: "model.safetensors",
-        sha256: "f273e98edc393ec5ffea71518b0c9ab4b0e8dd2be43affb22d49ff659fb28605",
+        name: "vision_model_fp16.onnx",
+        remote: "onnx/vision_model_fp16.onnx",
+        sha256: "bcc53aac76b42b2d0e8c86a89fb89005ae52dcd0dcabf887a60b890a64a3a971",
+    },
+    ModelFile {
+        name: "text_model_fp16.onnx",
+        remote: "onnx/text_model_fp16.onnx",
+        sha256: "301ef4194c2995fcdc41789c2386f7fdfcae53acb73b70ffd6feefd69a2241e9",
     },
 ];
 
@@ -44,20 +57,25 @@ fn main() {
     println!("cargo:rerun-if-env-changed=DCS_MODEL_DIR");
     println!("cargo:rerun-if-env-changed=CARGO_TARGET_DIR");
 
-    let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR set by cargo"));
-    let src = source_dir(&out);
+    // Without AI search there is nothing to download or embed; the embedding
+    // module compiles to a stub that never touches these files.
+    if std::env::var_os("CARGO_FEATURE_AI_SEARCH").is_none() {
+        return;
+    }
+
+    let (src, refetchable) = source_dir();
 
     for f in &FILES {
-        verify(&src.join(f.name), f);
+        let path = src.join(f.name);
+        verify(&path, f, refetchable);
+        // Re-verify whenever a staged file changes: rustc's dep-info tracks the
+        // include_bytes! sources, so without this a swapped file would be
+        // embedded on the next compile with the SHA-256 pin never re-checked.
+        println!("cargo:rerun-if-changed={}", path.display());
     }
 
-    // fp32 → fp16 conversion (cached: skip if already produced).
-    let weights_fp16 = out.join("model.fp16.safetensors");
-    if !weights_fp16.exists() {
-        convert_fp16(&src.join("model.safetensors"), &weights_fp16);
-    }
-
-    emit("DCS_EMBED_WEIGHTS", &weights_fp16);
+    emit("DCS_EMBED_VISION", &src.join("vision_model_fp16.onnx"));
+    emit("DCS_EMBED_TEXT", &src.join("text_model_fp16.onnx"));
     emit("DCS_EMBED_TOKENIZER", &src.join("tokenizer.json"));
     emit("DCS_EMBED_CONFIG", &src.join("config.json"));
 }
@@ -66,14 +84,16 @@ fn emit(key: &str, path: &Path) {
     println!("cargo:rustc-env={key}={}", path.display());
 }
 
-/// Where the fp32 source files live: `DCS_MODEL_DIR` if set (offline / CI / your
-/// own copy), otherwise a pinned download into a **stable, revision-keyed cache**
-/// under the target dir — shared across every build unit and build mode, so the
-/// ~800 MB download happens at most once per revision per machine (not once per
-/// feature/profile combination).
-fn source_dir(_out: &Path) -> PathBuf {
+/// Where the source files live: `DCS_MODEL_DIR` if set (offline / CI / your own
+/// copy — files under their flat `name`s), otherwise a pinned download into a
+/// **stable, revision-keyed cache** under the target dir — shared across every
+/// build unit and build mode, so the ~410 MB download happens at most once per
+/// revision per machine (not once per feature/profile combination). The second
+/// return says whether a hash-mismatching file may be re-downloaded (the cache)
+/// or is the user's problem (`DCS_MODEL_DIR`).
+fn source_dir() -> (PathBuf, bool) {
     if let Some(dir) = std::env::var_os("DCS_MODEL_DIR") {
-        return PathBuf::from(dir);
+        return (PathBuf::from(dir), false);
     }
     let dl = download_cache();
     std::fs::create_dir_all(&dl).expect("create download cache dir");
@@ -82,9 +102,9 @@ fn source_dir(_out: &Path) -> PathBuf {
         if dest.exists() {
             continue; // cached from a prior build (any unit/mode)
         }
-        download(f.name, &dest);
+        download(f.remote, &dest);
     }
-    dl
+    (dl, true)
 }
 
 /// A stable cache directory keyed by revision, under the workspace target dir.
@@ -102,15 +122,23 @@ fn download_cache() -> PathBuf {
     target.join("dcs-model-cache").join(MODEL_REVISION.trim())
 }
 
-fn download(name: &str, dest: &Path) {
+fn download(remote: &str, dest: &Path) {
     let url = format!(
-        "https://huggingface.co/{REPO}/resolve/{}/{name}",
+        "https://huggingface.co/{REPO}/resolve/{}/{remote}",
         MODEL_REVISION.trim()
     );
     println!("cargo:warning=downloading {url}");
-    let resp = ureq::get(&url)
+    // A read timeout aborts a stalled connection instead of hanging the build
+    // forever; there is deliberately no overall timeout — the files are large
+    // and links vary.
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(30))
+        .timeout_read(std::time::Duration::from_secs(120))
+        .build();
+    let resp = agent
+        .get(&url)
         .call()
-        .unwrap_or_else(|e| panic!("download {name}: {e}"));
+        .unwrap_or_else(|e| panic!("download {remote}: {e}"));
     let mut reader = resp.into_reader();
     let tmp = dest.with_extension("part");
     let mut file = std::fs::File::create(&tmp).expect("create temp file");
@@ -123,8 +151,30 @@ fn download(name: &str, dest: &Path) {
 }
 
 /// Verify a file's SHA-256 against its pin. Empty pin → self-pin: print the hash
-/// and warn the developer to paste it into `FILES` to lock it.
-fn verify(path: &Path, f: &ModelFile) {
+/// and warn the developer to paste it into `FILES` to lock it. In the download
+/// cache (`refetchable`) a mismatching file — a torn or tampered cache entry —
+/// is deleted and re-downloaded once before giving up; in `DCS_MODEL_DIR` it is
+/// the user's file and only fails.
+fn verify(path: &Path, f: &ModelFile, refetchable: bool) {
+    if let Some(got) = check(path, f) {
+        if !refetchable {
+            mismatch_panic(f, &got);
+        }
+        println!(
+            "cargo:warning={} sha256 mismatch in cache; re-downloading",
+            f.name
+        );
+        std::fs::remove_file(path).unwrap_or_else(|e| panic!("remove {}: {e}", path.display()));
+        download(f.remote, path);
+        if let Some(got) = check(path, f) {
+            mismatch_panic(f, &got);
+        }
+    }
+}
+
+/// `Some(actual_hash)` when the file's SHA-256 does not match the pin (self-pin
+/// warnings count as matching).
+fn check(path: &Path, f: &ModelFile) -> Option<String> {
     use sha2::{Digest, Sha256};
     let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let got = hex(&Sha256::digest(&bytes));
@@ -133,66 +183,18 @@ fn verify(path: &Path, f: &ModelFile) {
             "cargo:warning=PIN {}: sha256 = {got} (paste into build.rs FILES to lock)",
             f.name
         );
-    } else if got != f.sha256 {
-        panic!(
-            "{} sha256 mismatch:\n  expected {}\n  got      {got}\nrefusing to embed an unpinned file",
-            f.name, f.sha256
-        );
+        return None;
     }
+    (got != f.sha256).then_some(got)
+}
+
+fn mismatch_panic(f: &ModelFile, got: &str) -> ! {
+    panic!(
+        "{} sha256 mismatch:\n  expected {}\n  got      {got}\nrefusing to embed an unpinned file",
+        f.name, f.sha256
+    );
 }
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Read an fp32 safetensors file and write an fp16 copy. Only `F32` tensors are
-/// down-converted; every other dtype (this model has none, but be exact) is copied
-/// verbatim. Written atomically (`.part` → rename) so an interrupted convert never
-/// leaves a half-written file the `exists()` cache check would trust.
-fn convert_fp16(src: &Path, dest: &Path) {
-    use half::f16;
-    use safetensors::tensor::{Dtype, SafeTensors, TensorView};
-
-    let raw = std::fs::read(src).expect("read weights");
-    let st = SafeTensors::deserialize(&raw).expect("parse safetensors");
-
-    // Owned converted buffers; TensorViews below borrow these.
-    let mut owned: Vec<(String, Dtype, Vec<usize>, Vec<u8>)> = Vec::new();
-    for (name, view) in st.tensors() {
-        let shape = view.shape().to_vec();
-        match view.dtype() {
-            Dtype::F32 => {
-                let data = view.data();
-                let mut out = Vec::with_capacity(data.len() / 2);
-                for chunk in data.chunks_exact(4) {
-                    let v = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                    out.extend_from_slice(&f16::from_f32(v).to_le_bytes());
-                }
-                owned.push((name, Dtype::F16, shape, out));
-            }
-            other => owned.push((name, other, shape, view.data().to_vec())),
-        }
-    }
-
-    let views: Vec<(&str, TensorView)> = owned
-        .iter()
-        .map(|(name, dtype, shape, data)| {
-            (
-                name.as_str(),
-                TensorView::new(*dtype, shape.clone(), data).expect("build tensor view"),
-            )
-        })
-        .collect();
-    let tmp = dest.with_extension("part");
-    safetensors::tensor::serialize_to_file(views, None, &tmp).expect("write fp16 safetensors");
-    // Fsync before rename, like the download path — otherwise a crash can leave a
-    // torn fp16 file that the next build's `exists()` check would trust. Reopen
-    // with write access: Windows' FlushFileBuffers (sync_all) needs a writable
-    // handle and fails with "Access is denied" on a read-only `File::open`.
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(&tmp)
-        .and_then(|f| f.sync_all())
-        .expect("fsync fp16 safetensors");
-    std::fs::rename(&tmp, dest).expect("rename fp16 safetensors");
 }

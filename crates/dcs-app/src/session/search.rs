@@ -19,7 +19,8 @@ use dcs_io::embedding::{EmbedRequest, EmbedResult, Embedder, SiglipEmbedder};
 use super::{AiStatus, Session};
 
 /// An in-flight "enable AI search": the embedded model is loaded on a background
-/// thread (it's ~390 MB to parse + upload), the embedder handed back when ready.
+/// thread (it's ~390 MB to parse and hand to the GPU), the embedder handed back
+/// when ready.
 pub(super) struct AiInit {
     result_rx: Receiver<Result<Box<dyn Embedder>, String>>,
 }
@@ -43,6 +44,11 @@ impl Session {
     pub fn is_search_pending(&self) -> bool {
         let queries = self.active_search_queries();
         if queries.is_empty() {
+            return false;
+        }
+        // A dead or failed backend resolves nothing — "searching…" would be a
+        // permanent lie. The error state is shown instead.
+        if matches!(self.ai_status, AiStatus::Error(_)) {
             return false;
         }
         if matches!(
@@ -130,33 +136,41 @@ impl Session {
     /// appears at once and matches fill in when the query embeds. No-op when AI
     /// search is off or the query is blank.
     pub fn run_search(&mut self, query: String) {
-        if !self.ai_enabled() {
+        let Some(query) = self.searchable_query(query) else {
             return;
-        }
-        let query = query.trim().to_string();
-        if query.is_empty() {
-            return;
-        }
-        if let Some(embedder) = self.embedder.as_ref() {
-            embedder.embed_text(self.epoch, query.clone());
-        }
+        };
+        self.queue_text_embed(&query);
         self.set_search_chip(query);
     }
 
     /// Run a text query, **chaining** it to the current search (Shift+Enter): adds
     /// an OR'd search chip rather than replacing. No-op when off or blank.
     pub fn append_search(&mut self, query: String) {
-        if !self.ai_enabled() {
+        let Some(query) = self.searchable_query(query) else {
             return;
+        };
+        self.queue_text_embed(&query);
+        self.add_search_chip(query);
+    }
+
+    /// The trimmed query if a search may run: AI on, query non-blank, and the
+    /// backend not in a failed state — a chip added on top of a dead backend
+    /// would never resolve.
+    fn searchable_query(&self, query: String) -> Option<String> {
+        if !self.ai_enabled() || matches!(self.ai_status, AiStatus::Error(_)) {
+            return None;
         }
         let query = query.trim().to_string();
-        if query.is_empty() {
-            return;
-        }
+        if query.is_empty() { None } else { Some(query) }
+    }
+
+    /// Queue a text embed for the current epoch, telling the worker the epoch is
+    /// current so it can skip stale queued work.
+    fn queue_text_embed(&self, query: &str) {
         if let Some(embedder) = self.embedder.as_ref() {
-            embedder.embed_text(self.epoch, query.clone());
+            embedder.set_epoch(self.epoch);
+            embedder.embed_text(self.epoch, query.to_string());
         }
-        self.add_search_chip(query);
     }
 
     /// Start the embedding sweep once — but only after the scan settles and every
@@ -185,6 +199,7 @@ impl Session {
         let Some(embedder) = self.embedder.as_ref() else {
             return;
         };
+        embedder.set_epoch(self.epoch);
         for query in self.active_search_queries() {
             if !self.search_vecs.contains_key(&query) {
                 embedder.embed_text(self.epoch, query);
@@ -200,6 +215,9 @@ impl Session {
             return;
         };
         let model_id = embedder.model_id();
+        // Mark this folder's epoch current so queued work from a previously open
+        // folder is skipped by the worker instead of decoded for nothing.
+        embedder.set_epoch(self.epoch);
         let cached: HashMap<_, Vec<f32>> = self
             .cache
             .as_ref()
@@ -282,20 +300,30 @@ impl Session {
     }
 
     fn poll_embed_results(&mut self) {
-        let (model_id, results) = match self.embedder.as_ref() {
-            Some(e) => (e.model_id(), e.poll()),
+        let (model_id, results, alive) = match self.embedder.as_ref() {
+            Some(e) => (e.model_id(), e.poll(), e.is_alive()),
             None => return,
         };
+        // A dead worker will never produce another result; waiting on it shows
+        // "indexing…"/"searching…" forever. Process what it managed to send,
+        // then surface the failure.
+        if !alive {
+            self.embedder = None;
+            self.ai_status = AiStatus::Error("embedding worker stopped unexpectedly".into());
+        }
         if results.is_empty() {
             return;
         }
         let mut images: Vec<(ContentFingerprint, Vec<f32>)> = Vec::new();
         let mut to_recompute: HashSet<String> = HashSet::new();
+        let mut failed_queries: Vec<String> = Vec::new();
         for result in results {
             match result {
                 // Drop results from a folder we've since closed (epoch bumped on
                 // open): the embedder is global and may still emit old-folder work.
-                EmbedResult::Image { epoch, .. } | EmbedResult::Text { epoch, .. }
+                EmbedResult::Image { epoch, .. }
+                | EmbedResult::Text { epoch, .. }
+                | EmbedResult::TextFailed { epoch, .. }
                     if epoch != self.epoch => {}
                 EmbedResult::Image {
                     fingerprint, vec, ..
@@ -304,7 +332,19 @@ impl Session {
                     self.search_vecs.insert(query.clone(), vec);
                     to_recompute.insert(query);
                 }
+                EmbedResult::TextFailed { query, .. } => failed_queries.push(query),
             }
+        }
+        // A query that couldn't embed resolves to an empty match set instead of
+        // pending forever: the vec entry clears `is_search_pending`, the empty
+        // set makes the chip read "no matches".
+        let any_failed = !failed_queries.is_empty();
+        for query in failed_queries {
+            self.search_vecs.insert(query.clone(), Vec::new());
+            self.search_sets.insert(query, HashSet::new());
+        }
+        if any_failed {
+            self.rebuild_visible();
         }
         // Persist all freshly-embedded photos under a single short-lived lock,
         // rather than re-locking per result on the UI thread's tick.
@@ -346,6 +386,10 @@ impl Session {
         let Some(qvec) = self.search_vecs.get(query).cloned() else {
             return;
         };
+        // An empty vec marks a query whose embed failed — its set stays empty.
+        if qvec.is_empty() {
+            return;
+        }
         let set = {
             let photos: Vec<_> = self
                 .embeddings
@@ -392,7 +436,7 @@ impl Session {
 // Inline unit tests: the AI state machine reads/writes private `Session` fields and
 // drives private methods, so it can't be exercised from the `tests/` dir. A
 // `MockEmbedder` (the `Embedder` trait is the seam) makes it deterministic without
-// candle or a downloaded model.
+// ONNX Runtime or a downloaded model.
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -523,6 +567,64 @@ mod tests {
             s.run_action(AppAction::OpenSearchPalette),
             ActionEffect::OpenSearchPalette
         );
+    }
+
+    #[test]
+    fn text_failed_result_clears_pending_with_no_matches() {
+        let mut s = Session::new();
+        s.embeddings.insert(PhotoId(1), vec![1.0, 0.0]);
+        s.set_search_chip("cat".to_string());
+        s.ai_status = AiStatus::Ready;
+        assert!(s.is_search_pending());
+        s.embedder = Some(Box::new(MockEmbedder::with(vec![
+            EmbedResult::TextFailed {
+                epoch: s.epoch,
+                query: "cat".to_string(),
+            },
+        ])));
+        s.poll_embed_results();
+        assert!(!s.is_search_pending(), "failed query must stop pending");
+        assert!(
+            s.search_sets.get("cat").is_some_and(|set| set.is_empty()),
+            "failed query resolves to an empty set"
+        );
+    }
+
+    #[test]
+    fn dead_worker_flips_status_to_error() {
+        struct DeadEmbedder;
+        impl Embedder for DeadEmbedder {
+            fn model_id(&self) -> &'static str {
+                "dead"
+            }
+            fn embed_image(&self, _req: EmbedRequest) {}
+            fn embed_text(&self, _epoch: u64, _query: String) {}
+            fn poll(&self) -> Vec<EmbedResult> {
+                Vec::new()
+            }
+            fn is_alive(&self) -> bool {
+                false
+            }
+        }
+        let mut s = Session::new();
+        s.embedder = Some(Box::new(DeadEmbedder));
+        s.ai_status = AiStatus::Indexing { done: 0, total: 5 };
+        s.poll_embed_results();
+        assert!(matches!(s.ai_status, AiStatus::Error(_)));
+        assert!(s.embedder.is_none());
+    }
+
+    #[test]
+    fn search_refused_while_ai_errored() {
+        let mut s = Session::new();
+        s.config.ai_search_enabled = Some(true);
+        s.ai_status = AiStatus::Error("model failed to load".into());
+        s.run_search("cat".to_string());
+        assert!(
+            s.active_search_queries().is_empty(),
+            "no chip on a dead backend"
+        );
+        assert!(!s.is_search_pending());
     }
 
     #[test]
