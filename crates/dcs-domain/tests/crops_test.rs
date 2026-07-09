@@ -521,6 +521,41 @@ fn drag_edge_with_ratio_lock_centers_the_perpendicular_axis() {
 }
 
 #[test]
+fn drag_lateral_edge_with_ratio_lock_grows_the_crop() {
+    // Regression (#1): a lateral handle under a locked ratio must be able to grow,
+    // not just shrink. Right edge starts at 0.6; dragging it out to 0.9 must widen
+    // the crop, with the perpendicular axis following to keep the ratio.
+    let r = NormRect::centered(0.2, 0.2); // x=0.4,y=0.4,w=0.2,h=0.2
+    let out = drag_rect(r, sides(false, true, false, false), 0.9, 0.5, Some(1.0));
+    assert!(approx(out.x, 0.4), "left edge should anchor: {out:?}");
+    assert!(
+        approx(out.x + out.w, 0.9),
+        "right edge follows pointer: {out:?}"
+    );
+    assert!(
+        approx(out.w, 0.5) && approx(out.h, 0.5),
+        "did not grow: {out:?}"
+    );
+}
+
+#[test]
+fn drag_vertical_edge_with_ratio_lock_grows_the_crop() {
+    // Same as above for a top/bottom handle: dragging the bottom edge down grows
+    // height, width follows to keep the ratio.
+    let r = NormRect::centered(0.2, 0.2); // x=0.4,y=0.4,w=0.2,h=0.2
+    let out = drag_rect(r, sides(false, false, false, true), 0.5, 0.9, Some(1.0));
+    assert!(approx(out.y, 0.4), "top edge should anchor: {out:?}");
+    assert!(
+        approx(out.y + out.h, 0.9),
+        "bottom edge follows pointer: {out:?}"
+    );
+    assert!(
+        approx(out.w, 0.5) && approx(out.h, 0.5),
+        "did not grow: {out:?}"
+    );
+}
+
+#[test]
 fn drag_ratio_lock_is_inert_on_a_degenerate_ratio() {
     let r = NormRect::centered(0.3, 0.3);
     let out = drag_rect(r, sides(false, true, false, true), 0.8, 0.8, Some(0.0));

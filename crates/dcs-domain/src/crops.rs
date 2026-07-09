@@ -414,7 +414,20 @@ pub fn drag_rect(
 
     if let Some(rn) = ratio_norm.filter(|rn| *rn > 0.0 && rn.is_finite()) {
         let (fw, fh) = (x1 - x0, y1 - y0);
-        let w = fw.min(fh * rn).max(MIN_CROP_FRAC);
+        let moves_h = sides.left || sides.right;
+        let moves_v = sides.top || sides.bottom;
+        // Only the axis the handle actually drags may drive the size. For a
+        // corner both extents track the pointer, so fit the ratio box inside the
+        // smaller. For a lateral edge only one extent moved; the other is stale
+        // and must follow the ratio freely — capping to it would pin the size to
+        // the current dimension and the handle could shrink but never grow.
+        let driven_w = match (moves_h, moves_v) {
+            (true, true) => fw.min(fh * rn),
+            (true, false) => fw,
+            (false, true) => fh * rn,
+            (false, false) => fw.min(fh * rn),
+        };
+        let w = driven_w.max(MIN_CROP_FRAC);
         let h = (w / rn).max(MIN_CROP_FRAC);
         if sides.left {
             x0 = x1 - w;

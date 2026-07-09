@@ -562,17 +562,21 @@ fn process_drag(
     sw: f32,
     sh: f32,
 ) {
-    if !resp.dragged() {
+    // Track the gesture from the button *press*, not egui's drag threshold:
+    // `dragged()` only turns true after the pointer moves a few pixels, so keying
+    // off it leaves a resize handle sitting still for the first stretch of every
+    // drag before it snaps. `is_pointer_button_down_on` fires from the press and
+    // keeps capture even when the pointer leaves the canvas mid-drag.
+    if !resp.is_pointer_button_down_on() {
         state.drag = None;
         return;
     }
-    // Grab a handle on drag start — and *keep retrying* on later drag frames while
-    // nothing is grabbed yet. egui's drag threshold (or a not-yet-decoded frame at
-    // the start) can make the `drag_started` frame's pointer land just off a
-    // handle; without the retry the whole gesture would be dead until release.
-    if state.drag.is_none()
-        && let Some(pos) = resp.interact_pointer_pos()
-    {
+    let Some(pos) = resp.interact_pointer_pos() else {
+        return;
+    };
+    // Grab a handle on press, retrying each frame until one latches: the press
+    // frame's pointer can land just off a handle before the rect settles.
+    if state.drag.is_none() {
         state.drag = hit_handle(crop_screen, pos);
     }
     let Some(handle) = state.drag else { return };
@@ -589,9 +593,6 @@ fn process_drag(
         };
         return;
     }
-    let Some(pos) = resp.interact_pointer_pos() else {
-        return;
-    };
     // Pointer in normalized bbox coords, clamped to the box.
     let nx = ((pos.x - bbox.min.x) / bbox.width()).clamp(0.0, 1.0);
     let ny = ((pos.y - bbox.min.y) / bbox.height()).clamp(0.0, 1.0);
