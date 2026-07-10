@@ -255,7 +255,7 @@ fn paint_toolbar(ui: &mut Ui, rect: Rect, state: &mut CropEditState, resp: &mut 
     ui.painter().hline(
         rect.x_range(),
         rect.bottom() - 0.5,
-        Stroke::new(1.0, theme::HAIRLINE),
+        Stroke::new(1.0_f32, theme::HAIRLINE),
     );
     let mut child =
         ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(10.0, 6.0))));
@@ -492,7 +492,7 @@ fn paint_surround_dim(ui: &Ui, outer: Rect, hole: Rect) {
 fn paint_thirds(ui: &Ui, crop: Rect, emphasize: bool) {
     let p = ui.painter();
     let alpha = if emphasize { 180 } else { 110 };
-    let stroke = Stroke::new(1.0, Color32::from_white_alpha(alpha));
+    let stroke = Stroke::new(1.0_f32, Color32::from_white_alpha(alpha));
     for i in 1..3 {
         let x = crop.min.x + crop.width() * i as f32 / 3.0;
         p.vline(x, crop.y_range(), stroke);
@@ -507,7 +507,7 @@ fn paint_crop_border_and_handles(ui: &Ui, crop: Rect) {
     p.rect_stroke(
         crop,
         0.0,
-        Stroke::new(1.5, theme::SELECT_OUTLINE),
+        Stroke::new(1.5_f32, theme::SELECT_OUTLINE),
         StrokeKind::Inside,
     );
     for (_, center) in handle_centers(crop) {

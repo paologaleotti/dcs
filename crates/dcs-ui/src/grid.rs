@@ -665,14 +665,14 @@ fn paint_header(ui: &Ui, info: &HeaderInfo, rect: Rect, hovered: bool) {
             p.hline(
                 rect.x_range(),
                 rect.top() + 1.0,
-                Stroke::new(2.0, theme::tag_color32(c)),
+                Stroke::new(2.0_f32, theme::tag_color32(c)),
             );
         }
         None => {
             p.hline(
                 rect.x_range(),
                 rect.top() + 0.5,
-                Stroke::new(1.0, theme::HAIRLINE),
+                Stroke::new(1.0_f32, theme::HAIRLINE),
             );
         }
     }
@@ -947,7 +947,7 @@ fn paint_missing(ui: &Ui, cell_rect: Rect) {
     ui.painter().rect_stroke(
         cell_rect,
         0.0,
-        Stroke::new(1.0, theme::HAIRLINE),
+        Stroke::new(1.0_f32, theme::HAIRLINE),
         StrokeKind::Inside,
     );
     if cell_rect.width() >= BADGE_MIN_CELL {

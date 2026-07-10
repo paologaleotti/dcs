@@ -69,7 +69,7 @@ impl DcsApp {
         ui.painter().hline(
             bar.response.rect.x_range(),
             bar.response.rect.top(),
-            Stroke::new(1.0, theme::HAIRLINE),
+            Stroke::new(1.0_f32, theme::HAIRLINE),
         );
     }
 
@@ -102,7 +102,7 @@ impl DcsApp {
                 ui.painter().hline(
                     top.x_range(),
                     top.top(),
-                    Stroke::new(2.0, theme::FILTER_ACCENT),
+                    Stroke::new(2.0_f32, theme::FILTER_ACCENT),
                 );
                 // Gap between the accent rule and the chips below it.
                 ui.add_space(10.0);

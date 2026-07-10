@@ -539,9 +539,9 @@ fn paint_item(ui: &egui::Ui, rect: Rect, tex: Option<TexRef>, selected: bool) {
         painter.rect_filled(rect, 0.0, theme::CELL_EMPTY);
     }
     let stroke = if selected {
-        Stroke::new(2.0, theme::FOCUS_OUTLINE)
+        Stroke::new(2.0_f32, theme::FOCUS_OUTLINE)
     } else {
-        Stroke::new(1.0, theme::HAIRLINE)
+        Stroke::new(1.0_f32, theme::HAIRLINE)
     };
     painter.rect_stroke(rect, 0.0, stroke, StrokeKind::Outside);
 }

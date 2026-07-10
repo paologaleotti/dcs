@@ -360,7 +360,12 @@ impl DcsApp {
                 let fit = crate::grid::contain_fit(img_rect, tex.size);
                 painter.image(tex.id, fit, crate::grid::full_uv(), Color32::WHITE);
             } else {
-                painter.rect_stroke(img_rect, 0.0, Stroke::new(1.0, edge), StrokeKind::Inside);
+                painter.rect_stroke(
+                    img_rect,
+                    0.0,
+                    Stroke::new(1.0_f32, edge),
+                    StrokeKind::Inside,
+                );
             }
             paint_caption(&painter, cell, &to_screen, scale, number_col, dim_col);
         }

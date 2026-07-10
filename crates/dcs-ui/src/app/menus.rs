@@ -21,14 +21,14 @@ impl DcsApp {
                     let has_photos = self.session.photo_count() > 0;
                     egui::Frame::default()
                         .fill(theme::EXTREME)
-                        .stroke(egui::Stroke::new(1.0, theme::HAIRLINE))
+                        .stroke(egui::Stroke::new(1.0_f32, theme::HAIRLINE))
                         .inner_margin(egui::Margin::same(2))
                         .show(ui, |ui| {
                             ui.spacing_mut().item_spacing.x = 0.0;
                             ui.visuals_mut().selection.bg_fill = theme::SEGMENT_ACTIVE;
                             // selectable_label paints selected text in selection.stroke's color; NONE = invisible.
                             ui.visuals_mut().selection.stroke =
-                                egui::Stroke::new(1.0, theme::TEXT_HOVER);
+                                egui::Stroke::new(1.0_f32, theme::TEXT_HOVER);
                             ui.visuals_mut().widgets.hovered.weak_bg_fill =
                                 egui::Color32::from_gray(20);
                             ui.visuals_mut().widgets.hovered.bg_stroke = egui::Stroke::NONE;
@@ -119,7 +119,7 @@ impl DcsApp {
         ui.painter().hline(
             bar.response.rect.x_range(),
             bar.response.rect.bottom(),
-            egui::Stroke::new(1.0, theme::HAIRLINE),
+            egui::Stroke::new(1.0_f32, theme::HAIRLINE),
         );
         if let Some(action) = clicked {
             self.dispatch(action, ctx);
@@ -794,7 +794,7 @@ fn thin_sep(ui: &mut Ui) {
     ui.painter().vline(
         rect.center().x,
         rect.y_range(),
-        egui::Stroke::new(1.0, theme::HAIRLINE),
+        egui::Stroke::new(1.0_f32, theme::HAIRLINE),
     );
     ui.add_space(4.0);
 }

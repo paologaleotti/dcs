@@ -532,7 +532,7 @@ fn paint_minimap(
     p.rect_stroke(
         map.expand(4.0),
         3.0,
-        Stroke::new(1.0, theme::HAIRLINE),
+        Stroke::new(1.0_f32, theme::HAIRLINE),
         StrokeKind::Outside,
     );
 
@@ -545,7 +545,7 @@ fn paint_minimap(
     p.rect_stroke(
         box_rect,
         0.0,
-        Stroke::new(1.5, theme::FOCUS_OUTLINE),
+        Stroke::new(1.5_f32, theme::FOCUS_OUTLINE),
         StrokeKind::Inside,
     );
 }
@@ -638,7 +638,7 @@ fn paint_info_bar(ui: &Ui, info: &FrameInfo, rect: Rect) {
     p.hline(
         rect.x_range(),
         rect.top() + 0.5,
-        Stroke::new(1.0, theme::HAIRLINE),
+        Stroke::new(1.0_f32, theme::HAIRLINE),
     );
 
     let pad = 12.0;
@@ -778,7 +778,7 @@ fn paint_chip(
             p.rect_filled(chip, 2.0, bg);
         }
         None => {
-            p.rect_stroke(chip, 2.0, Stroke::new(1.0, fg), StrokeKind::Inside);
+            p.rect_stroke(chip, 2.0, Stroke::new(1.0_f32, fg), StrokeKind::Inside);
         }
     }
     p.galley(Pos2::new(chip.left() + px, chip.top() + py), galley, fg);
@@ -803,7 +803,7 @@ pub(crate) fn paint_filmstrip(
     painter.hline(
         rect.x_range(),
         rect.top() + 0.5,
-        Stroke::new(1.0, theme::HAIRLINE),
+        Stroke::new(1.0_f32, theme::HAIRLINE),
     );
 
     let count = session.photo_count();

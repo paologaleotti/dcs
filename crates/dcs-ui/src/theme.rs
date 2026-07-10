@@ -119,10 +119,10 @@ pub fn apply(ctx: &Context) {
     v.window_fill = CHROME_BG;
     v.extreme_bg_color = EXTREME;
     v.faint_bg_color = Color32::from_gray(16);
-    v.window_stroke = Stroke::new(1.0, HAIRLINE);
+    v.window_stroke = Stroke::new(1.0_f32, HAIRLINE);
     // Selection reads as a grease-pencil outline, not a brand tint.
     v.selection.bg_fill = Color32::from_gray(70);
-    v.selection.stroke = Stroke::new(1.0, Color32::from_gray(200));
+    v.selection.stroke = Stroke::new(1.0_f32, Color32::from_gray(200));
     // Links stay in the monochrome language — no lone default blue in the chrome.
     v.hyperlink_color = TEXT_REST;
 
@@ -191,28 +191,28 @@ fn widget_ramp(v: &mut Visuals) {
 
     w.noninteractive.bg_fill = CHROME_BG;
     w.noninteractive.weak_bg_fill = CHROME_BG;
-    w.noninteractive.bg_stroke = Stroke::new(1.0, HAIRLINE);
-    w.noninteractive.fg_stroke = Stroke::new(1.0, TEXT_DIM);
+    w.noninteractive.bg_stroke = Stroke::new(1.0_f32, HAIRLINE);
+    w.noninteractive.fg_stroke = Stroke::new(1.0_f32, TEXT_DIM);
 
     w.inactive.bg_fill = BTN_REST;
     w.inactive.weak_bg_fill = BTN_REST;
     w.inactive.bg_stroke = Stroke::NONE;
-    w.inactive.fg_stroke = Stroke::new(1.0, TEXT_REST);
+    w.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_REST);
 
     w.hovered.bg_fill = BTN_HOVER;
     w.hovered.weak_bg_fill = BTN_HOVER;
-    w.hovered.bg_stroke = Stroke::new(1.0, Color32::from_gray(60));
-    w.hovered.fg_stroke = Stroke::new(1.0, TEXT_HOVER);
+    w.hovered.bg_stroke = Stroke::new(1.0_f32, Color32::from_gray(60));
+    w.hovered.fg_stroke = Stroke::new(1.0_f32, TEXT_HOVER);
 
     w.active.bg_fill = BTN_ACTIVE;
     w.active.weak_bg_fill = BTN_ACTIVE;
-    w.active.bg_stroke = Stroke::new(1.0, Color32::from_gray(74));
-    w.active.fg_stroke = Stroke::new(1.0, Color32::from_gray(245));
+    w.active.bg_stroke = Stroke::new(1.0_f32, Color32::from_gray(74));
+    w.active.fg_stroke = Stroke::new(1.0_f32, Color32::from_gray(245));
 
     w.open.bg_fill = BTN_OPEN;
     w.open.weak_bg_fill = BTN_OPEN;
-    w.open.bg_stroke = Stroke::new(1.0, Color32::from_gray(60));
-    w.open.fg_stroke = Stroke::new(1.0, TEXT_HOVER);
+    w.open.bg_stroke = Stroke::new(1.0_f32, Color32::from_gray(60));
+    w.open.fg_stroke = Stroke::new(1.0_f32, TEXT_HOVER);
 }
 
 fn squareify(v: &mut Visuals) {

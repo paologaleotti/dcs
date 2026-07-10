@@ -877,7 +877,7 @@ impl DcsApp {
                             let delete_btn = egui::Button::new(
                                 RichText::new("Delete").color(theme::VERDICT_REJECT),
                             )
-                            .stroke(egui::Stroke::new(1.0, theme::VERDICT_REJECT));
+                            .stroke(egui::Stroke::new(1.0_f32, theme::VERDICT_REJECT));
                             if ui
                                 .add_sized([90.0, 26.0], delete_btn)
                                 .on_hover_text("Delete this tag and remove it from every photo")
