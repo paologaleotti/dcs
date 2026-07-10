@@ -14,6 +14,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
+use time::OffsetDateTime;
 
 use crate::crops::CropEdit;
 use crate::photo::{Orientation, Photo, PhotoId};
@@ -98,6 +99,11 @@ pub struct ExportItem<'a> {
     /// The photo's committed crop, if any. When set, its JPEG op is a
     /// `RenderCrop` rather than a plain copy.
     pub crop: Option<CropEdit>,
+    /// The photo's zone-attributed capture instant (display-zone wall-clock),
+    /// the same value grouping and sort bucket on. Drives the `{date}`/`{time}`
+    /// tokens so a file's name can never disagree with its `{group}` folder.
+    /// `None` when the photo is undated.
+    pub instant: Option<OffsetDateTime>,
 }
 
 /// How the executor materializes one op. `Copy` is the byte-for-byte atomic
@@ -490,7 +496,7 @@ fn place(
         Collision::Skip => None,
         Collision::Rename => {
             // Cascade `-1`, `-2`, … until a free name is found.
-            for n in 1.. {
+            for n in 1u64.. {
                 let candidate = folder.join(join_name(&format!("{stem}-{n}"), ext));
                 if claimed.insert(collision_key(&candidate)) {
                     return Some(candidate);
@@ -610,11 +616,11 @@ fn expand_token(token: &str, item: &ExportItem, seq: usize) -> String {
         "group" => item.group_title.unwrap_or("Ungrouped").to_string(),
         "tag" => item.primary_tag.unwrap_or("untagged").to_string(),
         "seq" => format!("{:04}", seq + 1),
-        "date" => match item.photo.captured_at {
+        "date" => match item.instant {
             Some(dt) => format!("{:04}{:02}{:02}", dt.year(), u8::from(dt.month()), dt.day()),
             None => "nodate".to_string(),
         },
-        "time" => match item.photo.captured_at {
+        "time" => match item.instant {
             Some(dt) => format!("{:02}{:02}{:02}", dt.hour(), dt.minute(), dt.second()),
             None => "000000".to_string(),
         },

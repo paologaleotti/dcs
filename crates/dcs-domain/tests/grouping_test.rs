@@ -212,6 +212,48 @@ fn smart_day_night_spans_midnight_into_one_group() {
 }
 
 #[test]
+fn smart_day_night_merges_the_whole_pre_dawn_window_into_the_prior_night() {
+    // Every pre-5am frame rolls to the previous calendar day, so a late-evening
+    // shot and the widest pre-dawn frames (up to 04:xx of the next calendar day)
+    // collapse into one Night group. This midnight-spanning merge is intended:
+    // a single night's session is one bucket regardless of the clock rollover.
+    let pool = pair([
+        at("a/evening.JPG", Some(datetime!(2025-05-11 22:15:00))),
+        at("a/after_midnight.JPG", Some(datetime!(2025-05-12 01:00:00))),
+        at("a/pre_dawn.JPG", Some(datetime!(2025-05-12 04:45:00))),
+    ]);
+    let groups = group(
+        pool.photos(),
+        Axis::Time(TimeGranularity::SmartDay),
+        utc(),
+        utc(),
+        Sort::default(),
+    );
+    assert_eq!(groups.len(), 1, "the whole night is one session");
+    assert_eq!(groups[0].title, "Night · 11/05/25");
+    assert_eq!(
+        names(&pool, &groups[0].members),
+        ["evening.JPG", "after_midnight.JPG", "pre_dawn.JPG"]
+    );
+}
+
+#[test]
+fn smart_day_lone_pre_dawn_frame_anchors_to_the_previous_day() {
+    // A pre-5am frame with no evening company still rolls back a day: its Night
+    // belongs to the calendar day that just ended, not the one that just began.
+    let pool = pair([at("a/dawn.JPG", Some(datetime!(2025-05-12 03:00:00)))]);
+    let groups = group(
+        pool.photos(),
+        Axis::Time(TimeGranularity::SmartDay),
+        utc(),
+        utc(),
+        Sort::default(),
+    );
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].title, "Night · 11/05/25");
+}
+
+#[test]
 fn hour_groups_split_by_clock_hour() {
     let pool = pair([
         at("a/h14a.JPG", Some(datetime!(2025-05-11 14:10:00))),

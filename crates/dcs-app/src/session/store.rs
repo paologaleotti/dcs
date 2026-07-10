@@ -330,6 +330,21 @@ impl Session {
             .iter()
             .map(|&i| self.primary_tag_name(photos[i].id))
             .collect();
+        let camera = self.resolve_camera_zone();
+        let display = self.resolve_display_zone();
+        let instants: Vec<Option<time::OffsetDateTime>> = indices
+            .iter()
+            .map(|&i| {
+                photos[i].captured_at.map(|naive| {
+                    dcs_domain::timezone::attributed_instant(
+                        naive,
+                        photos[i].captured_offset,
+                        camera,
+                        display,
+                    )
+                })
+            })
+            .collect();
         let sidecar_lists: Vec<Vec<PathBuf>> = if request.sidecars {
             indices
                 .iter()
@@ -347,6 +362,7 @@ impl Session {
                 primary_tag: primary_tags[k].as_deref(),
                 sidecars: &sidecar_lists[k],
                 crop: self.crops.crop_of(photos[i].id),
+                instant: instants[k],
             })
             .collect();
         let root = self.root.as_deref().unwrap_or(Path::new(""));

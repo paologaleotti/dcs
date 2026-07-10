@@ -444,10 +444,8 @@ fn paint_rotated_image(ui: &Ui, tex: &TexRef, center: Pos2, scale: f32, angle_de
     let (hw, hh) = (tex.size.x * 0.5 * scale, tex.size.y * 0.5 * scale);
     // Corner offsets (TL, TR, BR, BL) before rotation.
     let corners = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)];
-    let rotated: Vec<Pos2> = corners
-        .iter()
-        .map(|&(x, y)| Pos2::new(center.x + x * cos - y * sin, center.y + x * sin + y * cos))
-        .collect();
+    let rotated =
+        corners.map(|(x, y)| Pos2::new(center.x + x * cos - y * sin, center.y + x * sin + y * cos));
     let uv = [
         Pos2::new(0.0, 0.0),
         Pos2::new(1.0, 0.0),

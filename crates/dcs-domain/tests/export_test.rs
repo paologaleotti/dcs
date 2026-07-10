@@ -55,6 +55,7 @@ fn items<'a>(photos: &'a [Photo]) -> Vec<ExportItem<'a>> {
             primary_tag: None,
             sidecars: &[],
             crop: None,
+            instant: p.captured_at.map(|dt| dt.assume_utc()),
         })
         .collect()
 }
@@ -259,6 +260,7 @@ fn group_as_folders_sanitizes_the_group_title() {
         primary_tag: None,
         sidecars: &[],
         crop: None,
+        instant: None,
     };
     let req = request(
         FileSelection::Jpeg,
@@ -320,6 +322,32 @@ fn template_expands_with_split_layout_and_keeps_the_source_extension() {
 }
 
 #[test]
+fn date_token_reads_the_attributed_instant_not_naive_exif() {
+    // A photo shot at 23:30 whose zone-attributed instant rolls to the next
+    // calendar day: `{date}` must follow the attributed instant (what grouping
+    // buckets on), never the naive EXIF wall-clock, or the filename and its
+    // `{group}` folder would disagree.
+    let p = photo_at(
+        1,
+        Some("/src/a.JPG"),
+        None,
+        Some(datetime!(2025 - 05 - 11 23:30:00)),
+    );
+    let item = ExportItem {
+        photo: &p,
+        group_title: None,
+        primary_tag: None,
+        sidecars: &[],
+        crop: None,
+        instant: Some(datetime!(2025 - 05 - 12 01:30:00 UTC)),
+    };
+    let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
+    req.template = Some(NameTemplate("{date}_{time}_{name}".to_string()));
+    let plan = plan_export(&[item], Path::new("/src"), &req).unwrap();
+    assert_eq!(plan.ops[0].dest, dest(&["20250512_013000_a.JPG"]));
+}
+
+#[test]
 fn template_collisions_cascade_too() {
     // Two photos whose template output is identical → rename cascade.
     let photos = [
@@ -376,6 +404,7 @@ fn group_token_expands_and_falls_back_when_ungrouped() {
         primary_tag: None,
         sidecars: &[],
         crop: None,
+        instant: None,
     };
     let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
     req.template = Some(NameTemplate("{group}_{name}".to_string()));
@@ -398,6 +427,7 @@ fn tag_token_expands_and_falls_back_when_untagged() {
         primary_tag: Some("temple"),
         sidecars: &[],
         crop: None,
+        instant: None,
     };
     let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
     req.template = Some(NameTemplate("{tag}_{name}".to_string()));
@@ -424,6 +454,7 @@ fn sidecars_ride_into_the_primary_folder_when_opted_in() {
         primary_tag: None,
         sidecars: std::slice::from_ref(&xmp),
         crop: None,
+        instant: None,
     };
     let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
     req.sidecars = true;
@@ -446,6 +477,7 @@ fn sidecars_follow_the_template_rename_and_are_off_by_default() {
         primary_tag: None,
         sidecars: std::slice::from_ref(&xmp),
         crop: None,
+        instant: None,
     };
     // Off by default: the sidecar is ignored.
     let off = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
@@ -481,6 +513,7 @@ fn a_skipped_photo_leaves_no_orphan_sidecar() {
             primary_tag: None,
             sidecars: std::slice::from_ref(&a_xmp),
             crop: None,
+            instant: None,
         },
         ExportItem {
             photo: &dropped,
@@ -488,6 +521,7 @@ fn a_skipped_photo_leaves_no_orphan_sidecar() {
             primary_tag: None,
             sidecars: std::slice::from_ref(&b_xmp),
             crop: None,
+            instant: None,
         },
     ];
     let mut req = request(FileSelection::Raw, Layout::Together, Collision::Rename);
@@ -516,6 +550,7 @@ fn sidecar_names_cascade_on_collision() {
             primary_tag: None,
             sidecars: std::slice::from_ref(&x1),
             crop: None,
+            instant: None,
         },
         ExportItem {
             photo: &p2,
@@ -523,6 +558,7 @@ fn sidecar_names_cascade_on_collision() {
             primary_tag: None,
             sidecars: std::slice::from_ref(&x2),
             crop: None,
+            instant: None,
         },
     ];
     let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
@@ -549,6 +585,7 @@ fn sidecar_follows_its_photos_collision_rename_not_the_original_stem() {
             primary_tag: None,
             sidecars: &[],
             crop: None,
+            instant: None,
         },
         ExportItem {
             photo: &p2,
@@ -556,6 +593,7 @@ fn sidecar_follows_its_photos_collision_rename_not_the_original_stem() {
             primary_tag: None,
             sidecars: std::slice::from_ref(&xmp),
             crop: None,
+            instant: None,
         },
     ];
     let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
@@ -584,6 +622,7 @@ fn collision_skipped_photo_ships_no_sidecar() {
             primary_tag: None,
             sidecars: &[],
             crop: None,
+            instant: None,
         },
         ExportItem {
             photo: &p2,
@@ -591,6 +630,7 @@ fn collision_skipped_photo_ships_no_sidecar() {
             primary_tag: None,
             sidecars: std::slice::from_ref(&xmp),
             crop: None,
+            instant: None,
         },
     ];
     let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Skip);
@@ -617,6 +657,7 @@ fn sidecar_follows_template_and_collision_cascade_together() {
             primary_tag: None,
             sidecars: std::slice::from_ref(&x1),
             crop: None,
+            instant: None,
         },
         ExportItem {
             photo: &p2,
@@ -624,6 +665,7 @@ fn sidecar_follows_template_and_collision_cascade_together() {
             primary_tag: None,
             sidecars: std::slice::from_ref(&x2),
             crop: None,
+            instant: None,
         },
     ];
     let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
@@ -648,6 +690,7 @@ fn sidecar_rides_into_the_split_jpeg_folder() {
         primary_tag: None,
         sidecars: std::slice::from_ref(&xmp),
         crop: None,
+        instant: None,
     };
     let mut req = request(FileSelection::Both, Layout::SplitJpegRaw, Collision::Rename);
     req.sidecars = true;
@@ -729,6 +772,7 @@ fn cropped_item<'a>(photo: &'a Photo, edit: CropEdit) -> ExportItem<'a> {
         primary_tag: None,
         sidecars: &[],
         crop: Some(edit),
+        instant: None,
     }
 }
 
@@ -931,6 +975,7 @@ fn both_sidecar_naming_conventions_survive_the_placed_stem_mapping() {
         primary_tag: None,
         sidecars: &sidecars,
         crop: None,
+        instant: None,
     };
     let mut req = request(FileSelection::Jpeg, Layout::Together, Collision::Rename);
     req.sidecars = true;
@@ -955,6 +1000,7 @@ fn both_sidecar_naming_conventions_survive_the_placed_stem_mapping() {
             primary_tag: None,
             sidecars: &[],
             crop: None,
+            instant: None,
         },
         ExportItem {
             photo: &p2,
@@ -962,6 +1008,7 @@ fn both_sidecar_naming_conventions_survive_the_placed_stem_mapping() {
             primary_tag: None,
             sidecars: &side2,
             crop: None,
+            instant: None,
         },
     ];
     let plan = plan_export(&items, Path::new("/src"), &req).unwrap();
@@ -1016,6 +1063,7 @@ fn required_bytes_charges_a_shared_source_once_per_op() {
             angle_deg: 0.0,
             rect: NormRect::centered(0.5, 0.5),
         }),
+        instant: None,
     }];
     let plan = plan_export(&it, Path::new("/src"), &req).unwrap();
     assert_eq!(plan.ops.len(), 2, "render + originals copy");
