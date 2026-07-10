@@ -11,6 +11,11 @@ use std::path::Path;
 /// `path` must exist (the chosen destination folder); an error surfaces as an
 /// unknown-space state in the dialog rather than a wrong number.
 pub fn available_space(path: &Path) -> io::Result<u64> {
+    // fs2's Windows backend resolves the volume for any path under a mounted
+    // drive, so a missing directory would report the drive's free space rather
+    // than error. Stat first so a nonexistent destination fails on every
+    // platform, matching the documented must-exist contract.
+    fs::metadata(path)?;
     fs2::available_space(path)
 }
 
