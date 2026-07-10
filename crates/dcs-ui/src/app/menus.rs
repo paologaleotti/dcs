@@ -14,7 +14,7 @@ impl DcsApp {
                     .fill(theme::CHROME_BG)
                     .inner_margin(theme::panel_margin()),
             )
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 // Center every item on the row's vertical axis so the small section
                 // labels line up with the taller chips.
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
@@ -210,7 +210,7 @@ impl DcsApp {
         // Menu items mirror the registry: each just names an `AppAction`;
         // the selected one dispatches through the same path as keys and palette.
         let mut clicked: Option<AppAction> = None;
-        egui::Panel::top("menu").show_inside(ui, |ui| {
+        egui::Panel::top("menu").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Open Project…").clicked() {

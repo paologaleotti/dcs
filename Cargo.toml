@@ -35,43 +35,43 @@ kamadak-exif = "0.6"
 rayon = "1"
 walkdir = "2"
 blake3 = "1"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 crossbeam-channel = "0.5"
 # Cross-platform free-disk-space query (statvfs / GetDiskFreeSpaceExW) for the
 # export dialog's space check (dcs-io only). One function, no feature flags.
 fs2 = "0.4"
 # Local CLIP-style embedding inference for AI search (dcs-io only). Pure Rust,
 # no C deps — keeps the binary small and cross-platform trivial.
-candle-core = "0.10"
-candle-nn = "0.10"
-candle-transformers = "0.10"
+candle-core = "0.11"
+candle-nn = "0.11"
+candle-transformers = "0.11"
 # SigLIP uses a SentencePiece tokenizer (not CLIP BPE); load tokenizer.json with
 # the HF tokenizers crate. default-features off avoids the http/onig pulls.
 tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 # Build-time only (dcs-io build.rs): fetch (rustls TLS, no OpenSSL C dep), verify,
 # and fp16-convert the model so it can be baked into the binary.
-ureq = "2"
-sha2 = "0.10"
-safetensors = "0.7"
+ureq = "3"
+sha2 = "0.11"
+safetensors = "0.8"
 half = "2"
 # Build-time only (dcs-ui build.rs, Windows): embed assets/icon.ico into the .exe
 # so Explorer, the taskbar, and the installer shortcut show the app icon.
 winresource = "0.1"
-rfd = "0.15"
+rfd = "0.17"
 # PDF generation for the contact-sheet renderer (dcs-io only). Pure Rust, no C
 # deps; ships the standard-14 PDF fonts (Helvetica) so no font file is bundled.
 # default-features off drops the `html` layout engine (kuchiki/fontconfig/azul)
 # we don't use. `images` enables image XObjects; `jpeg` lets embedded thumbnails
 # use DCTDecode (JPEG) so a whole-roll sheet is a few MB, not hundreds.
-printpdf = { version = "0.9", default-features = false, features = [
+printpdf = { version = "0.10", default-features = false, features = [
     "images",
     "jpeg",
 ] }
-egui = "0.34.3"
+egui = "0.35"
 # wgpu backend → Metal on macOS, Vulkan/DX12 elsewhere. Unlike the glow
 # (OpenGL) backend, Metal drives ProMotion (120 Hz); Apple caps GL surfaces
 # at 60. The grid's scroll smoothness rides on this.
-eframe = { version = "0.34.3", default-features = false, features = [
+eframe = { version = "0.35", default-features = false, features = [
     "default_fonts",
     "wgpu",
     "wayland",

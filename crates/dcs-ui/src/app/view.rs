@@ -43,7 +43,7 @@ impl DcsApp {
             save_state
         );
         let import = self.session.import_progress();
-        let bar = egui::Panel::bottom("status").show_inside(ui, |ui| {
+        let bar = egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(text).font(theme::data()));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -97,7 +97,7 @@ impl DcsApp {
                         bottom: 8,
                     }),
             )
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 let top = ui.max_rect();
                 ui.painter().hline(
                     top.x_range(),
@@ -231,7 +231,7 @@ impl DcsApp {
                     // lines up under it.
                     .inner_margin(theme::panel_margin()),
             )
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 // Hold the grid back until the scan has counted and grouped the
                 // whole folder, so cells appear in their final places and don't
                 // reflow as photos stream in. Thumbnails keep decoding in the

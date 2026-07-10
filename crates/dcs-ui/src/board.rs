@@ -169,7 +169,7 @@ fn left_panel(
                     .fill(theme::SHEET_BG)
                     .inner_margin(egui::Margin::same(4)),
             )
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     if ui
                         .small_button("‹")
@@ -209,7 +209,7 @@ fn left_panel(
                     .fill(theme::CHROME_BG)
                     .inner_margin(egui::Margin::same(4)),
             )
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 if ui
                     .small_button("›")
                     .on_hover_text("Show the photo grid")

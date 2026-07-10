@@ -13,7 +13,7 @@ impl DcsApp {
         if !self.session.is_read_only() {
             return;
         }
-        egui::Panel::top("readonly").show_inside(ui, |ui| {
+        egui::Panel::top("readonly").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if let Some(err) = self.session.load_error() {
                     ui.label(

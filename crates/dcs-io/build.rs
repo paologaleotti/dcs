@@ -111,7 +111,7 @@ fn download(name: &str, dest: &Path) {
     let resp = ureq::get(&url)
         .call()
         .unwrap_or_else(|e| panic!("download {name}: {e}"));
-    let mut reader = resp.into_reader();
+    let mut reader = resp.into_body().into_reader();
     let tmp = dest.with_extension("part");
     let mut file = std::fs::File::create(&tmp).expect("create temp file");
     std::io::copy(&mut reader, &mut file).expect("write download");
