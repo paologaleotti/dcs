@@ -913,7 +913,7 @@ dependencies = [
 
 [[package]]
 name = "dcs-app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crossbeam-channel",
  "dcs-domain",
@@ -928,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "dcs-domain"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "fuzzy-matcher",
  "serde",
@@ -940,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "dcs-io"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "candle-core",
@@ -969,7 +969,7 @@ dependencies = [
 
 [[package]]
 name = "dcs-ui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dcs-app",
  "dcs-domain",

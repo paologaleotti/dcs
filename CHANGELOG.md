@@ -2,6 +2,35 @@
 
 All notable changes to dcs are documented here.
 
+## v0.3.0
+
+### Added
+
+- **Crash screen** — an unexpected main-thread panic is now caught and shown on a
+  dedicated screen with a copiable report, instead of the window vanishing. The
+  last good autosave is left untouched so a crash can't corrupt the project.
+- **Disk-space check in export** — the export dialog shows the space the export
+  will need against the free space on the destination drive.
+
+### Changed
+
+- UI refinements across the app.
+
+### Fixed
+
+- Photos now sort by their zone-anchored capture instant rather than the naive
+  EXIF wall-clock, so two cameras in different zones interleave by true time.
+- Export `{date}`/`{time}` name-template tokens derive from the same
+  zone-attributed instant grouping uses, so a file's name can no longer disagree
+  with its `{group}` folder near a day boundary.
+- Lateral crop handles resize correctly when a locked aspect ratio is active.
+- Disabled egui's native (browser-style) zoom, which fought the gallery's own
+  zoom.
+- `available_space` now errors on a nonexistent path on Windows instead of
+  reporting the whole drive's free space.
+- Builds on rustc 1.97 (ambiguous `f32` stroke literals annotated).
+- Updated all dependencies to their latest versions.
+
 ## v0.2.0
 
 ### Added
