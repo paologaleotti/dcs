@@ -31,19 +31,34 @@ fn main() -> eframe::Result {
         .with_title("dcs - digital contact sheet")
         // Wayland/X11 associate a window with its installed `.desktop` entry (and
         // thus its taskbar/dock icon) by app_id. It must equal the desktop file
-        // basename, which cargo-packager derives from the packager `identifier`.
-        // If they drift, Linux shows a generic icon despite the icon being
-        // installed.
-        .with_app_id("io.github.paologaleotti.dcs");
+        // basename, which cargo-packager 0.11 derives from the *binary name*
+        // (`dcs.desktop`, `Icon=dcs`) — not the packager `identifier`. If they
+        // drift, Linux shows a generic icon despite the icon being installed.
+        .with_app_id("dcs");
 
-    // Runtime window/dock icon, on every platform — without it macOS dev runs and
-    // any unbundled launch fall back to a generic placeholder. The PNG carries the
-    // same padded squircle the `.icns` does (one shared SVG master), so the
-    // runtime dock tile matches the bundle icon's size and shape. A bad embed is a
-    // build-time bug, so we degrade to the platform default rather than panic.
-    if let Ok(icon) =
-        eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon-256.png"))
-    {
+    // Runtime window/dock icon for Windows, Linux, and unbundled (cargo run)
+    // macOS launches. A bundled macOS app must keep eframe away from the Dock
+    // icon: eframe force-sets one (ours, or its egui-logo fallback) via
+    // `NSApplication.applicationIconImage`, replacing the bundle's
+    // `.icns`/`Assets.car` tile and its liquid-glass treatment while the app
+    // runs. There is no opt-out, but eframe validates the pixel buffer before
+    // touching AppKit — a deliberately invalid IconData (empty buffer, claimed
+    // 1x1) makes its setter bail out and leave the Dock tile to the bundle.
+    let bundled_macos = cfg!(target_os = "macos")
+        && std::env::current_exe()
+            .is_ok_and(|exe| exe.to_string_lossy().contains(".app/Contents/MacOS/"));
+    let icon = if bundled_macos {
+        Some(egui::IconData {
+            rgba: Vec::new(),
+            width: 1,
+            height: 1,
+        })
+    } else {
+        // A bad embed is a build-time bug; degrade to the platform default
+        // rather than panic.
+        eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon-256.png")).ok()
+    };
+    if let Some(icon) = icon {
         viewport = viewport.with_icon(icon);
     }
 

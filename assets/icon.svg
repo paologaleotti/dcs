@@ -25,10 +25,11 @@
     </linearGradient>
   </defs>
 
-  <!-- ~10% macOS safe-area padding: the squircle is scaled to ~80% of the
-       canvas and centered, so the runtime dock tile (drawn edge-to-edge) sits at
-       the same size as the bundled .icns instead of reading oversized. -->
-  <g clip-path="url(#squircle)" transform="translate(71.68 71.68) scale(0.86)">
+  <!-- Full-bleed: the squircle path spans 40..984, so shift and scale by
+       1024/944 to map it onto the whole canvas. Platform padding (macOS .icns
+       safe-area) is applied at render time by scripts/gen-icons.sh, not baked
+       into the art. assets/icon.icon shares this geometry. -->
+  <g clip-path="url(#squircle)" transform="scale(1.0847458) translate(-40 -40)">
     <rect width="1024" height="1024" fill="url(#bg)"/>
 
     <!-- 2x2 contact-sheet frames; the top-right is the marked select -->

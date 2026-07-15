@@ -17,14 +17,28 @@ identifier = "io.github.paologaleotti.dcs"
 category = "Photography"
 authors = ["Paolo Galeotti <paologaleotti2002@gmail.com>"]
 # Paths resolve relative to this manifest. cargo-packager selects per platform:
-# .icns (macOS), .ico (Windows), .png (Linux).
-icons = ["../../assets/icon.icns", "../../assets/icon.ico", "../../assets/icon.png"]
+# .icns (macOS), .ico (Windows), .png (Linux — one hicolor slot per size).
+icons = [
+    "../../assets/icon.icns",
+    "../../assets/icon.ico",
+    "../../assets/icon.png",
+    "../../assets/linux/icon-*.png",
+]
 # The binary embeds the Apache-2.0 SigLIP weights, so its attribution travels
-# with every package.
-resources = ["../../THIRD_PARTY_NOTICES.md"]
+# with every package. Assets.car is the macOS 26+ liquid-glass Dock icon;
+# `resources` has no per-platform split, so Windows/Linux carry it as small
+# dead weight.
+resources = ["../../THIRD_PARTY_NOTICES.md", "../../assets/Assets.car"]
 
 [package.metadata.packager.macos]
 minimum-system-version = "11.0"
+# Merged into the generated Info.plist: adds CFBundleIconName so macOS 26+
+# resolves the layered icon in Assets.car instead of flattened icon.icns.
+info-plist-path = "../../assets/macos-info.plist"
+
+# Without it the installer/uninstaller exes ship NSIS's stock icon.
+[package.metadata.packager.nsis]
+installer-icon = "../../assets/icon.ico"
 
 # Runtime libraries egui/winit/rfd link against on Linux. AppImage bundles them;
 # the .deb declares them so apt resolves them on install.
