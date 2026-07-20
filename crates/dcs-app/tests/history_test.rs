@@ -255,6 +255,7 @@ fn crop_dispatch_undo_redo_round_trips() {
     let edit = CropEdit {
         angle_deg: 4.0,
         rect: NormRect::centered(0.6, 0.6),
+        ..CropEdit::identity()
     };
     // Set a crop on photo 1.
     let patch = e
@@ -278,6 +279,7 @@ fn setting_the_same_crop_again_is_a_noop() {
     let edit = CropEdit {
         angle_deg: 0.0,
         rect: NormRect::centered(0.5, 0.5),
+        ..CropEdit::identity()
     };
     assert!(
         e.run(Command::SetCrop(vec![PhotoId(1)], Some(edit)))
@@ -298,6 +300,7 @@ fn crop_dedups_duplicate_photo_ids() {
     let edit = CropEdit {
         angle_deg: 1.0,
         rect: NormRect::centered(0.7, 0.7),
+        ..CropEdit::identity()
     };
     let patch = e
         .run(Command::SetCrop(

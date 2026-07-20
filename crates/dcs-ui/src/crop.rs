@@ -13,7 +13,7 @@
 //! `SetCrop` command when the user applies, and discarded on cancel.
 
 use dcs_app::{CropEdit, NormRect, Session};
-use dcs_domain::crops::{self, MAX_ANGLE_DEG};
+use dcs_domain::crops::{self, AspectMode, MAX_ANGLE_DEG};
 use dcs_domain::photo::PhotoId;
 use egui::{Align2, Color32, FontId, Mesh, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, Vec2};
 
@@ -76,19 +76,6 @@ impl Handle {
     }
 }
 
-/// Aspect-ratio constraint for the crop. `Free` is unconstrained; `Original`
-/// locks to the source image's own ratio; the rest are fixed photo ratios. The
-/// fixed non-square ratios respect the `portrait` flip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AspectMode {
-    Free,
-    Original,
-    Square,
-    ThreeTwo,
-    FourThree,
-    SixteenNine,
-}
-
 /// The live crop-editor state for one photo. Seeded from the photo's committed
 /// crop (or identity) on entry; mutated by the overlay each frame.
 pub struct CropEditState {
@@ -128,10 +115,10 @@ impl CropEditState {
     /// Seed the editor from a photo's committed crop, or the identity edit when
     /// uncropped.
     pub fn new(focus: usize, photo: PhotoId, committed: Option<CropEdit>) -> Self {
-        let edit = committed.unwrap_or_else(CropEdit::identity);
         // A fresh crop defaults to the original aspect (and snaps the box to it);
-        // an existing crop keeps its stored free-form rect so it isn't distorted.
+        // an existing crop restores its committed aspect lock and rect verbatim.
         let fresh = committed.is_none();
+        let edit = committed.unwrap_or_else(CropEdit::identity);
         CropEditState {
             focus,
             photo,
@@ -140,20 +127,23 @@ impl CropEditState {
             aspect: if fresh {
                 AspectMode::Original
             } else {
-                AspectMode::Free
+                edit.aspect
             },
-            portrait: false,
+            portrait: edit.portrait,
             center_focus: true,
             drag: None,
             refit: fresh,
         }
     }
 
-    /// The working edit as a domain [`CropEdit`] (sanitized).
+    /// The working edit as a domain [`CropEdit`] (sanitized), carrying the aspect
+    /// lock so it survives being committed and re-opened.
     pub fn to_edit(&self) -> CropEdit {
         CropEdit {
             angle_deg: self.angle_deg,
             rect: self.rect,
+            aspect: self.aspect,
+            portrait: self.portrait,
         }
         .sanitized()
     }
@@ -165,31 +155,15 @@ impl CropEditState {
     }
 }
 
-impl AspectMode {
-    /// The pixel ratio (width / height) this mode imposes given the source
-    /// aspect `src_ratio`, or `None` for free-form. Honors the portrait flip for
-    /// the fixed non-square ratios.
-    fn ratio(self, src_ratio: f32, portrait: bool) -> Option<f32> {
-        let base = match self {
-            AspectMode::Free => return None,
-            AspectMode::Original => return Some(src_ratio),
-            AspectMode::Square => return Some(1.0),
-            AspectMode::ThreeTwo => 3.0 / 2.0,
-            AspectMode::FourThree => 4.0 / 3.0,
-            AspectMode::SixteenNine => 16.0 / 9.0,
-        };
-        Some(if portrait { 1.0 / base } else { base })
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            AspectMode::Free => "Free",
-            AspectMode::Original => "Original",
-            AspectMode::Square => "1:1",
-            AspectMode::ThreeTwo => "3:2",
-            AspectMode::FourThree => "4:3",
-            AspectMode::SixteenNine => "16:9",
-        }
+/// The toolbar label for an aspect preset.
+fn aspect_label(mode: AspectMode) -> &'static str {
+    match mode {
+        AspectMode::Free => "Free",
+        AspectMode::Original => "Original",
+        AspectMode::Square => "1:1",
+        AspectMode::ThreeTwo => "3:2",
+        AspectMode::FourThree => "4:3",
+        AspectMode::SixteenNine => "16:9",
     }
 }
 
@@ -269,7 +243,7 @@ fn paint_toolbar(ui: &mut Ui, rect: Rect, state: &mut CropEditState, resp: &mut 
             AspectMode::SixteenNine,
         ] {
             let selected = state.aspect == mode;
-            if ui.selectable_label(selected, mode.label()).clicked() {
+            if ui.selectable_label(selected, aspect_label(mode)).clicked() {
                 state.aspect = mode;
                 // Switching to a locked ratio snaps the box to it once; Free
                 // leaves the current box as-is.

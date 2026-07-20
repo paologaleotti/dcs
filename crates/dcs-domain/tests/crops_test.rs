@@ -3,8 +3,8 @@
 //! invariant. Zero mocks — the module is pure math.
 
 use dcs_domain::crops::{
-    CropEdit, MAX_ANGLE_DEG, NormRect, SourceSampler, bounding_box, crop_quad_in_source,
-    fit_aspect, is_within_source, max_inset_rect, plan_crop,
+    AspectMode, CropEdit, MAX_ANGLE_DEG, NormRect, SourceSampler, bounding_box,
+    crop_quad_in_source, fit_aspect, is_within_source, max_inset_rect, plan_crop,
 };
 
 const EPS: f32 = 1e-3;
@@ -27,6 +27,7 @@ fn a_real_crop_is_not_a_noop() {
         !CropEdit {
             angle_deg: 0.0,
             rect: NormRect::centered(0.5, 0.5),
+            ..CropEdit::identity()
         }
         .is_noop()
     );
@@ -34,6 +35,7 @@ fn a_real_crop_is_not_a_noop() {
         !CropEdit {
             angle_deg: 3.0,
             rect: NormRect::FULL,
+            ..CropEdit::identity()
         }
         .is_noop()
     );
@@ -72,6 +74,7 @@ fn plan_crop_half_rect_yields_half_output_centered() {
     let e = CropEdit {
         angle_deg: 0.0,
         rect: NormRect::centered(0.5, 0.5),
+        ..CropEdit::identity()
     };
     let r = plan_crop(4000, 3000, &e);
     assert_eq!(r.out_w, 2000);
@@ -86,6 +89,7 @@ fn plan_crop_never_exceeds_the_bounding_box() {
         let e = CropEdit {
             angle_deg: angle,
             rect: NormRect::FULL,
+            ..CropEdit::identity()
         };
         let r = plan_crop(4000, 3000, &e);
         assert!(r.crop_x + r.out_w <= r.bbox_w, "x overflow at {angle}");
@@ -104,6 +108,7 @@ fn degenerate_rect_clamps_to_one_pixel() {
             w: 0.0,
             h: 0.0,
         },
+        ..CropEdit::identity()
     };
     let r = plan_crop(100, 100, &e);
     assert_eq!(r.out_w, 1);
@@ -135,6 +140,7 @@ fn max_inset_is_centered_and_inside_the_source_for_every_angle() {
         let e = CropEdit {
             angle_deg: angle,
             rect: inset,
+            ..CropEdit::identity()
         };
         assert!(
             is_within_source(4000, 3000, &e),
@@ -149,6 +155,7 @@ fn a_crop_larger_than_the_inset_escapes_the_source() {
     let e = CropEdit {
         angle_deg: 20.0,
         rect: NormRect::FULL,
+        ..CropEdit::identity()
     };
     assert!(!is_within_source(4000, 3000, &e));
 }
@@ -192,6 +199,7 @@ fn source_sampler_is_the_quad_transform() {
     let edit = CropEdit {
         angle_deg: 6.0,
         rect: NormRect::centered(0.7, 0.55),
+        ..CropEdit::identity()
     };
     let s = SourceSampler::new(6000, 4000, edit.angle_deg);
     let quad = crop_quad_in_source(6000, 4000, &edit);
@@ -239,6 +247,7 @@ fn sanitized_clamps_angle_and_rect() {
             w: 5.0,
             h: 5.0,
         },
+        ..CropEdit::identity()
     }
     .sanitized();
     assert_eq!(e.angle_deg, MAX_ANGLE_DEG);
@@ -570,12 +579,14 @@ fn cache_token_is_stable_and_distinguishes_edits() {
     let a = CropEdit {
         angle_deg: 2.0,
         rect: NormRect::centered(0.8, 0.8),
+        ..CropEdit::identity()
     };
     // Same edit → same token (stable; the disk cache relies on this across runs).
     assert_eq!(a.cache_token(), a.cache_token());
     let same = CropEdit {
         angle_deg: 2.0,
         rect: NormRect::centered(0.8, 0.8),
+        ..CropEdit::identity()
     };
     assert_eq!(a.cache_token(), same.cache_token());
     // A different angle or rect → a different token.
@@ -607,6 +618,7 @@ fn plan_crop_clamps_degenerate_edits_to_a_valid_recipe() {
                 let edit = CropEdit {
                     angle_deg: angle,
                     rect: NormRect { x, y: x, w, h: w },
+                    ..CropEdit::identity()
                 };
                 let r = plan_crop(4000, 3000, &edit);
                 assert!(r.bbox_w >= 1 && r.bbox_h >= 1);
@@ -632,6 +644,7 @@ fn sanitized_clamps_degenerate_edits_without_panicking() {
                 let edit = CropEdit {
                     angle_deg: angle,
                     rect: NormRect { x, y: x, w, h: w },
+                    ..CropEdit::identity()
                 };
                 let s = edit.sanitized();
                 assert!(s.angle_deg.is_finite(), "angle finite for {angle}");
@@ -653,4 +666,40 @@ fn fit_aspect_rejects_non_finite_ratio() {
     for ratio in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         assert_eq!(fit_aspect(4000.0, 3000.0, bound, ratio), bound);
     }
+}
+
+/// The aspect lock is owned state: it round-trips through `sanitized` and
+/// through serde, and a pre-aspect JSON edit (no `aspect`/`portrait` keys) loads
+/// as `Free` / landscape. `cache_token` ignores the lock — same pixels, same key.
+#[test]
+fn aspect_lock_is_owned_and_serde_round_trips() {
+    let edit = CropEdit {
+        angle_deg: 3.0,
+        rect: NormRect::centered(0.6, 0.6),
+        aspect: AspectMode::SixteenNine,
+        portrait: true,
+    };
+
+    let s = edit.sanitized();
+    assert_eq!(s.aspect, AspectMode::SixteenNine);
+    assert!(s.portrait);
+
+    let json = serde_json::to_string(&edit).unwrap();
+    let back: CropEdit = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, edit);
+
+    // Legacy project.json predates the aspect keys: they default in.
+    let legacy = r#"{"angle_deg":0.0,"rect":{"x":0.0,"y":0.0,"w":1.0,"h":1.0}}"#;
+    let loaded: CropEdit = serde_json::from_str(legacy).unwrap();
+    assert_eq!(loaded.aspect, AspectMode::Free);
+    assert!(!loaded.portrait);
+
+    // Aspect is not a pixel input, so it must not perturb the cache key.
+    let other = CropEdit {
+        aspect: AspectMode::Square,
+        portrait: false,
+        ..edit
+    };
+    assert_eq!(edit.cache_token(), other.cache_token());
+    assert_ne!(edit, other);
 }

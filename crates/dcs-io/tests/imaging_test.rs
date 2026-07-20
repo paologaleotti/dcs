@@ -185,6 +185,7 @@ fn apply_crop_top_right_quadrant_samples_green() {
             w: 0.5,
             h: 0.5,
         },
+        ..CropEdit::identity()
     };
     let out = apply_crop(&src, &edit, u32::MAX).into_rgba8();
     assert_eq!((out.width(), out.height()), (100, 80));
@@ -216,6 +217,7 @@ fn apply_crop_center_pixel_is_invariant_under_rotation() {
         let edit = CropEdit {
             angle_deg: angle,
             rect: NormRect::centered(0.02, 0.02),
+            ..CropEdit::identity()
         };
         let out = apply_crop(&src, &edit, u32::MAX).into_rgba8();
         // Output exists and is non-empty; center maps near the image center.
@@ -267,6 +269,7 @@ fn cropped_source_dims_are_the_crop_windows_native_pixels() {
     let edit = CropEdit {
         angle_deg: 0.0,
         rect: NormRect::centered(0.3, 0.3),
+        ..CropEdit::identity()
     };
     let thumb = decode_thumbnail(&path, Orientation::Normal, 128, Some(&edit)).expect("decode");
     assert_eq!((thumb.source_width, thumb.source_height), (600, 300));
@@ -282,6 +285,7 @@ fn decode_thumbnail_with_a_crop_does_not_panic_and_stays_within_edge() {
     let edit = CropEdit {
         angle_deg: 3.0,
         rect: NormRect::centered(0.3, 0.3),
+        ..CropEdit::identity()
     };
     let thumb = decode_thumbnail(&path, Orientation::Normal, 256, Some(&edit)).expect("decode");
     assert!(thumb.width.max(thumb.height) <= 256);

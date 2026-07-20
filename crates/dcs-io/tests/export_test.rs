@@ -266,6 +266,7 @@ fn render_crop_writes_a_valid_cropped_jpeg() {
     let edit = CropEdit {
         angle_deg: 0.0,
         rect: NormRect::centered(0.5, 0.5),
+        ..CropEdit::identity()
     };
     let crop_op = ExportOp {
         source: src,
@@ -321,6 +322,7 @@ fn render_crop_never_overwrites_an_existing_dest() {
             edit: CropEdit {
                 angle_deg: 1.0,
                 rect: NormRect::centered(0.8, 0.8),
+                ..CropEdit::identity()
             },
             orientation: Orientation::Normal,
         },

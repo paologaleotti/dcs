@@ -25,6 +25,22 @@ pub struct NormRect {
     pub h: f32,
 }
 
+/// Aspect-ratio constraint the editor locks the crop to. `Free` is
+/// unconstrained; `Original` locks to the source image's own ratio; the rest are
+/// fixed photo ratios. The fixed non-square ratios respect the `portrait` flip.
+/// Owned alongside the crop: the user's chosen lock survives re-entry rather
+/// than being re-guessed from the rect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AspectMode {
+    #[default]
+    Free,
+    Original,
+    Square,
+    ThreeTwo,
+    FourThree,
+    SixteenNine,
+}
+
 /// One photo's crop + straighten. `None` on a photo means uncropped (the
 /// original). Owned state: persisted, undoable, true in every view.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -36,6 +52,31 @@ pub struct CropEdit {
     /// the rotated image's bounding box. Invariant kept by callers: its source
     /// quad lies within the image, so output never has empty corners.
     pub rect: NormRect,
+    /// The aspect lock in force when this edit was committed. Defaults to `Free`
+    /// so pre-aspect project files load without it.
+    #[serde(default)]
+    pub aspect: AspectMode,
+    /// Portrait orientation for the fixed non-square ratios. Ignored by `Free`,
+    /// `Original`, and `Square`.
+    #[serde(default)]
+    pub portrait: bool,
+}
+
+impl AspectMode {
+    /// The pixel ratio (width / height) this mode imposes given the source
+    /// aspect `src_ratio`, or `None` for free-form. Honors the portrait flip for
+    /// the fixed non-square ratios.
+    pub fn ratio(self, src_ratio: f32, portrait: bool) -> Option<f32> {
+        let base = match self {
+            AspectMode::Free => return None,
+            AspectMode::Original => return Some(src_ratio),
+            AspectMode::Square => return Some(1.0),
+            AspectMode::ThreeTwo => 3.0 / 2.0,
+            AspectMode::FourThree => 4.0 / 3.0,
+            AspectMode::SixteenNine => 16.0 / 9.0,
+        };
+        Some(if portrait { 1.0 / base } else { base })
+    }
 }
 
 /// The pixel recipe to produce a cropped+straightened image: rotate the source
@@ -88,6 +129,8 @@ impl CropEdit {
         CropEdit {
             angle_deg: 0.0,
             rect: NormRect::FULL,
+            aspect: AspectMode::Free,
+            portrait: false,
         }
     }
 
@@ -140,6 +183,8 @@ impl CropEdit {
         CropEdit {
             angle_deg,
             rect: NormRect { x, y, w, h },
+            aspect: self.aspect,
+            portrait: self.portrait,
         }
     }
 }

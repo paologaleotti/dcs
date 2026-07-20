@@ -780,6 +780,7 @@ fn an_edit() -> CropEdit {
     CropEdit {
         angle_deg: 2.0,
         rect: NormRect::centered(0.8, 0.8),
+        ..CropEdit::identity()
     }
 }
 
@@ -900,6 +901,7 @@ fn uncropped_originals_count_apart_from_jpeg_count() {
     its[0].crop = Some(CropEdit {
         angle_deg: 0.0,
         rect: NormRect::centered(0.5, 0.5),
+        ..CropEdit::identity()
     });
     let mut req = request(FileSelection::Any, Layout::Together, Collision::Rename);
     req.include_uncropped_originals = true;
@@ -1062,6 +1064,7 @@ fn required_bytes_charges_a_shared_source_once_per_op() {
         crop: Some(CropEdit {
             angle_deg: 0.0,
             rect: NormRect::centered(0.5, 0.5),
+            ..CropEdit::identity()
         }),
         instant: None,
     }];

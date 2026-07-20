@@ -172,6 +172,7 @@ fn crop_patches_round_trip_through_the_log() {
     let edit = CropEdit {
         angle_deg: 3.5,
         rect: NormRect::centered(0.7, 0.6),
+        ..CropEdit::identity()
     };
     let change: CropChange = (PhotoId(9), None, Some(edit));
     let patch = Patch::Crop(vec![change]);

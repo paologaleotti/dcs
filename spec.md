@@ -256,10 +256,19 @@ group/tag (structure) · gallery + crop (judging/finishing).
 ### 2.14 Crop + straighten — owned, non-destructive, stateless renders
 
 Crop is **owned per-photo state**, modelled exactly like verdicts and tags: a
-`CropEdit { angle_deg, rect }` (straighten angle + a normalized crop window over
-the rotated bounding box) lives in `project.json`, is undoable through the one
-timeline (`Command::SetCrop` / `Patch::Crop`, append-only), and is true in every
-view. The original file on disk is **never** touched or deleted.
+`CropEdit { angle_deg, rect, aspect, portrait }` (straighten angle, a normalized
+crop window over the rotated bounding box, and the aspect-ratio lock the editor
+was in) lives in `project.json`, is undoable through the one timeline
+(`Command::SetCrop` / `Patch::Crop`, append-only), and is true in every view. The
+original file on disk is **never** touched or deleted.
+
+The `aspect` lock (`Free / Original / 1:1 / 3:2 / 4:3 / 16:9`) and its `portrait`
+flip are owned intent, not derived: the same rect could have been reached free or
+under a lock, so the choice is ambiguous to recompute and is stored, not guessed.
+It survives re-entering the editor so a locked crop stays locked. Both fields are
+additive with a `Free` / landscape default, so a pre-aspect `project.json` or
+`undo.log` loads unchanged. The lock is not a pixel input — the rendered output
+and its cache key depend only on `angle_deg` + `rect`.
 
 **The crop IS the photo, everywhere.** The grid thumbnail, the gallery frame,
 and the export output all show the cropped framing; the full-frame original is
