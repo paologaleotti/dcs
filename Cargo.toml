@@ -47,7 +47,9 @@ candle-nn = "0.11"
 candle-transformers = "0.11"
 # SigLIP uses a SentencePiece tokenizer (not CLIP BPE); load tokenizer.json with
 # the HF tokenizers crate. default-features off avoids the http/onig pulls.
-tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
+tokenizers = { version = "0.23", default-features = false, features = [
+    "fancy-regex",
+] }
 # Build-time only (dcs-io build.rs): fetch (rustls TLS, no OpenSSL C dep), verify,
 # and fp16-convert the model so it can be baked into the binary.
 ureq = "3"
@@ -58,12 +60,8 @@ half = "2"
 # so Explorer, the taskbar, and the installer shortcut show the app icon.
 winresource = "0.1"
 rfd = "0.17"
-# PDF generation for the contact-sheet renderer (dcs-io only). Pure Rust, no C
-# deps; ships the standard-14 PDF fonts (Helvetica) so no font file is bundled.
-# default-features off drops the `html` layout engine (kuchiki/fontconfig/azul)
-# we don't use. `images` enables image XObjects; `jpeg` lets embedded thumbnails
-# use DCTDecode (JPEG) so a whole-roll sheet is a few MB, not hundreds.
-printpdf = { version = "0.10", default-features = false, features = [
+# PDF generation for the contact-sheet renderer (dcs-io only).
+printpdf = { version = "0.11", default-features = false, features = [
     "images",
     "jpeg",
 ] }
