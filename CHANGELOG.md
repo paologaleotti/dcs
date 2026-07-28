@@ -2,6 +2,20 @@
 
 All notable changes to dcs are documented here.
 
+## v0.3.1
+
+### Fixed
+
+- The crop aspect-ratio lock is now remembered when you leave and re-open the
+  crop editor, instead of silently resetting to unlocked.
+- The app icon renders at its correct size, and the liquid-glass window styling
+  now applies consistently across all platforms.
+
+### Changed
+
+- Updated all dependencies to their latest versions, including the
+  libjpeg-turbo bindings (turbojpeg 1.5.1).
+
 ## v0.3.0
 
 ### Added
