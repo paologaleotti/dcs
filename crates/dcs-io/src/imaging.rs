@@ -331,9 +331,17 @@ pub fn decode_thumbnail(
 /// as an `RgbaImage`. For the export render path, which needs the original
 /// resolution (no thumbnail downscale). `None` if the file can't be decoded.
 pub fn decode_oriented_full(path: &Path, orientation: Orientation) -> Option<RgbaImage> {
-    let img = decode_scaled(path, u32::MAX)
+    let data = std::fs::read(path).ok()?;
+    decode_oriented_full_bytes(&data, orientation)
+}
+
+/// The in-memory variant of [`decode_oriented_full`]. The export render path
+/// uses it so the pixels and the transplanted metadata come from one read of
+/// one file version.
+pub fn decode_oriented_full_bytes(data: &[u8], orientation: Orientation) -> Option<RgbaImage> {
+    let img = decode_scaled_bytes(data, u32::MAX)
         .map(|(img, _)| img)
-        .or_else(|| image::open(path).ok())?;
+        .or_else(|| image::load_from_memory(data).ok())?;
     Some(apply_orientation(img, orientation).into_rgba8())
 }
 
@@ -472,6 +480,12 @@ thread_local! {
 /// without a second file read.
 fn decode_scaled(path: &Path, edge: u32) -> Option<(DynamicImage, (u32, u32))> {
     let data = std::fs::read(path).ok()?;
+    decode_scaled_bytes(&data, edge)
+}
+
+/// The in-memory core of [`decode_scaled`], for callers that already hold the
+/// file bytes and must not read the file a second time.
+fn decode_scaled_bytes(data: &[u8], edge: u32) -> Option<(DynamicImage, (u32, u32))> {
     DECOMPRESSOR.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -479,7 +493,7 @@ fn decode_scaled(path: &Path, edge: u32) -> Option<(DynamicImage, (u32, u32))> {
         }
         let decompressor = slot.as_mut()?;
 
-        let header = decompressor.read_header(&data).ok()?;
+        let header = decompressor.read_header(data).ok()?;
         let source = (header.width as u32, header.height as u32);
         let factor = pick_scaling(header.width, header.height, edge as usize);
         decompressor.set_scaling_factor(factor).ok()?;
@@ -497,7 +511,7 @@ fn decode_scaled(path: &Path, edge: u32) -> Option<(DynamicImage, (u32, u32))> {
             height,
             format: PixelFormat::RGBA,
         };
-        decompressor.decompress(&data, image).ok()?;
+        decompressor.decompress(data, image).ok()?;
         image::RgbaImage::from_raw(width as u32, height as u32, pixels)
             .map(|img| (DynamicImage::ImageRgba8(img), source))
     })

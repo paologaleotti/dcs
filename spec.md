@@ -513,6 +513,21 @@ none of it in `dcs-io` or `dcs-app`. The split:
   is on); the executor only runs the op kind it was handed. RAW never
   renders; a cropped pair renders its JPEG and copies its RAW untouched. See
   §2.14.
+
+  A rendered crop keeps the source's metadata: the executor transplants the
+  EXIF, XMP, ICC-profile, IPTC, and comment segments into the fresh encode
+  (`dcs-io::jpeg_meta`). Facts that describe the old bitstream are corrected
+  in place: orientation resets to 1 in both EXIF and XMP (the render bakes
+  the rotation into the pixels) and the EXIF pixel-dimension tags become the
+  cropped size. The embedded EXIF thumbnail is stripped: it shows the
+  uncropped frame, and a crop made to remove content must remove it from the
+  delivered file. An EXIF block whose orientation cannot be corrected is
+  dropped rather than shipped inconsistent over rotation-baked pixels.
+  Structural segments (JFIF APP0, Adobe APP14, MPF byte offsets) are not
+  copied; they describe the old encode. The source is read once, so pixels and
+  metadata come from the same file version. A source without transplantable
+  metadata exports the bare render; a failed source read fails the op instead
+  of silently delivering a metadata-less file.
 - **`dcs-app` is the thin trigger.** It gathers the dialog state into an
   `ExportRequest`, calls the pure planner to get the live dry-run
   sentence shown in the dialog (so the preview *is* the plan — what you

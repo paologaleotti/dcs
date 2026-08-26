@@ -11,6 +11,7 @@ pub mod diskspace;
 pub mod embedding;
 pub mod export;
 pub mod imaging;
+pub mod jpeg_meta;
 pub mod lock;
 pub mod persistence;
 pub mod print;

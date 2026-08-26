@@ -17,7 +17,7 @@ use crossbeam_channel::{Receiver, unbounded};
 use dcs_domain::crops::CropEdit;
 use dcs_domain::export::{ExportOp, ExportPlan, FileRole, OpKind};
 
-use crate::imaging;
+use crate::{imaging, jpeg_meta};
 
 /// One executor outcome per plan op, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,9 +172,7 @@ fn render_crop_atomic(
     edit: &CropEdit,
     orientation: dcs_domain::photo::Orientation,
 ) -> Result<(), CopyError> {
-    let jpeg = render_crop_jpeg(source, edit, orientation).ok_or_else(|| {
-        CopyError::Io(format!("render {}: decode/encode failed", source.display()))
-    })?;
+    let jpeg = render_crop_jpeg(source, edit, orientation)?;
     let tmp = part_path(dest);
     if let Err(e) = fs::write(&tmp, &jpeg) {
         let _ = fs::remove_file(&tmp);
@@ -186,14 +184,27 @@ fn render_crop_atomic(
 /// Decode → orient → crop → encode, returning the JPEG bytes. `EXPORT_QUALITY`
 /// is high so the re-encode is visually lossless against the cropped frame.
 /// Edge `u32::MAX` keeps full output resolution (no downscale) for the export.
+/// The source is read once; the same bytes feed the decode and the metadata
+/// transplant, so pixels and metadata come from one file version. A source
+/// without transplantable metadata delivers the bare render; a read error
+/// fails the op instead of silently delivering a metadata-less file.
 fn render_crop_jpeg(
     source: &Path,
     edit: &CropEdit,
     orientation: dcs_domain::photo::Orientation,
-) -> Option<Vec<u8>> {
-    let oriented = imaging::decode_oriented_full(source, orientation)?;
-    let cropped = imaging::apply_crop(&oriented, edit, u32::MAX).into_rgba8();
-    imaging::encode_jpeg(&cropped, EXPORT_QUALITY)
+) -> Result<Vec<u8>, CopyError> {
+    let bytes =
+        fs::read(source).map_err(|e| CopyError::Io(format!("read {}: {e}", source.display())))?;
+    let render = || {
+        let oriented = imaging::decode_oriented_full_bytes(&bytes, orientation)?;
+        let cropped = imaging::apply_crop(&oriented, edit, u32::MAX).into_rgba8();
+        let rendered = imaging::encode_jpeg(&cropped, EXPORT_QUALITY)?;
+        let with_meta =
+            jpeg_meta::transplant_metadata(&bytes, &rendered, cropped.width(), cropped.height());
+        Some(with_meta.unwrap_or(rendered))
+    };
+    render()
+        .ok_or_else(|| CopyError::Io(format!("render {}: decode/encode failed", source.display())))
 }
 
 /// JPEG quality for cropped export renders. Higher than the disposable thumbnail

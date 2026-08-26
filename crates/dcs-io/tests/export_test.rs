@@ -8,6 +8,10 @@ use std::time::Duration;
 use dcs_domain::export::{ExportOp, ExportPlan, FileRole, OpKind};
 use dcs_io::export::{ExportEvent, ExportHandle, SkipKind, run_export};
 
+#[path = "support/jpeg.rs"]
+#[allow(dead_code)]
+mod support;
+
 fn temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("dcs_export_{}_{}", std::process::id(), tag));
     let _ = std::fs::remove_dir_all(&dir);
@@ -339,6 +343,65 @@ fn render_crop_never_overwrites_an_existing_dest() {
     assert_eq!(
         std::fs::read_to_string(&dest).unwrap(),
         "precious existing file"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Splice a little-endian EXIF APP1 (orientation 6, pixel dims `w`×`h`) into a
+/// JPEG file, right after its SOI.
+fn splice_exif(path: &Path, w: u32, h: u32) {
+    let jpeg = std::fs::read(path).unwrap();
+    let out = support::with_segments(&jpeg, &[support::exif_app1(true, 6, w, h)]);
+    std::fs::write(path, out).unwrap();
+}
+
+#[test]
+fn render_crop_retains_source_metadata() {
+    use dcs_domain::crops::{CropEdit, NormRect};
+    use dcs_domain::photo::Orientation;
+
+    let dir = temp_dir("render_crop_metadata");
+    let src = dir.join("in.jpg");
+    let dest = dir.join("out.jpg");
+    write_real_jpeg(&src, 1200, 800);
+    splice_exif(&src, 1200, 800);
+
+    let crop_op = ExportOp {
+        source: src,
+        dest: dest.clone(),
+        role: FileRole::Jpeg,
+        kind: OpKind::RenderCrop {
+            edit: CropEdit {
+                angle_deg: 0.0,
+                rect: NormRect::centered(0.5, 0.5),
+                ..CropEdit::identity()
+            },
+            orientation: Orientation::Normal,
+        },
+    };
+    let handle = run_export(plan(vec![crop_op], dir.clone()));
+    let events = drain(&handle);
+    assert_eq!(
+        events,
+        vec![ExportEvent::Copied {
+            role: FileRole::Jpeg
+        }]
+    );
+
+    let out = image::open(&dest).expect("output is a valid jpeg");
+    let bytes = std::fs::read(&dest).unwrap();
+    let meta = support::read_exif(&bytes);
+    // Orientation is baked into the pixels, so the tag must read 1; the size
+    // tags must match the rendered dimensions, not the source's.
+    assert_eq!(support::uint_field(&meta, exif::Tag::Orientation), 1);
+    assert_eq!(
+        support::uint_field(&meta, exif::Tag::PixelXDimension),
+        out.width()
+    );
+    assert_eq!(
+        support::uint_field(&meta, exif::Tag::PixelYDimension),
+        out.height()
     );
 
     let _ = std::fs::remove_dir_all(&dir);
