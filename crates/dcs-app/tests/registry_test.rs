@@ -63,6 +63,30 @@ fn run_action_returns_effects() {
     assert_eq!(session.run_action(AppAction::Quit), ActionEffect::Quit);
 }
 
+/// The RAW toggle reads as what it will do, not as what the state is, so the
+/// palette entry is unambiguous either way round.
+#[test]
+fn the_raw_toggle_title_tracks_the_state() {
+    let mut session = Session::new();
+    let title = |s: &Session| {
+        catalog(s)
+            .iter()
+            .find(|e| e.action.id() == "toggle-raw-files")
+            .map(|e| e.title.clone())
+            .expect("the toggle is always available")
+    };
+
+    assert_eq!(title(&session), "Show RAW-only Photos");
+
+    assert_eq!(
+        session.run_action(AppAction::ToggleRawFiles),
+        ActionEffect::None
+    );
+
+    assert!(session.raw_files_shown());
+    assert_eq!(title(&session), "Hide RAW-only Photos");
+}
+
 /// An out-of-range recent index is handled gracefully, not a panic.
 #[test]
 fn open_recent_out_of_range_is_a_noop() {

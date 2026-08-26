@@ -18,6 +18,7 @@ fn photo(id: u32) -> Photo {
         orientation: Orientation::Normal,
         fingerprint: ContentFingerprint::from_bytes([id as u8; 32]),
         captured_at: None,
+        captured_approx: false,
         captured_offset: None,
         meta: CaptureMeta::default(),
         missing: false,

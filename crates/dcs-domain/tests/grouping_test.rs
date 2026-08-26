@@ -30,6 +30,7 @@ fn at(path: &str, when: Option<PrimitiveDateTime>) -> ScannedFile {
         orientation: Default::default(),
         fingerprint: ContentFingerprint::from_bytes(bytes),
         captured_at: when,
+        captured_approx: false,
         captured_offset: None,
         meta: CaptureMeta::default(),
     }

@@ -14,14 +14,21 @@ fn temp_folder(tag: &str) -> PathBuf {
     dir
 }
 
+/// A stand-in RAW: content dcs can't decode, but distinct per file. Identity is
+/// the content fingerprint, so byte-identical placeholders would be one photo —
+/// which no two real RAW files ever are.
 fn touch(dir: &Path, name: &str) {
-    std::fs::write(dir.join(name), b"placeholder").unwrap();
+    std::fs::write(dir.join(name), format!("placeholder {name}")).unwrap();
 }
 
+/// Identity is the content fingerprint, so the pixels are tinted by filename:
+/// byte-identical JPEGs would be one photo to dcs, and id reclaim across a
+/// rescan could not tell them apart.
 fn write_jpeg(dir: &Path, name: &str, w: u32, h: u32) {
+    let tint = name.bytes().fold(0u8, |a, b| a.wrapping_add(b));
     let mut img = RgbImage::new(w, h);
     for (x, y, px) in img.enumerate_pixels_mut() {
-        *px = Rgb([(x % 256) as u8, (y % 256) as u8, 128]);
+        *px = Rgb([(x % 256) as u8, (y % 256) as u8, tint]);
     }
     img.save(dir.join(name)).expect("encode jpeg");
 }
@@ -173,9 +180,11 @@ fn pairs_raw_with_jpeg_and_hides_raw_only_photos() {
     assert_eq!(session.pool_len(), 4);
     assert!(!session.is_scanning());
 
-    // But v1 can't decode RAW, so the RAW-only c is hidden: three cells show,
-    // none of them RAW-only.
+    // RAW-only photos are hidden by default, so the RAW-only c doesn't show:
+    // three cells, none of them RAW-only, and the count says how many are out.
+    assert!(!session.raw_files_shown(), "hidden by default");
     assert_eq!(session.photo_count(), 3, "RAW-only photo is not displayed");
+    assert_eq!(session.raw_hidden_count(), 1, "and the UI can say so");
     assert!(session.cell_info(3).is_none());
     let raw_only = (0..3)
         .filter(|&i| session.cell_info(i).is_some_and(|c| c.raw_only))
@@ -192,6 +201,173 @@ fn pairs_raw_with_jpeg_and_hides_raw_only_photos() {
         "unrev tracks shown, not pool_len"
     );
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A stand-in RAW that embeds a JPEG preview, the way every camera RAW does:
+/// filler bytes standing in for the container, then a whole JPEG.
+fn raw_with_preview(dir: &Path, name: &str, seed: u8) {
+    let mut img = RgbImage::new(600, 400);
+    for (x, y, px) in img.enumerate_pixels_mut() {
+        // Noisy enough that the encoded JPEG clears the preview size threshold.
+        let n = (x * 7 + y * 13) as u8 ^ seed;
+        *px = Rgb([n, n.wrapping_mul(3), seed]);
+    }
+    let mut jpeg = Vec::new();
+    img.write_to(
+        &mut std::io::Cursor::new(&mut jpeg),
+        image::ImageFormat::Jpeg,
+    )
+    .expect("encode jpeg");
+
+    let mut data = vec![0x2A; 128];
+    data.extend_from_slice(&jpeg);
+    data.extend_from_slice(&[0u8; 256]);
+    std::fs::write(dir.join(name), data).expect("write raw");
+}
+
+#[test]
+fn a_shown_raw_only_photo_decodes_its_embedded_preview() {
+    let dir = temp_folder("raw_preview");
+    raw_with_preview(&dir, "shot.nef", 40);
+
+    let mut session = Session::new();
+    session.open_folder(dir.clone());
+    drain_until(&mut session, 1);
+    // A RAW-only folder shows its photos without any toggle: the auto default.
+    assert!(session.raw_files_shown(), "all-RAW folder auto-shows");
+    assert_eq!(session.photo_count(), 1);
+
+    let id = session.photo_at(0).expect("the RAW-only photo").id;
+    // A decoded thumbnail counts as imported, so an empty progress means this
+    // one landed.
+    pump_until(
+        &mut session,
+        |s| s.fill_base_background(),
+        |s| s.import_progress().is_none(),
+    );
+
+    let thumb = session.thumb(id).expect("the embedded preview decodes");
+    assert!(
+        thumb.image.width > thumb.image.height,
+        "the preview's own landscape aspect, not a placeholder"
+    );
+    assert_eq!(session.raw_no_preview_count(), 0);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_raw_with_no_preview_is_asked_for_once() {
+    let dir = temp_folder("raw_no_preview");
+    // No JPEG anywhere in these bytes, so there is nothing to find — ever.
+    std::fs::write(dir.join("blank.nef"), vec![0x5A; 200 * 1024]).unwrap();
+
+    let mut session = Session::new();
+    session.open_folder(dir.clone());
+    drain_until(&mut session, 1);
+    assert!(session.raw_files_shown(), "all-RAW folder auto-shows");
+    assert_eq!(session.photo_count(), 1);
+
+    let id = session.photo_at(0).expect("the RAW-only photo").id;
+    pump_until(
+        &mut session,
+        |s| s.request_base(0),
+        |s| s.raw_no_preview_count() > 0,
+    );
+
+    // Recorded as having no preview, so the grid paints a plate and the decoder
+    // is never asked again — a retry would re-scan the file every frame.
+    assert_eq!(session.raw_no_preview_count(), 1);
+    assert!(session.thumb(id).is_none());
+    session.request_base(0);
+    assert!(!session.has_pending(), "no further decode was queued");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn showing_raw_files_makes_raw_only_photos_full_citizens() {
+    let dir = temp_folder("show_raw");
+    write_jpeg(&dir, "a.jpg", 32, 32);
+    touch(&dir, "c.raf"); // RAW-only
+    write_jpeg(&dir, "d.jpg", 32, 32);
+    touch(&dir, "d.RAF"); // pairs with d.jpg
+
+    let mut session = Session::new();
+    session.open_folder(dir.clone());
+    drain_until(&mut session, 2);
+    assert_eq!(session.photo_count(), 2);
+
+    session.toggle_raw_files();
+
+    assert!(session.raw_files_shown());
+    assert_eq!(
+        session.photo_count(),
+        3,
+        "the RAW-only photo joins the grid"
+    );
+    assert_eq!(
+        session.displayable_count(),
+        3,
+        "and the denominator with it"
+    );
+    assert_eq!(session.raw_hidden_count(), 0, "nothing is hidden now");
+    let raw_only = (0..3)
+        .filter(|&i| session.cell_info(i).is_some_and(|c| c.raw_only))
+        .count();
+    assert_eq!(raw_only, 1, "the RAW-only cell is tagged as RAW");
+    // The paired photo displays via its JPEG, so it is not a RAW-only cell.
+    let (_, _, unrev) = session.verdict_counts();
+    assert_eq!(unrev, 3, "tallies cover the shown set");
+
+    // Cull it like any photo, then hide RAWs again: the verdict is owned state
+    // and survives, while the tallies go back to describing what's on screen.
+    let focus = (0..3)
+        .find(|&i| session.cell_info(i).is_some_and(|c| c.raw_only))
+        .expect("a RAW-only cell");
+    session.set_focus(focus, false);
+    session.reject();
+    assert_eq!(session.verdict_counts().1, 1, "the RAW-only photo rejected");
+
+    session.toggle_raw_files();
+    assert_eq!(session.photo_count(), 2);
+    assert_eq!(
+        session.verdict_counts(),
+        (0, 0, 2),
+        "a hidden photo's verdict is not reported"
+    );
+
+    session.toggle_raw_files();
+    assert_eq!(
+        session.verdict_counts().1,
+        1,
+        "and comes back with it, never lost"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_read_only_project_refuses_the_raw_toggle() {
+    let dir = temp_folder("raw_read_only");
+    touch(&dir, "c.raf");
+
+    // A live lock from a first session forces the second to open read-only.
+    let mut first = Session::new();
+    first.open_folder(dir.clone());
+    let mut second = Session::new();
+    second.open_folder(dir.clone());
+    drain_until(&mut second, 1);
+    assert!(second.is_read_only(), "the second session is a reader");
+    assert!(second.raw_files_shown(), "all-RAW folder auto-shows");
+
+    second.toggle_raw_files();
+
+    assert!(second.raw_files_shown(), "a reader changes nothing");
+    assert!(!second.is_dirty());
+
+    drop(first);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -346,12 +522,11 @@ fn accept_toggles_off_focus_and_undo_redo_round_trip() {
 fn groups_expose_filtered_spans_and_omit_empty_groups() {
     let (mut session, dir) = opened_with(3, "group_spans");
 
-    // Plain JPEGs carry no capture time, so the default time axis pools them all
-    // into one `No date` leftover group spanning the whole visible order.
+    // EXIF-less JPEGs fall back to their (identical) file time, so the default
+    // time axis pools them into one date group spanning the whole visible order.
     let g = session.groups();
     assert_eq!(g.len(), 1);
-    assert_eq!(g[0].kind, GroupKind::Leftover);
-    assert_eq!(g[0].title, "No date");
+    assert_eq!(g[0].kind, GroupKind::Time);
     assert_eq!((g[0].start, g[0].count, g[0].total), (0, 3, 3));
 
     // Accept one; under the Accepted filter the span reports 1 visible of 3.

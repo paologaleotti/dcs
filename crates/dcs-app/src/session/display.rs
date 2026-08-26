@@ -27,25 +27,49 @@ impl Session {
         self.builder.len()
     }
 
-    /// Photos that *can* show on the grid, ignoring the filter — the pool minus
-    /// RAW-only photos (which have nothing to display in v1). This is the honest
+    /// Whether a photo can appear on the grid. RAW-only photos qualify only when
+    /// the project shows them, so every count and the visible order agree on one
+    /// rule rather than each re-deciding.
+    pub(super) fn is_displayable(&self, photo: &Photo) -> bool {
+        !photo.is_raw_only() || self.raw_files_shown()
+    }
+
+    /// Photos that *can* show on the grid, ignoring the filter. This is the honest
     /// denominator for "N of M shown": with no filter, `photo_count` equals it.
     pub fn displayable_count(&self) -> usize {
         self.builder
             .photos()
             .iter()
-            .filter(|p| !p.is_raw_only())
+            .filter(|p| self.is_displayable(p))
             .count()
     }
 
-    /// Photos that will actually be embedded for AI search — displayable minus
-    /// missing placeholders (no pixels to embed). The honest denominator for the
-    /// "indexing N/M" status, matching what [`Session::index_pool`] enqueues.
+    /// RAW-only photos the grid is leaving out, so the UI can say so. `0` once
+    /// they're shown.
+    pub fn raw_hidden_count(&self) -> usize {
+        if self.raw_files_shown() {
+            return 0;
+        }
+        self.raw_only_count()
+    }
+
+    /// RAW-only photos found to embed no preview dcs can decode, so the grid
+    /// paints them as plates and no longer asks the decoder for them.
+    pub fn raw_no_preview_count(&self) -> usize {
+        self.no_preview.len()
+    }
+
+    /// Photos that will actually be embedded for AI search — those with a JPEG to
+    /// decode, minus missing placeholders (no pixels to embed). The honest
+    /// denominator for the "indexing N/M" status, matching what
+    /// [`Session::index_pool`] enqueues. A RAW-only photo is never indexed, shown
+    /// or not: its embedded preview isn't the frame, and search results have to
+    /// mean the same thing whatever the view preference is.
     pub(super) fn embeddable_count(&self) -> usize {
         self.builder
             .photos()
             .iter()
-            .filter(|p| !p.missing && !p.is_raw_only())
+            .filter(|p| !p.missing && p.decodable_path().is_some())
             .count()
     }
 
@@ -101,6 +125,7 @@ impl Session {
             adjusted: adjusted_str,
             offset,
             shot,
+            approx: photo.captured_approx,
         })
     }
 
@@ -156,8 +181,13 @@ impl Session {
         }
 
         if let Some(caption) = self.caption_time(display_index) {
+            let label = if caption.approx {
+                "Time (file, approx)"
+            } else {
+                "Time (travel)"
+            };
             rows.push((
-                "Time (travel)",
+                label,
                 format!("{} (UTC{})", caption.adjusted, caption.offset),
             ));
             if let Some(shot) = caption.shot {
@@ -263,10 +293,10 @@ impl Session {
             return;
         }
         let photo = &self.builder.photos()[pool_index];
-        let Some(path) = photo.decodable_path() else {
+        if self.no_preview.contains(&photo.id) {
             return;
-        };
-        let path = path.to_path_buf();
+        }
+        let path = photo.display_path().to_path_buf();
         let orientation = photo.orientation;
         let crop = self.crops.crop_of(id);
         self.hires.start(id);
@@ -363,10 +393,10 @@ impl Session {
         if photo.missing {
             return;
         }
-        let Some(path) = photo.decodable_path() else {
+        if self.no_preview.contains(&photo.id) {
             return;
-        };
-        let path = path.to_path_buf();
+        }
+        let path = photo.display_path().to_path_buf();
         let orientation = photo.orientation;
         let crop = self.crops.crop_of(id);
         self.board_edge.insert(id, edge);
@@ -506,10 +536,10 @@ impl Session {
             return;
         }
         let photo = &self.builder.photos()[pool_index];
-        let Some(path) = photo.decodable_path() else {
+        if self.no_preview.contains(&photo.id) {
             return;
-        };
-        let path = path.to_path_buf();
+        }
+        let path = photo.display_path().to_path_buf();
         let orientation = photo.orientation;
         // The grid (base) tier is disk-cached by content fingerprint, so a
         // reopened folder paints from cached blobs instead of re-decoding.
@@ -568,10 +598,10 @@ impl Session {
             return;
         }
         let photo = &self.builder.photos()[pool_index];
-        let Some(path) = photo.decodable_path() else {
+        if self.no_preview.contains(&photo.id) {
             return;
-        };
-        let path = path.to_path_buf();
+        }
+        let path = photo.display_path().to_path_buf();
         let orientation = photo.orientation;
         self.gallery_edge.insert(id, edge);
         self.gallery.start(id);
@@ -609,14 +639,15 @@ impl Session {
         };
         let cached = guard.cached_keys(ThumbTier::Grid);
         drop(guard);
-        for photo in self.builder.photos() {
-            if photo.missing || photo.is_raw_only() {
-                continue;
-            }
-            if cached.contains(photo.fingerprint.as_bytes()) {
-                self.imported.insert(photo.id);
-            }
-        }
+        let warm: Vec<PhotoId> = self
+            .builder
+            .photos()
+            .iter()
+            .filter(|p| !p.missing && self.is_displayable(p))
+            .filter(|p| cached.contains(p.fingerprint.as_bytes()))
+            .map(|p| p.id)
+            .collect();
+        self.imported.extend(warm);
     }
 
     /// Retire one photo's in-flight marker in a tier without storing pixels —
@@ -661,6 +692,17 @@ impl Session {
         image: Option<ThumbImage>,
     ) {
         let Some(image) = image else {
+            // A tier's `fail` only retires the marker, so the photo is eligible
+            // for another attempt — right for a JPEG, where a failed read is
+            // usually transient. A RAW that yields nothing has no preview to find,
+            // which is a fact about its bytes: retrying would re-scan the file on
+            // every frame, so record it and stop asking.
+            let raw_only = self
+                .pool_index_of(id)
+                .is_some_and(|i| self.builder.photos()[i].is_raw_only());
+            if raw_only {
+                self.no_preview.insert(id);
+            }
             match tier {
                 DecodeTier::Base => self.base.fail(id),
                 DecodeTier::Hires => self.hires.fail(id),

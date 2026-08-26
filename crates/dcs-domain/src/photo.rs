@@ -179,6 +179,11 @@ pub struct Photo {
     /// Raw EXIF `DateTimeOriginal`, naive (no zone). Timezone adjustment to an
     /// `OffsetDateTime` is derived later; `None` means undated.
     pub captured_at: Option<PrimitiveDateTime>,
+    /// `captured_at` is the file's modification time, not a camera time — the
+    /// scan's last resort when a file carries no readable EXIF date. Close
+    /// enough to place the photo in the timeline; the UI marks it approximate
+    /// so it is never mistaken for a shot time.
+    pub captured_approx: bool,
     /// EXIF `OffsetTimeOriginal`, the camera's UTC offset at capture when the tag
     /// is present. Lets the absolute instant be derived per-photo without guessing
     /// a camera zone; `None` falls back to the project camera zone.
@@ -261,6 +266,7 @@ impl Photo {
             orientation: Orientation::Normal,
             fingerprint,
             captured_at: None,
+            captured_approx: false,
             captured_offset: None,
             meta: CaptureMeta::default(),
             missing: true,

@@ -267,6 +267,41 @@ impl Session {
         self.derive_bursts();
     }
 
+    /// Whether RAW-only photos appear on the grid. The user's explicit
+    /// per-project choice when one was made; otherwise the auto default —
+    /// hidden in a folder that also holds JPEG photos (the JPEGs are the sheet
+    /// to cull), shown in a RAW-only folder (hiding would blank the sheet).
+    pub fn raw_files_shown(&self) -> bool {
+        self.config.show_raw_files.unwrap_or_else(|| {
+            let photos = self.builder.photos();
+            !photos.is_empty() && photos.iter().all(|p| p.is_raw_only())
+        })
+    }
+
+    /// RAW-only photos in the pool, shown or not — sizes the toolbar's RAW
+    /// control (which only appears when there is something to control).
+    pub fn raw_only_count(&self) -> usize {
+        self.builder
+            .photos()
+            .iter()
+            .filter(|p| p.is_raw_only())
+            .count()
+    }
+
+    /// Show or hide RAW-only photos, fixing the auto default into an explicit
+    /// persisted choice. Showing them is what makes dcs read their embedded
+    /// previews, so rewind the background fill to warm the newly shown cells.
+    /// Read-only projects don't persist it.
+    pub fn toggle_raw_files(&mut self) {
+        if self.read_only {
+            return;
+        }
+        self.config.show_raw_files = Some(!self.raw_files_shown());
+        self.dirty = true;
+        self.rebuild_visible();
+        self.bg_cursor = 0;
+    }
+
     /// The persisted IANA shoot timezone (freeze-critical).
     pub fn shoot_zone(&self) -> Option<&str> {
         self.config.shoot_zone.as_deref()

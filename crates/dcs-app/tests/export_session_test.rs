@@ -170,7 +170,13 @@ fn start_export_runs_to_completion_and_status_accounts_for_every_op() {
 fn group_as_folders_uses_the_current_group_title() {
     let (session, dir) = opened_with(2, "plan_groups");
     let out = dir.join("export");
-    // Plain JPEGs are undated → one "No date" group, so every file lands there.
+    // EXIF-less JPEGs fall back to their file time, so they land in a real date
+    // group — read the derived title rather than assuming which one. The planner
+    // sanitizes titles into folder names (dates carry `/`), so compare likewise.
+    let title = session
+        .group_title_at(0)
+        .expect("a derived group title")
+        .replace(['/', '\\', ':'], "-");
     let plan = session
         .plan_export(
             ExportScope::Everything,
@@ -178,10 +184,11 @@ fn group_as_folders_uses_the_current_group_title() {
         )
         .unwrap();
 
+    assert!(!plan.ops.is_empty());
     assert!(
         plan.ops
             .iter()
-            .all(|op| op.dest.starts_with(out.join("No date")))
+            .all(|op| op.dest.starts_with(out.join(&title)))
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

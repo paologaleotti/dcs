@@ -513,7 +513,7 @@ impl DcsApp {
     fn empty_state(&mut self, ui: &mut Ui) {
         // Reached only once scanning is done (central gates that). Three ways to
         // be here: no folder open, a filter hid everything, or the pool holds
-        // only RAW-only photos that v1 can't display (no filter to blame).
+        // only RAW-only photos and this project hides them (no filter to blame).
         let no_folder = self.session.pool_len() == 0;
         let filtered_out = !no_folder && self.session.is_filtered();
         // A filter hides everything *because the search is still resolving* — show
@@ -522,6 +522,7 @@ impl DcsApp {
         let mut open_clicked = false;
         let mut recent_clicked = false;
         let mut clear_clicked = false;
+        let mut show_raw_clicked = false;
         // The most-recent project, if any — offered as a one-click reopen above
         // the folder picker.
         let recent = self.session.recent_projects().first().map(|p| {
@@ -585,13 +586,21 @@ impl DcsApp {
                     clear_clicked = true;
                 }
             } else {
-                // Pool holds only RAW-only photos — nothing to draw in v1, and no
-                // filter to clear. Say so honestly instead of blaming a filter.
-                pad(ui, 40.0);
+                // Pool holds only RAW-only photos and this project explicitly
+                // hides them (the auto default would show them here). No filter
+                // to blame — offer the switch that actually applies.
+                pad(ui, 60.0);
                 ui.label(
-                    RichText::new("no displayable photos — this folder has only RAW files")
+                    RichText::new("this folder has only RAW files, hidden by this project")
                         .color(theme::TEXT_DIM),
                 );
+                ui.add_space(8.0);
+                if ui
+                    .button(RichText::new("Show RAW files").size(13.0))
+                    .clicked()
+                {
+                    show_raw_clicked = true;
+                }
             }
         });
         if open_clicked {
@@ -604,6 +613,10 @@ impl DcsApp {
         if clear_clicked {
             let ctx = ui.ctx().clone();
             self.dispatch(AppAction::ClearFilters, &ctx);
+        }
+        if show_raw_clicked {
+            let ctx = ui.ctx().clone();
+            self.dispatch(AppAction::ToggleRawFiles, &ctx);
         }
     }
 }

@@ -4,9 +4,16 @@
 //! square box. Decoding the JPEG itself — not the camera's letterboxed EXIF
 //! thumbnail — means the result is the real image: correct aspect, no bars.
 //!
+//! A RAW file decodes through the same path, sourced from the JPEG preview it
+//! embeds (see [`raw_preview`]); sensor data is never decoded in v1.
+//!
 //! The `ThumbDecoder` trait is the seam: each request decodes at a target pixel
 //! edge (the caller sizes it to the cell) and echoes back an opaque key. Two
 //! priority queues feed the workers (see [`ThumbDecoderPool`]).
+
+mod raw_preview;
+
+pub use raw_preview::{embedded_exif_blocks, embedded_previews};
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -17,6 +24,7 @@ use std::thread::{self, JoinHandle, available_parallelism};
 use crossbeam_channel::{Receiver, Select, Sender, unbounded};
 use dcs_domain::crops::{CropEdit, SourceSampler, plan_crop};
 use dcs_domain::fingerprint::ContentFingerprint;
+use dcs_domain::pairing::{FileKind, classify};
 use dcs_domain::photo::Orientation;
 use dcs_domain::thumb::ThumbImage;
 use image::imageops::FilterType;
@@ -282,8 +290,9 @@ fn decode_blob(blob: &[u8]) -> Option<ThumbImage> {
 
 /// Decode one thumbnail at the given pixel edge: libjpeg-turbo DCT-scaled
 /// decode, orientation baked in, optional straighten+crop, contain-fit to an
-/// `edge × edge` box. Returns `None` for anything turbojpeg and the `image`
-/// fallback both reject (RAW, corrupt, missing).
+/// `edge × edge` box. A RAW is sourced from its embedded JPEG preview. Returns
+/// `None` when nothing decodable is there (corrupt, missing, or a RAW that
+/// embeds no usable preview).
 ///
 /// When `crop` is set, the source is decoded at higher resolution (so the crop
 /// window still resolves to ~`edge` px) before the transform.
@@ -294,14 +303,19 @@ pub fn decode_thumbnail(
     crop: Option<&CropEdit>,
 ) -> Option<ThumbImage> {
     let decode_edge = crop.map_or(edge, |e| crop_decode_edge(e, edge));
-    // Prefer the turbojpeg path, which hands back the source dims from the header
-    // it already parsed; the `image` fallback reads them off the decoded image.
-    let (img, raw_source) = match decode_scaled(path, decode_edge) {
-        Some((img, src)) => (img, src),
-        None => {
-            let img = image::open(path).ok()?;
-            let dims = (img.width(), img.height());
-            (img, dims)
+    let (img, raw_source) = if matches!(classify(path), Some(FileKind::Raw)) {
+        decode_raw_preview(path, decode_edge)?
+    } else {
+        // Prefer the turbojpeg path, which hands back the source dims from the
+        // header it already parsed; the `image` fallback reads them off the
+        // decoded image.
+        match decode_scaled(path, decode_edge) {
+            Some((img, src)) => (img, src),
+            None => {
+                let img = image::open(path).ok()?;
+                let dims = (img.width(), img.height());
+                (img, dims)
+            }
         }
     };
     let img = apply_orientation(img, orientation);
@@ -472,6 +486,22 @@ thread_local! {
 /// without a second file read.
 fn decode_scaled(path: &Path, edge: u32) -> Option<(DynamicImage, (u32, u32))> {
     let data = std::fs::read(path).ok()?;
+    decode_bytes(&data, edge)
+}
+
+/// The largest embedded preview a RAW offers that libjpeg-turbo accepts. The
+/// candidates arrive largest-first, so the runners-up only come into play when
+/// the biggest turns out to be undecodable — some DNGs store lossless-JPEG
+/// sensor tiles that scan like an ordinary JPEG but no baseline decoder reads.
+fn decode_raw_preview(path: &Path, edge: u32) -> Option<(DynamicImage, (u32, u32))> {
+    embedded_previews(path)
+        .iter()
+        .find_map(|jpeg| decode_bytes(jpeg, edge))
+}
+
+/// Decode an in-memory JPEG scaled to roughly `edge` on its longest side, also
+/// returning the source's full-resolution dimensions. See [`decode_scaled`].
+fn decode_bytes(data: &[u8], edge: u32) -> Option<(DynamicImage, (u32, u32))> {
     DECOMPRESSOR.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -479,7 +509,7 @@ fn decode_scaled(path: &Path, edge: u32) -> Option<(DynamicImage, (u32, u32))> {
         }
         let decompressor = slot.as_mut()?;
 
-        let header = decompressor.read_header(&data).ok()?;
+        let header = decompressor.read_header(data).ok()?;
         let source = (header.width as u32, header.height as u32);
         let factor = pick_scaling(header.width, header.height, edge as usize);
         decompressor.set_scaling_factor(factor).ok()?;
@@ -497,7 +527,7 @@ fn decode_scaled(path: &Path, edge: u32) -> Option<(DynamicImage, (u32, u32))> {
             height,
             format: PixelFormat::RGBA,
         };
-        decompressor.decompress(&data, image).ok()?;
+        decompressor.decompress(data, image).ok()?;
         image::RgbaImage::from_raw(width as u32, height as u32, pixels)
             .map(|img| (DynamicImage::ImageRgba8(img), source))
     })

@@ -22,6 +22,7 @@ fn file(path: &str, kind: FileKind) -> ScannedFile {
         orientation: Orientation::Normal,
         fingerprint: fp(path),
         captured_at: None,
+        captured_approx: false,
         captured_offset: None,
         meta: CaptureMeta::default(),
     }
@@ -151,13 +152,18 @@ fn seeded_builder_reclaims_id_by_fingerprint() {
     // it must reclaim its old id (the app then restores its verdict). The new
     // file carries the *persisted* photo's fingerprint, modelling identical
     // bytes under a new name.
-    let mut builder = PoolBuilder::seeded(HashMap::from([(fp("DSCF1"), PhotoId(42))]), 100);
+    let mut builder = PoolBuilder::seeded(
+        HashMap::from([(fp("DSCF1"), PhotoId(42))]),
+        HashMap::new(),
+        100,
+    );
     builder.add(ScannedFile {
         path: PathBuf::from("trip/RENAMED.JPG"),
         kind: FileKind::Jpeg,
         orientation: Orientation::Normal,
         fingerprint: fp("DSCF1"),
         captured_at: None,
+        captured_approx: false,
         captured_offset: None,
         meta: CaptureMeta::default(),
     });
@@ -173,7 +179,8 @@ fn jpeg_joining_a_raw_first_photo_reclaims_the_seeded_id() {
     // re-scan the RAW is classified first (parallel scan, arbitrary order): it
     // takes a tentative fresh id, then the JPEG merges and must reclaim id 42.
     let jpeg_fp = fp("trip/DSCF1.JPG");
-    let mut builder = PoolBuilder::seeded(HashMap::from([(jpeg_fp, PhotoId(42))]), 100);
+    let mut builder =
+        PoolBuilder::seeded(HashMap::from([(jpeg_fp, PhotoId(42))]), HashMap::new(), 100);
 
     builder.add(file("trip/DSCF1.RAF", FileKind::Raw)); // RAW first → fresh id 100
     builder.add(file("trip/DSCF1.JPG", FileKind::Jpeg)); // JPEG merges → reclaim 42
@@ -198,7 +205,11 @@ fn jpeg_joining_a_raw_first_photo_reclaims_the_seeded_id() {
 
 #[test]
 fn seeded_builder_assigns_fresh_id_for_unknown_fingerprint() {
-    let mut builder = PoolBuilder::seeded(HashMap::from([(fp("old"), PhotoId(7))]), 100);
+    let mut builder = PoolBuilder::seeded(
+        HashMap::from([(fp("old"), PhotoId(7))]),
+        HashMap::new(),
+        100,
+    );
     builder.add(file("trip/NEW.JPG", FileKind::Jpeg));
     let pool = builder.to_pool();
     assert_eq!(pool.photos()[0].id, PhotoId(100));
@@ -209,13 +220,18 @@ fn seeded_builder_assigns_fresh_id_for_unknown_fingerprint() {
 fn duplicate_content_does_not_reuse_one_seeded_id_twice() {
     // Two files with identical content but different names both match the seed;
     // consuming the seed entry means only the first reclaims it.
-    let mut builder = PoolBuilder::seeded(HashMap::from([(fp("dup"), PhotoId(5))]), 100);
+    let mut builder = PoolBuilder::seeded(
+        HashMap::from([(fp("dup"), PhotoId(5))]),
+        HashMap::new(),
+        100,
+    );
     let dup = |path: &str| ScannedFile {
         path: PathBuf::from(path),
         kind: FileKind::Jpeg,
         orientation: Orientation::Normal,
         fingerprint: fp("dup"),
         captured_at: None,
+        captured_approx: false,
         captured_offset: None,
         meta: CaptureMeta::default(),
     };
@@ -229,8 +245,71 @@ fn duplicate_content_does_not_reuse_one_seeded_id_twice() {
 }
 
 #[test]
+fn changed_content_at_a_known_path_reclaims_that_id() {
+    // The bytes at a persisted path no longer hash to what was saved: an in-place
+    // edit, or dcs changing how it fingerprints this kind of file. The photo is
+    // the same slot in the shoot, so it keeps its id — and the stale fingerprint
+    // entry must not also come back as a missing placeholder.
+    let mut builder = PoolBuilder::seeded(
+        HashMap::from([(fp("was"), PhotoId(9))]),
+        HashMap::from([(PathBuf::from("trip/DSCF1.RAF"), PhotoId(9))]),
+        100,
+    );
+    let mut scanned = file("trip/DSCF1.RAF", FileKind::Raw);
+    scanned.fingerprint = fp("is now");
+    builder.add(scanned);
+
+    assert_eq!(builder.to_pool().photos()[0].id, PhotoId(9), "same photo");
+    assert_eq!(builder.next_id(), 100, "no fresh id was burned");
+    assert!(
+        !builder.add_missing(fp("was"), None, Some(PathBuf::from("trip/DSCF1.RAF"))),
+        "the file is present, so no placeholder for the old fingerprint"
+    );
+    assert_eq!(builder.to_pool().len(), 1, "one cell for one file");
+}
+
+#[test]
+fn content_identity_wins_over_path_when_two_files_swap_names() {
+    // Both names are known and both contents are known, just crossed over. The
+    // fingerprint decides, so each photo follows its pixels rather than its name.
+    let mut builder = PoolBuilder::seeded(
+        HashMap::from([(fp("alpha"), PhotoId(1)), (fp("beta"), PhotoId(2))]),
+        HashMap::from([
+            (PathBuf::from("trip/a.JPG"), PhotoId(1)),
+            (PathBuf::from("trip/b.JPG"), PhotoId(2)),
+        ]),
+        100,
+    );
+    let mut first = file("trip/a.JPG", FileKind::Jpeg);
+    first.fingerprint = fp("beta");
+    let mut second = file("trip/b.JPG", FileKind::Jpeg);
+    second.fingerprint = fp("alpha");
+    builder.add(first);
+    builder.add(second);
+
+    let pool = builder.to_pool();
+    let id_of = |name: &str| {
+        pool.photos()
+            .iter()
+            .find(|p| p.file_name() == name)
+            .map(|p| p.id)
+            .unwrap()
+    };
+    assert_eq!(id_of("a.JPG"), PhotoId(2), "beta's id followed its content");
+    assert_eq!(
+        id_of("b.JPG"),
+        PhotoId(1),
+        "alpha's id followed its content"
+    );
+}
+
+#[test]
 fn add_missing_creates_a_placeholder_with_the_seeded_id() {
-    let mut builder = PoolBuilder::seeded(HashMap::from([(fp("gone"), PhotoId(77))]), 100);
+    let mut builder = PoolBuilder::seeded(
+        HashMap::from([(fp("gone"), PhotoId(77))]),
+        HashMap::new(),
+        100,
+    );
     let added = builder.add_missing(fp("gone"), Some(PathBuf::from("trip/gone.jpg")), None);
     assert!(added);
     let pool = builder.to_pool();
@@ -242,13 +321,15 @@ fn add_missing_creates_a_placeholder_with_the_seeded_id() {
 #[test]
 fn add_missing_skips_files_already_present() {
     // The file was scanned (its fingerprint consumed), so it is not missing.
-    let mut builder = PoolBuilder::seeded(HashMap::from([(fp("c"), PhotoId(3))]), 100);
+    let mut builder =
+        PoolBuilder::seeded(HashMap::from([(fp("c"), PhotoId(3))]), HashMap::new(), 100);
     builder.add(ScannedFile {
         path: PathBuf::from("trip/here.jpg"),
         kind: FileKind::Jpeg,
         orientation: Orientation::Normal,
         fingerprint: fp("c"),
         captured_at: None,
+        captured_approx: false,
         captured_offset: None,
         meta: CaptureMeta::default(),
     });
@@ -267,6 +348,7 @@ fn orientation_prefers_the_jpeg() {
             orientation: Orientation::Rotate90,
             fingerprint: fp("a/x.RAF"),
             captured_at: None,
+            captured_approx: false,
             captured_offset: None,
             meta: CaptureMeta::default(),
         },
@@ -276,6 +358,7 @@ fn orientation_prefers_the_jpeg() {
             orientation: Orientation::Normal,
             fingerprint: fp("a/x.JPG"),
             captured_at: None,
+            captured_approx: false,
             captured_offset: None,
             meta: CaptureMeta::default(),
         },

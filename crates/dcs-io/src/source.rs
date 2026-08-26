@@ -22,6 +22,7 @@ use time::{PrimitiveDateTime, UtcOffset};
 use walkdir::WalkDir;
 
 use crate::cache::{FingerprintCache, SharedCache};
+use crate::imaging::embedded_exif_blocks;
 
 /// Bytes hashed from each end of a large file. Files at or below twice this are
 /// hashed whole, so small files collide only on a true blake3 collision.
@@ -106,54 +107,46 @@ fn walk(root: &Path, tx: &Sender<ScannedFile>, cache: Option<&SharedCache>) {
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file())
         // Import both JPEG and RAW so a JPEG+RAW pair merges into one photo and a
-        // RAW's presence is known. v1 only decodes the JPEG; a RAW-only photo is
-        // paired/persisted but hidden until RAW decode lands.
+        // RAW-only photo is a photo like any other. Neither kind's sensor data is
+        // decoded in v1; a RAW displays via its embedded JPEG preview.
         .filter_map(|e| classify(e.path()).map(|kind| (e.into_path(), kind)))
         .collect();
 
     files
         .into_par_iter()
         .for_each_with(tx.clone(), |tx, (path, kind)| {
-            let scanned = match kind {
-                FileKind::Jpeg => {
-                    let (orientation, captured_at, captured_offset, meta) = read_meta(&path);
-                    let fingerprint = fingerprint_of(&path, root, cache);
-                    ScannedFile {
-                        path,
-                        kind,
-                        orientation,
-                        fingerprint,
-                        captured_at,
-                        captured_offset,
-                        meta,
-                    }
-                }
-                // v1 never decodes a RAW and a pair takes the JPEG's metadata, so
-                // reading the RAW's EXIF and hashing its (often huge) contents is
-                // pure waste. Identify it cheaply by path+size — enough to pair by
-                // name and to know the RAW exists.
-                FileKind::Raw => ScannedFile {
-                    fingerprint: cheap_fingerprint(&path),
-                    path,
-                    kind,
-                    orientation: Default::default(),
-                    captured_at: None,
-                    captured_offset: None,
-                    meta: CaptureMeta::default(),
+            // RAW and JPEG are read identically: a RAW-only photo carries owned
+            // state (verdicts, tags), so it needs the content fingerprint that
+            // survives a rename, and it needs a capture time to group and sort by.
+            // Both are cheap — EXIF is a header read, and the fingerprint hashes
+            // 128 KiB regardless of how big the RAW is.
+            let (orientation, captured_at, captured_offset, meta) = read_meta(&path, kind);
+            // Last resort for a file with no readable EXIF date: its modification
+            // time, marked approximate. A roughly-placed photo beats one exiled
+            // to the "No date" tail — grouping, sort, and the timeline all read
+            // better. The mtime is an absolute instant, so it carries UTC as its
+            // offset rather than posing as a naive camera time.
+            let (captured_at, captured_approx, captured_offset) = match captured_at {
+                Some(at) => (Some(at), false, captured_offset),
+                None => match mtime_datetime(&path) {
+                    Some(at) => (Some(at), true, Some(UtcOffset::UTC)),
+                    None => (None, false, captured_offset),
                 },
+            };
+            let fingerprint = fingerprint_of(&path, root, cache);
+            let scanned = ScannedFile {
+                path,
+                kind,
+                orientation,
+                fingerprint,
+                captured_at,
+                captured_approx,
+                captured_offset,
+                meta,
             };
             // A closed receiver means the session moved on; the send simply fails.
             let _ = tx.send(scanned);
         });
-}
-
-/// A cheap, content-free identity for a RAW: blake3 over its (absolute) path and
-/// size, reading no file content. RAW identity isn't stable across renames or a
-/// moved folder (a future concern when RAW-only photos decode), but a pair's
-/// identity is its JPEG's, so this never touches the photo the user sees.
-fn cheap_fingerprint(path: &Path) -> ContentFingerprint {
-    let (_, size) = file_stat(path);
-    path_fingerprint(path, size)
 }
 
 /// blake3 over the (absolute) path and size — the content-free fallback
@@ -198,6 +191,19 @@ fn fingerprint_of(path: &Path, root: &Path, cache: Option<&SharedCache>) -> Cont
         guard.store(&rel, mtime, size, &fingerprint);
     }
     fingerprint
+}
+
+/// The file's modification time as a naive UTC datetime — the approximate-date
+/// fallback for files with no EXIF date. `None` when the stat fails or the
+/// mtime is unrepresentable (the epoch itself is treated as absent, since a
+/// zero mtime is a filesystem artifact, not a time).
+fn mtime_datetime(path: &Path) -> Option<PrimitiveDateTime> {
+    let (mtime, _) = file_stat(path);
+    if mtime == 0 {
+        return None;
+    }
+    let odt = time::OffsetDateTime::from_unix_timestamp(mtime).ok()?;
+    Some(PrimitiveDateTime::new(odt.date(), odt.time()))
 }
 
 /// `(mtime_secs, size)` for the pre-filter. Missing metadata degrades to
@@ -267,17 +273,46 @@ fn is_hidden(path: &Path) -> bool {
 /// One EXIF pass for orientation, capture time, and the gallery caption facts.
 /// Missing or unreadable EXIF degrades to defaults rather than failing the scan;
 /// each field is read independently so one bad tag never loses the rest.
+///
+/// A RAW whose container the reader can't parse (RAF, CR3) falls back to the
+/// EXIF blocks embedded inside it, so a Fuji or recent-Canon shoot still imports
+/// with capture times and groups correctly.
 fn read_meta(
     path: &Path,
+    kind: FileKind,
 ) -> (
     Orientation,
     Option<PrimitiveDateTime>,
     Option<UtcOffset>,
     CaptureMeta,
 ) {
-    let Some(exif) = read_exif(path) else {
-        return (Orientation::default(), None, None, CaptureMeta::default());
-    };
+    if let Some(exif) = read_exif(path) {
+        return extract_meta(&exif);
+    }
+    if kind == FileKind::Raw {
+        for block in embedded_exif_blocks(path) {
+            let Ok(exif) = exif::Reader::new().read_raw(block) else {
+                continue;
+            };
+            let meta = extract_meta(&exif);
+            // Take the first block that yields a capture time. CR3 splits EXIF
+            // across boxes, so an earlier block may hold only make and model.
+            if meta.1.is_some() {
+                return meta;
+            }
+        }
+    }
+    (Orientation::default(), None, None, CaptureMeta::default())
+}
+
+fn extract_meta(
+    exif: &exif::Exif,
+) -> (
+    Orientation,
+    Option<PrimitiveDateTime>,
+    Option<UtcOffset>,
+    CaptureMeta,
+) {
     let orientation = exif
         .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
         .and_then(|f| f.value.get_uint(0))
@@ -307,11 +342,11 @@ fn read_meta(
         .and_then(ascii_value)
         .and_then(parse_exif_offset);
     let meta = CaptureMeta {
-        camera: camera_label(&exif),
-        lens: ascii_field(&exif, exif::Tag::LensModel),
-        focal_mm: rational_f32(&exif, exif::Tag::FocalLength),
-        aperture: rational_f32(&exif, exif::Tag::FNumber),
-        exposure_secs: rational_f32(&exif, exif::Tag::ExposureTime),
+        camera: camera_label(exif),
+        lens: ascii_field(exif, exif::Tag::LensModel),
+        focal_mm: rational_f32(exif, exif::Tag::FocalLength),
+        aperture: rational_f32(exif, exif::Tag::FNumber),
+        exposure_secs: rational_f32(exif, exif::Tag::ExposureTime),
         iso: exif
             .get_field(exif::Tag::PhotographicSensitivity, exif::In::PRIMARY)
             .and_then(|f| f.value.get_uint(0)),

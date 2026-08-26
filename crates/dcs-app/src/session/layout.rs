@@ -112,11 +112,12 @@ impl Session {
             .filter
             .is_active()
             .then(|| filter::resolve(photos, &self.filter, &self.filter_ctx()));
+        let show_raw = self.raw_files_shown();
         let passes = |i: usize| {
-            // v1 can't decode a RAW, so a RAW-only photo has nothing to show:
-            // keep it in the pool (paired, persisted, ready for RAW decode later)
-            // but out of the grid. A paired photo displays via its JPEG.
-            if photos[i].is_raw_only() {
+            // A RAW-only photo stays in the pool either way — paired, persisted,
+            // keeping its verdicts and tags — and reaches the grid only when the
+            // project shows RAWs. A paired photo displays via its JPEG.
+            if photos[i].is_raw_only() && !show_raw {
                 return false;
             }
             // No filter → everything passes the resolver; chips narrow via the set.

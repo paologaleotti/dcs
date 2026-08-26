@@ -40,6 +40,7 @@ fn snapshot() -> ProjectSnapshot {
             grid_zoom: Some(180.0),
             show_bursts: Some(false),
             ai_search_enabled: Some(true),
+            show_raw_files: Some(true),
         },
     }
 }

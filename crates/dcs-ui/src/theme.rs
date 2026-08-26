@@ -44,6 +44,9 @@ pub const SEGMENT_ACTIVE: Color32 = Color32::from_gray(64);
 pub const TEXT_DIM: Color32 = Color32::from_gray(170);
 /// RAW badge background, and the chip behind a verdict glyph.
 pub const BADGE_BG: Color32 = Color32::from_gray(8);
+/// A RAW-only cell with no embedded preview to show. Lighter than `CELL_EMPTY`
+/// so it reads as a deliberate plate rather than a thumbnail still loading.
+pub const RAW_PLATE: Color32 = Color32::from_gray(44);
 
 /// Selection — a light grease-pencil outline.
 pub const SELECT_OUTLINE: Color32 = Color32::from_gray(205);

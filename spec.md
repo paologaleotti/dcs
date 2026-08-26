@@ -57,8 +57,28 @@ board view).
 
 `DSCF1234.JPG` + `DSCF1234.RAF` = one photo (`Both`); either alone =
 `Jpeg`/`Raw`. Cull and tag **photos**; export **files**. Display prefers
-the JPEG; RAW-only shows the embedded preview (no raw decode in v1).
-`R` badge on raw-only cells, hidden below a zoom threshold.
+the JPEG. Raw-only cells carry a RAW badge at **every** zoom — `RAW` spelled
+out on large cells, `R` on medium, a corner chip on tiny ones — so a RAW is
+never mistaken for a JPEG (amends decision #15's zoom gating for this badge
+only).
+
+**RAW-only visibility is a per-project preference with an auto default**
+(`show_raw_files`, `None` = auto): hidden when the folder also holds JPEG
+photos (the JPEGs are the sheet to cull), shown when the folder is RAW-only
+(hiding them would blank the sheet). The first explicit flip persists the
+user's choice for the project. The control lives in the **toolbar's `RAW`
+section** — visible whenever the folder holds RAW-only photos, reading
+`N hidden` / `N shown` — plus the View menu and the command palette; hidden
+is a visible choice, never a silent omission.
+
+Showing RAW-only photos is also the only thing that makes dcs read a RAW's
+pixels. It then shows **the JPEG preview the RAW embeds** (no raw decode in
+v1); a file that embeds nothing usable gets a grey `RAW` plate instead. A
+shown RAW-only photo is a photo like any other — focus, select, cull, tag,
+export — but it is not croppable (§6.9, decision #42) and is not AI-search
+indexed: its preview is not the frame, and a search result must mean the same
+thing whatever the view preference says. Identity is the content fingerprint
+for RAW as for JPEG, so a renamed RAW keeps its verdicts and tags.
 
 ### 2.2 Derived vs owned — the load-bearing rule
 
@@ -203,7 +223,8 @@ One **command registry**, four surfaces:
 
 ### 2.11 Cell anatomy — fixed layer budget
 
-Background = burst span · outline = selection · top-left = RAW badge
+Background = burst span (or the grey `RAW` plate when a shown RAW-only photo
+has no embedded preview) · outline = selection · top-left = RAW badge
 (zoom-gated) · bottom-right = verdict glyph · bottom edge = tag strips ·
 hover/status bar = everything by name. Color is never the sole identity
 channel.
@@ -343,11 +364,32 @@ darkroom tool, not a web app.
   finishes.
 - **Re-scan** adds new photos, never duplicates known ones. Because
   identity is fingerprint-keyed, a file renamed-in-place keeps its
-  verdicts and tags instead of returning as a blank new photo.
+  verdicts and tags instead of returning as a blank new photo. The
+  mirror case — the *same path* holding different bytes, from an in-place
+  edit or from dcs changing how it fingerprints a kind of file — re-links
+  by path, so it stays one photo instead of becoming a new one beside a
+  missing placeholder. Content beats path, so two files that swapped
+  names still each follow their own pixels.
 - **Missing files:** placeholder cell + `missing` badge, state
   preserved, reported; reanimates if the file returns (matched by
   fingerprint, so owned state is restored even under a new name).
   **Unreadable files:** same treatment; a scan never aborts.
+- **RAW files are reported, not dropped.** They import, pair, and persist
+  whether or not they show, and the count of hidden RAW-only photos is
+  always on the status bar (§2.1). A RAW costs one EXIF read and a
+  fingerprint hash on the scan; reading its embedded preview *pixels*
+  happens only once the user asks to see RAWs.
+- **No readable EXIF date → the file's modification time stands in,**
+  marked approximate (`~` in the gallery info bar, `Time (file, approx)` in
+  the metadata dialog, carried as UTC since an mtime is an absolute instant).
+  A roughly placed photo beats one exiled to the `No date` tail; the mark
+  keeps it from ever being read as a camera time.
+- **RAW EXIF is read whatever the container.** TIFF-based RAWs (NEF, CR2,
+  ARW, DNG, ORF) parse directly. RAF and CR3 are not TIFF at offset 0, so
+  their metadata is read from the blocks embedded inside them — the
+  preview's APP1 segment for RAF (at the offset its header states), the
+  `CMT1`/`CMT2` maker boxes for CR3. A dateless import is not acceptable:
+  capture time drives grouping, sort, and bursts.
 
 ## 5. Project sidecar — `.dcs/`
 
@@ -925,6 +967,11 @@ against each other.
 - One registry, three surfaces. One color system. Visible-only batch
   ops. Predictable geometry over clever packing.
 - Per-photo facts on the photo; layout facts on the view.
+- RAW visibility is a per-project preference with an auto default — hidden
+  in mixed folders, shown in RAW-only folders — controlled from a dedicated
+  toolbar section that always shows the count. A shown RAW paints the JPEG
+  preview it embeds — never decoded sensor data — and falls back to a `RAW`
+  plate. RAW identity is the content fingerprint, like everything else.
 - Export is an honest, composable copy engine — a pure planner decides,
   a dumb executor copies; the dialog preview *is* the plan, so it reads
   true aloud by construction.

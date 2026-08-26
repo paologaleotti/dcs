@@ -247,7 +247,12 @@ fn tempdir() -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = base.join(format!("dcs-cache-test-{nanos}"));
+    // Thread id keeps parallel test cases from sharing a folder — two of them
+    // opening one cache.sqlite3 is a "database is locked" failure, not a bug.
+    let dir = base.join(format!(
+        "dcs-cache-test-{nanos}-{:?}",
+        std::thread::current().id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }

@@ -270,7 +270,14 @@ fn paint_frame(
     } else {
         textures.view_texture(ui, id, session.thumb(id))
     };
-    let tex = tex?;
+    let Some(tex) = tex else {
+        // A RAW whose file embeds no preview would otherwise be an empty frame
+        // with a `RAW` chip in the bar and no explanation on the photo itself.
+        if session.photo_at(focus).is_some_and(|p| p.is_raw_only()) {
+            crate::grid::paint_raw_plate(ui, rect);
+        }
+        return None;
+    };
 
     // Guard degenerate dims so no division below yields NaN/Inf. A valid decode is
     // always ≥1px; this only defends against an upstream bug producing a 0 dim.
@@ -588,9 +595,14 @@ fn frame_info(session: &Session, focus: usize) -> FrameInfo {
             .to_string(),
         // Mark the time as travel-zone-adjusted by tagging its offset, so the
         // displayed wall-clock is never mistaken for the raw camera time.
+        // A "~" prefix marks a file-time fallback, so an approximate time is
+        // never read as a camera time.
         time: caption
             .as_ref()
-            .map(|c| format!("{}  (UTC{})", c.adjusted, c.offset))
+            .map(|c| {
+                let mark = if c.approx { "~" } else { "" };
+                format!("{mark}{}  (UTC{})", c.adjusted, c.offset)
+            })
             .unwrap_or_default(),
         tags: Vec::new(),
     };

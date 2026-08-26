@@ -43,20 +43,27 @@ impl Session {
         self.cull.state(id)
     }
 
-    /// `(accepted, rejected, unreviewed)` for the status bar. Totals only
-    /// displayable photos: hidden RAW-only photos aren't part of the cull
-    /// workflow, so counting them would make `unrev` exceed the shown count.
-    /// Unreviewed = displayable count minus the two reviewed tallies.
+    /// `(accepted, rejected, unreviewed)` for the status bar. Counts only
+    /// displayable photos, and counts each one's own verdict rather than reading
+    /// the cull store's totals: a hidden RAW-only photo keeps whatever verdict it
+    /// was given while shown, and reporting it would make the tallies describe a
+    /// different set than the one on screen.
     pub fn verdict_counts(&self) -> (usize, usize, usize) {
-        let c = self.cull.counts();
-        let total = self
-            .builder
-            .photos()
-            .iter()
-            .filter(|p| !p.is_raw_only())
-            .count();
-        let unreviewed = total.saturating_sub(c.accepted + c.rejected);
-        (c.accepted, c.rejected, unreviewed)
+        let mut accepted = 0;
+        let mut rejected = 0;
+        let mut total = 0;
+        for photo in self.builder.photos() {
+            if !self.is_displayable(photo) {
+                continue;
+            }
+            total += 1;
+            match self.cull.state(photo.id) {
+                AcceptState::Accepted => accepted += 1,
+                AcceptState::Rejected => rejected += 1,
+                AcceptState::Unreviewed => {}
+            }
+        }
+        (accepted, rejected, total - accepted - rejected)
     }
 
     pub fn can_undo(&self) -> bool {

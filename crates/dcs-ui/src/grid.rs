@@ -28,8 +28,12 @@ use crate::theme;
 
 /// Rows above and below the viewport to decode ahead of the scroll.
 const PREFETCH_ROWS: usize = 5;
-/// Below this cell size the RAW badge is hidden (zoom-gated).
+/// Below this cell size badges drop their text label; the RAW badge itself
+/// stays at every zoom (a RAW cell must always read as RAW), shrinking to a
+/// corner mark like the missing badge does.
 const BADGE_MIN_CELL: f32 = 96.0;
+/// Above this cell size the RAW badge spells out "RAW" instead of "R".
+const RAW_LABEL_MIN_CELL: f32 = 160.0;
 /// Below this cell size the crop badge is hidden — only the very smallest zoom,
 /// so the "this photo is edited" mark reads at every practical density.
 const CROP_BADGE_MIN_CELL: f32 = 84.0;
@@ -804,9 +808,17 @@ fn paint_cell(
     };
     ui.painter().rect_filled(cell_rect, 0.0, bg);
 
-    if !info.missing
-        && let Some(tex) = textures.texture(ui, session, info.id)
-    {
+    let tex = (!info.missing)
+        .then(|| textures.texture(ui, session, info.id))
+        .flatten();
+
+    // Under the image, never over it: a decoded preview fills only its
+    // contain-fit box, so plate text painted on top would show in the margins.
+    // A missing file gets its own marker below — "missing" outranks "RAW".
+    if tex.is_none() && info.raw_only && !info.missing {
+        paint_raw_plate(ui, cell_rect);
+    }
+    if let Some(tex) = tex {
         let fit = contain_fit(cell_rect, tex.size);
         ui.painter().image(tex.id, fit, full_uv(), Color32::WHITE);
     }
@@ -822,7 +834,7 @@ fn paint_cell(
         ui.painter().rect_filled(cell_rect, 0.0, theme::REJECT_DIM);
     }
 
-    if info.raw_only && cell_rect.width() >= BADGE_MIN_CELL {
+    if info.raw_only {
         paint_raw_badge(ui, cell_rect);
     }
     if info.cropped && cell_rect.width() >= CROP_BADGE_MIN_CELL {
@@ -972,16 +984,45 @@ fn paint_missing(ui: &Ui, cell_rect: Rect) {
     }
 }
 
+/// Stand-in for a RAW-only photo with no preview to paint. Below the badge
+/// threshold the plate carries no label — the `R` badge already says RAW.
+pub(crate) fn paint_raw_plate(ui: &Ui, cell_rect: Rect) {
+    ui.painter().rect_filled(cell_rect, 0.0, theme::RAW_PLATE);
+    if cell_rect.width() >= BADGE_MIN_CELL {
+        ui.painter().text(
+            cell_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "RAW",
+            FontId::monospace((cell_rect.width() * 0.14).clamp(11.0, 20.0)),
+            theme::TEXT_DIM,
+        );
+    }
+}
+
+/// The RAW mark, present at every zoom: "RAW" on large cells, "R" on medium,
+/// a small corner chip on tiny ones — a RAW cell is never mistaken for a JPEG.
 fn paint_raw_badge(ui: &Ui, cell_rect: Rect) {
-    let size = (cell_rect.width() * 0.16).clamp(14.0, 22.0);
-    let badge = Rect::from_min_size(cell_rect.min, Vec2::splat(size));
+    let text = if cell_rect.width() >= RAW_LABEL_MIN_CELL {
+        "RAW"
+    } else {
+        "R"
+    };
+    let size = (cell_rect.width() * 0.16).clamp(12.0, 22.0);
+    let width = if text == "RAW" { size * 2.2 } else { size };
+    let badge = Rect::from_min_size(cell_rect.min, Vec2::new(width, size));
     ui.painter().rect_filled(badge, 0.0, theme::BADGE_BG);
+    ui.painter().rect_stroke(
+        badge,
+        0.0,
+        Stroke::new(1.0_f32, theme::HAIRLINE),
+        StrokeKind::Inside,
+    );
     ui.painter().text(
         badge.center(),
         egui::Align2::CENTER_CENTER,
-        "R",
-        FontId::monospace(size * 0.7),
-        theme::TEXT_DIM,
+        text,
+        FontId::monospace(size * 0.62),
+        theme::TEXT_REST,
     );
 }
 

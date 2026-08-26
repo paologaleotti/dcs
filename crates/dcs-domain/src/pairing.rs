@@ -5,7 +5,7 @@
 //! `PoolBuilder` assembles incrementally so progressive import keeps stable
 //! ids as files stream in; `pair` is the batch convenience used in tests.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -32,6 +32,8 @@ pub struct ScannedFile {
     pub orientation: Orientation,
     pub fingerprint: ContentFingerprint,
     pub captured_at: Option<PrimitiveDateTime>,
+    /// `captured_at` came from the file's modification time, not EXIF.
+    pub captured_approx: bool,
     pub captured_offset: Option<UtcOffset>,
     pub meta: CaptureMeta,
 }
@@ -46,17 +48,30 @@ pub enum FileKind {
 /// for identity (the existing photo absorbs it).
 ///
 /// **Seeding:** when reopened on a folder with saved state, the app
-/// seeds the builder with the persisted `fingerprint → PhotoId` map and the
-/// saved `next_id`. A file whose display fingerprint is known reclaims its old
-/// id (so verdicts survive a rename-in-place); a genuinely new fingerprint gets
-/// a fresh id. The map is consumed on reclaim, so duplicate content (two files,
-/// one fingerprint) doesn't hand the same id to two photos.
+/// seeds the builder with the persisted `fingerprint → PhotoId` map, a
+/// `path → PhotoId` fallback, and the saved `next_id`. A file whose display
+/// fingerprint is known reclaims its old id (so verdicts survive a
+/// rename-in-place); a genuinely new fingerprint gets a fresh id. The map is
+/// consumed on reclaim, so duplicate content (two files, one fingerprint)
+/// doesn't hand the same id to two photos.
+///
+/// The path fallback covers the other direction: the same path holding
+/// different bytes than were persisted. That happens when a file is edited or
+/// replaced in place, and when dcs itself changes how it fingerprints a kind of
+/// file. Without it, the photo would come back as a brand-new one *plus* a
+/// missing placeholder for the old record — two cells for one file, with the
+/// verdicts stranded on the placeholder.
 #[derive(Debug, Default)]
 pub struct PoolBuilder {
     index: HashMap<String, usize>,
     photos: Vec<Photo>,
     next_id: u32,
     seed: HashMap<ContentFingerprint, PhotoId>,
+    seed_paths: HashMap<PathBuf, PhotoId>,
+    /// Ids handed to a photo this scan. A path-reclaimed id leaves its stale
+    /// fingerprint entry in `seed`, so this is what stops `add_missing` from
+    /// resurrecting it as a placeholder.
+    claimed: HashSet<PhotoId>,
     revision: u64,
 }
 
@@ -82,15 +97,22 @@ pub fn pair(files: impl IntoIterator<Item = ScannedFile>) -> Pool {
 }
 
 impl PoolBuilder {
-    /// A builder seeded from saved state. `known` reclaims ids by fingerprint;
-    /// `next_id` is the persisted monotonic counter (max assigned id + 1) so
-    /// fresh photos never collide with reclaimed ones.
-    pub fn seeded(known: HashMap<ContentFingerprint, PhotoId>, next_id: u32) -> Self {
+    /// A builder seeded from saved state. `known` reclaims ids by fingerprint,
+    /// `paths` by absolute path when the content no longer matches; `next_id` is
+    /// the persisted monotonic counter (max assigned id + 1) so fresh photos
+    /// never collide with reclaimed ones.
+    pub fn seeded(
+        known: HashMap<ContentFingerprint, PhotoId>,
+        paths: HashMap<PathBuf, PhotoId>,
+        next_id: u32,
+    ) -> Self {
         PoolBuilder {
             index: HashMap::new(),
             photos: Vec::new(),
             next_id,
             seed: known,
+            seed_paths: paths,
+            claimed: HashSet::new(),
             revision: 0,
         }
     }
@@ -109,7 +131,7 @@ impl PoolBuilder {
                 }
             }
             None => {
-                let id = self.assign_id(&file.fingerprint);
+                let id = self.assign_id(&file.fingerprint, &file.path);
                 self.index.insert(key, self.photos.len());
                 self.photos.push(new_photo(id, file));
             }
@@ -127,6 +149,7 @@ impl PoolBuilder {
         let fingerprint = self.photos[pos].fingerprint;
         if let Some(id) = self.seed.remove(&fingerprint) {
             self.photos[pos].id = id;
+            self.claimed.insert(id);
         }
     }
 
@@ -136,11 +159,23 @@ impl PoolBuilder {
         self.revision
     }
 
-    /// The id for a brand-new photo: reclaim by fingerprint if seeded, else the
-    /// next fresh counter. Reclaiming consumes the seed entry and never advances
-    /// the counter, so re-scanning a saved folder reproduces the same ids.
-    fn assign_id(&mut self, fingerprint: &ContentFingerprint) -> PhotoId {
+    /// The id for a brand-new photo: reclaim by fingerprint if seeded, else by
+    /// path, else the next fresh counter. Reclaiming consumes the seed entry and
+    /// never advances the counter, so re-scanning a saved folder reproduces the
+    /// same ids.
+    ///
+    /// Content wins over path, so two files that swapped names still each get
+    /// their own id back. The path fallback therefore only fires when the bytes
+    /// at a known path changed — the same slot in the shoot, so it keeps its
+    /// verdicts and tags.
+    fn assign_id(&mut self, fingerprint: &ContentFingerprint, path: &Path) -> PhotoId {
         if let Some(id) = self.seed.remove(fingerprint) {
+            self.claimed.insert(id);
+            return id;
+        }
+        if let Some(id) = self.seed_paths.get(path).copied()
+            && self.claimed.insert(id)
+        {
             return id;
         }
         let id = PhotoId(self.next_id);
@@ -171,6 +206,12 @@ impl PoolBuilder {
         let Some(id) = self.seed.remove(&fingerprint) else {
             return false; // file present (seed consumed by `add`) — not missing
         };
+        if self.claimed.contains(&id) {
+            // The file is on disk under this path with different bytes, so `add`
+            // already re-linked this id. Its stale fingerprint entry survived the
+            // scan; a placeholder here would be a second cell for one file.
+            return false;
+        }
         let files = AssociatedFiles { jpeg, raw };
         let photo_type = derive_type(&files);
         self.photos
@@ -247,6 +288,7 @@ fn new_photo(id: PhotoId, file: ScannedFile) -> Photo {
         // The lone file is the display file, so it owns the photo's identity.
         fingerprint: file.fingerprint,
         captured_at: file.captured_at,
+        captured_approx: file.captured_approx,
         captured_offset: file.captured_offset,
         meta: file.meta,
         missing: false,
@@ -269,6 +311,7 @@ fn merge_file(photo: &mut Photo, file: ScannedFile) -> bool {
                 photo.orientation = file.orientation;
                 photo.fingerprint = file.fingerprint;
                 photo.captured_at = file.captured_at;
+                photo.captured_approx = file.captured_approx;
                 photo.captured_offset = file.captured_offset;
                 photo.meta = file.meta;
                 display_changed = true;

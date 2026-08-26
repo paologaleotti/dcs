@@ -82,6 +82,32 @@ impl DcsApp {
                         clicked = Some(a);
                     }
 
+                    // Only when the folder holds RAW-only photos: the one place
+                    // to see that RAWs exist, whether they show, and to flip it.
+                    let raw_total = self.session.raw_only_count();
+                    if raw_total > 0 {
+                        thin_sep(ui);
+                        micro_label(ui, "RAW");
+                        let shown = self.session.raw_files_shown();
+                        let label = if shown {
+                            format!("{raw_total} shown")
+                        } else {
+                            format!("{raw_total} hidden")
+                        };
+                        let hover = if shown {
+                            "Hide RAW-only photos (persisted for this project)"
+                        } else {
+                            "Show RAW-only photos (persisted for this project)"
+                        };
+                        if ui
+                            .selectable_label(shown, RichText::new(label).font(theme::data_small()))
+                            .on_hover_text(hover)
+                            .clicked()
+                        {
+                            clicked = Some(dcs_app::AppAction::ToggleRawFiles);
+                        }
+                    }
+
                     thin_sep(ui);
                     micro_label(ui, "TZ");
                     if let Some(a) = self.tz_menu(ui) {
@@ -458,6 +484,19 @@ impl DcsApp {
                     // The pref is on but a name sort suppresses the overlay — say so.
                     if show_bursts && !time_sort {
                         ui.label(RichText::new("needs time sort").small().weak());
+                    }
+                    let mut show_raw = self.session.raw_files_shown();
+                    if ui
+                        .checkbox(&mut show_raw, "Show RAW-only photos")
+                        .on_hover_text(
+                            "Default: hidden when the folder also has JPEGs, shown when \
+                             it is RAW-only. Flipping it persists your choice for this \
+                             project. Also in the toolbar's RAW section.",
+                        )
+                        .changed()
+                    {
+                        clicked = Some(AppAction::ToggleRawFiles);
+                        ui.close();
                     }
                     ui.separator();
                     if ui.button("Toggle Diagnostics").clicked() {

@@ -40,6 +40,8 @@ pub enum AppAction {
     /// Toggle the grid's burst overlay (span accents + labels). A persisted view
     /// preference.
     ToggleBursts,
+    /// Show or hide RAW-only photos on the grid. A persisted view preference.
+    ToggleRawFiles,
     /// Switch to the grid view mode (no-op if already there).
     EnterGrid,
     /// Switch to the gallery view mode on the focused photo (no-op if already
@@ -167,6 +169,7 @@ impl AppAction {
             AppAction::ZoomOut => "zoom-out",
             AppAction::ToggleDiagnostics => "toggle-diagnostics",
             AppAction::ToggleBursts => "toggle-bursts",
+            AppAction::ToggleRawFiles => "toggle-raw-files",
             AppAction::EnterGrid => "enter-grid",
             AppAction::EnterGallery => "enter-gallery",
             AppAction::ToggleGallery => "toggle-gallery",
@@ -364,6 +367,16 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
             "Hide Bursts overlay"
         } else {
             "Show Bursts overlay"
+        },
+        Category::View,
+    );
+    push(
+        &mut e,
+        AppAction::ToggleRawFiles,
+        if session.raw_files_shown() {
+            "Hide RAW-only Photos"
+        } else {
+            "Show RAW-only Photos"
         },
         Category::View,
     );
@@ -584,6 +597,10 @@ impl Session {
             AppAction::ToggleDiagnostics => ActionEffect::ToggleDiagnostics,
             AppAction::ToggleBursts => {
                 self.toggle_bursts();
+                ActionEffect::None
+            }
+            AppAction::ToggleRawFiles => {
+                self.toggle_raw_files();
                 ActionEffect::None
             }
             AppAction::EnterGrid => ActionEffect::EnterGrid,

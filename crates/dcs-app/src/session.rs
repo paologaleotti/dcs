@@ -180,6 +180,9 @@ pub struct CaptionTime {
     pub adjusted: String,
     pub offset: String,
     pub shot: Option<String>,
+    /// The time is the file's modification time, not a camera time — shown
+    /// with an approximation mark so it is never read as a shot time.
+    pub approx: bool,
 }
 
 /// Verdict view toggle — a session display setting, not the full chip filter
@@ -326,6 +329,10 @@ pub struct Session {
     id_index_rev: Option<u64>,
     /// Display index the background base-fill has walked to.
     bg_cursor: usize,
+    /// RAW-only photos whose file embeds no preview dcs can decode. A decode
+    /// failure is normally retryable, but here there is nothing to find, and
+    /// re-asking would scan the file again every frame. Rebuilt per folder.
+    no_preview: HashSet<PhotoId>,
     /// Displayable photos whose grid thumbnail has been warmed into the disk
     /// cache — the import-progress numerator. Seeded from the disk cache when a
     /// scan settles so a reopened folder resumes its warm-up instead of
@@ -449,6 +456,7 @@ impl Session {
             gallery: ThumbCache::new(GALLERY_CACHE_BYTES),
             gallery_edge: HashMap::new(),
             bg_cursor: 0,
+            no_preview: HashSet::new(),
             imported: HashSet::new(),
             next_version: 0,
             epoch: 0,
@@ -527,6 +535,7 @@ impl Session {
         self.id_index.clear();
         self.id_index_rev = None;
         self.bg_cursor = 0;
+        self.no_preview.clear();
         self.imported.clear();
         self.sidecar_cache.borrow_mut().clear();
         self.size_cache.borrow_mut().clear();
@@ -565,7 +574,7 @@ impl Session {
                 None
             }
         };
-        self.builder = seed_builder(&snapshot);
+        self.builder = seed_builder(&snapshot, &root);
         self.cull = seed_cull(&snapshot);
         self.tags = seed_tags(&snapshot);
         self.crops = seed_crops(&snapshot);
@@ -705,9 +714,9 @@ fn open_cache(sidecar: &Path) -> Option<SharedCache> {
 
 /// A pool builder seeded to reclaim ids by fingerprint, or an empty one for a
 /// fresh folder.
-fn seed_builder(snapshot: &Option<ProjectSnapshot>) -> PoolBuilder {
+fn seed_builder(snapshot: &Option<ProjectSnapshot>, root: &Path) -> PoolBuilder {
     match snapshot {
-        Some(s) => PoolBuilder::seeded(s.seed_map(), s.next_id),
+        Some(s) => PoolBuilder::seeded(s.seed_map(), s.seed_paths(root), s.next_id),
         None => PoolBuilder::default(),
     }
 }

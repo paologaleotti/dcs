@@ -97,6 +97,13 @@ pub struct ProjectConfig {
     /// derived — the embeddings themselves stay in the disposable cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_search_enabled: Option<bool>,
+    /// Whether RAW-only photos appear on the grid. `None` = auto: hidden when
+    /// the folder also holds JPEG photos (the JPEGs are the sheet to cull),
+    /// shown when the folder is RAW-only (hiding them would blank the sheet).
+    /// `Some(v)` is the user's explicit per-project choice, persisted on first
+    /// toggle. Showing them is also what makes dcs read their embedded previews.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_raw_files: Option<bool>,
 }
 
 /// The app-facing payload: what `dcs-app` hands down to save and gets back on
@@ -125,6 +132,22 @@ impl ProjectSnapshot {
     /// The `fingerprint → PhotoId` map used to seed `PoolBuilder` on reopen.
     pub fn seed_map(&self) -> HashMap<ContentFingerprint, PhotoId> {
         self.photos.iter().map(|p| (p.fingerprint, p.id)).collect()
+    }
+
+    /// The `path → PhotoId` fallback used to seed `PoolBuilder`, resolved against
+    /// `root` since records store paths relative to the project folder. Both of a
+    /// pair's files map to the photo, so either one re-links it.
+    pub fn seed_paths(&self, root: &Path) -> HashMap<PathBuf, PhotoId> {
+        let mut map = HashMap::new();
+        for photo in &self.photos {
+            for rel in [photo.jpeg.as_ref(), photo.raw.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                map.insert(root.join(rel), photo.id);
+            }
+        }
+        map
     }
 
     /// The `PhotoId → verdict` pairs used to seed the verdict store.

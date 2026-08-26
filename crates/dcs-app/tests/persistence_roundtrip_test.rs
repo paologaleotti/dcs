@@ -78,6 +78,62 @@ fn verdicts_survive_save_and_reopen() {
     assert_eq!(s.verdict(second), AcceptState::Rejected);
 }
 
+/// A photo whose bytes changed at a known path must come back as *itself*, not
+/// as a new photo beside a missing placeholder for the old record. This is the
+/// shape of an in-place edit, and of dcs changing how it fingerprints a file
+/// kind: content identity misses, so the path has to re-link it.
+#[test]
+fn a_file_whose_content_changed_in_place_keeps_its_identity() {
+    let dir = temp_folder("relink");
+    write_jpeg(&dir, "a.jpg", 10);
+    std::fs::write(dir.join("b.raf"), b"raw bytes v1").unwrap();
+
+    {
+        let mut s = open(&dir, 2);
+        s.toggle_raw_files();
+        assert_eq!(s.photo_count(), 2);
+        let raw = (0..2)
+            .find(|&i| s.cell_info(i).is_some_and(|c| c.raw_only))
+            .expect("the RAW-only photo");
+        s.click_select(raw);
+        s.reject();
+        s.save().unwrap();
+    }
+
+    // The RAW's bytes now hash differently than what was persisted.
+    std::fs::write(dir.join("b.raf"), b"raw bytes v2, rewritten in place").unwrap();
+
+    let s = open(&dir, 2);
+    assert_eq!(s.pool_len(), 2, "no duplicate photo for the same file");
+    assert_eq!(s.photo_count(), 2, "and no phantom cell");
+    assert_eq!(s.missing_count(), 0, "no placeholder for the old record");
+    assert_eq!(
+        s.verdict_counts(),
+        (0, 1, 1),
+        "the verdict stayed with the file, not the old fingerprint"
+    );
+}
+
+#[test]
+fn the_raw_visibility_preference_survives_reopen() {
+    let dir = temp_folder("raw_pref");
+    write_jpeg(&dir, "a.jpg", 11);
+    std::fs::write(dir.join("b.raf"), b"stand-in raw").unwrap();
+
+    {
+        let mut s = open(&dir, 2);
+        assert!(!s.raw_files_shown(), "off by default");
+        s.toggle_raw_files();
+        assert!(s.is_dirty(), "a preference change wants saving");
+        s.save().unwrap();
+    }
+
+    let s = open(&dir, 2);
+    assert!(s.raw_files_shown(), "restored from project.json");
+    assert_eq!(s.photo_count(), 2, "so the RAW-only photo shows at once");
+    assert_eq!(s.raw_hidden_count(), 0);
+}
+
 #[test]
 fn save_writes_the_sidecar_stores() {
     let dir = temp_folder("sidecar");
