@@ -289,7 +289,7 @@ fn decode_frame(src: &ThumbSrc) -> Option<(RawImage, u32, u32)> {
     // Drop the (opaque) alpha channel: thumbnails contain no transparency, and a
     // DeviceRGB image is the smallest, simplest thing to embed.
     let mut rgb = Vec::with_capacity(thumb.rgba.len() / 4 * 3);
-    for px in thumb.rgba.chunks_exact(4) {
+    for px in thumb.rgba.as_chunks::<4>().0 {
         rgb.extend_from_slice(&px[..3]);
     }
     let raw = RawImage {

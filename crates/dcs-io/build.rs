@@ -164,8 +164,8 @@ fn convert_fp16(src: &Path, dest: &Path) {
             Dtype::F32 => {
                 let data = view.data();
                 let mut out = Vec::with_capacity(data.len() / 2);
-                for chunk in data.chunks_exact(4) {
-                    let v = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                for chunk in data.as_chunks::<4>().0 {
+                    let v = f32::from_le_bytes(*chunk);
                     out.extend_from_slice(&f16::from_f32(v).to_le_bytes());
                 }
                 owned.push((name, Dtype::F16, shape, out));
