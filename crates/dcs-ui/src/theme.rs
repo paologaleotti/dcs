@@ -28,6 +28,13 @@ pub const HAIRLINE: Color32 = Color32::from_gray(72);
 /// egui's `extreme_bg_color` (text-edit interiors).
 pub const EXTREME: Color32 = Color32::from_gray(6);
 
+/// The gallery's white print matte. Paper white, not pure white, so the band
+/// never reads as a blown highlight next to the photo.
+pub const MATTE_WHITE: Color32 = Color32::from_gray(245);
+/// The gallery's black print matte. True black, below `SHEET_BG`, so the band
+/// separates from the letterbox around it.
+pub const MATTE_BLACK: Color32 = Color32::from_gray(0);
+
 /// Interactive chrome ramp. Buttons rest just above chrome so they read as
 /// controls without shouting, then climb on hover and press. One source for
 /// every trigger, dropdown, and menu item.

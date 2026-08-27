@@ -460,6 +460,21 @@ impl DcsApp {
                         ui.label(RichText::new("needs time sort").small().weak());
                     }
                     ui.separator();
+                    if ui
+                        .add_enabled(
+                            self.view == ViewMode::Gallery && self.crop_edit.is_none(),
+                            egui::Button::new(format!(
+                                "Frame Matte: {}",
+                                self.gallery_matte.label()
+                            )),
+                        )
+                        .on_hover_text("M")
+                        .clicked()
+                    {
+                        clicked = Some(AppAction::CycleGalleryMatte);
+                        ui.close();
+                    }
+                    ui.separator();
                     if ui.button("Toggle Diagnostics").clicked() {
                         clicked = Some(AppAction::ToggleDiagnostics);
                         ui.close();

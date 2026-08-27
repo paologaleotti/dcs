@@ -40,6 +40,9 @@ pub enum AppAction {
     /// Toggle the grid's burst overlay (span accents + labels). A persisted view
     /// preference.
     ToggleBursts,
+    /// Cycle the gallery frame matte (off → white → black). Ephemeral UI state
+    /// owned by the shell; inert outside the gallery.
+    CycleGalleryMatte,
     /// Switch to the grid view mode (no-op if already there).
     EnterGrid,
     /// Switch to the gallery view mode on the focused photo (no-op if already
@@ -167,6 +170,7 @@ impl AppAction {
             AppAction::ZoomOut => "zoom-out",
             AppAction::ToggleDiagnostics => "toggle-diagnostics",
             AppAction::ToggleBursts => "toggle-bursts",
+            AppAction::CycleGalleryMatte => "cycle-gallery-matte",
             AppAction::EnterGrid => "enter-grid",
             AppAction::EnterGallery => "enter-gallery",
             AppAction::ToggleGallery => "toggle-gallery",
@@ -228,6 +232,7 @@ pub enum ActionEffect {
     ZoomIn,
     ZoomOut,
     ToggleDiagnostics,
+    CycleGalleryMatte,
     EnterGrid,
     EnterGallery,
     ToggleGallery,
@@ -343,6 +348,12 @@ pub fn catalog(session: &Session) -> Vec<ActionEntry> {
         );
         push(&mut e, AppAction::ZoomIn, "Zoom In", Category::View);
         push(&mut e, AppAction::ZoomOut, "Zoom Out", Category::View);
+        push(
+            &mut e,
+            AppAction::CycleGalleryMatte,
+            "Cycle Frame Matte",
+            Category::View,
+        );
     }
     // Crop the focused photo — offered only when it has a JPEG to edit.
     if session.focused_is_croppable() {
@@ -582,6 +593,7 @@ impl Session {
             AppAction::ZoomIn => ActionEffect::ZoomIn,
             AppAction::ZoomOut => ActionEffect::ZoomOut,
             AppAction::ToggleDiagnostics => ActionEffect::ToggleDiagnostics,
+            AppAction::CycleGalleryMatte => ActionEffect::CycleGalleryMatte,
             AppAction::ToggleBursts => {
                 self.toggle_bursts();
                 ActionEffect::None

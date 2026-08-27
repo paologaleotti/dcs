@@ -24,6 +24,8 @@ fn catalog_hides_unavailable_actions() {
     assert!(!ids.contains(&"redo"));
     assert!(!ids.contains(&"accept"));
     assert!(!ids.contains(&"forget-missing"));
+    // The gallery matte needs a photo to frame.
+    assert!(!ids.contains(&"cycle-gallery-matte"));
 }
 
 /// The active view filter is a no-op, so it's omitted; the other three appear.
@@ -56,6 +58,10 @@ fn run_action_returns_effects() {
         ActionEffect::PickFolder
     );
     assert_eq!(session.run_action(AppAction::ZoomIn), ActionEffect::ZoomIn);
+    assert_eq!(
+        session.run_action(AppAction::CycleGalleryMatte),
+        ActionEffect::CycleGalleryMatte
+    );
     assert_eq!(
         session.run_action(AppAction::SetShootZone),
         ActionEffect::OpenZonePicker

@@ -78,6 +78,8 @@ pub struct DcsApp {
     crop_edit: Option<crate::crop::CropEditState>,
     /// Filmstrip dock collapsed (ephemeral UI).
     strip_collapsed: bool,
+    /// Gallery frame matte (ephemeral UI, cycled with `M`); reset per project.
+    gallery_matte: crate::gallery::MatteColor,
     cell: f32,
     debug: bool,
     fps: f32,
@@ -175,6 +177,7 @@ impl DcsApp {
             gallery_zoom: crate::gallery::GalleryZoom::default(),
             crop_edit: None,
             strip_collapsed: false,
+            gallery_matte: crate::gallery::MatteColor::Off,
             cell: 92.0,
             debug: false,
             fps: 0.0,
@@ -332,6 +335,7 @@ impl DcsApp {
         self.gallery_textures.clear();
         self.board_textures.clear();
         self.board = crate::board::BoardUiState::default();
+        self.gallery_matte = crate::gallery::MatteColor::Off;
         self.session.open_folder(dir);
         if let Some(zoom) = self.session.grid_zoom() {
             self.cell = zoom.clamp(CELL_MIN, CELL_MAX);
@@ -373,6 +377,16 @@ impl DcsApp {
             E::ZoomIn => self.zoom(ZOOM_STEP),
             E::ZoomOut => self.zoom(1.0 / ZOOM_STEP),
             E::ToggleDiagnostics => self.debug = !self.debug,
+            // Inert outside the visible gallery (like `Z`), so `M` in the grid
+            // or behind the crop editor never changes hidden state.
+            E::CycleGalleryMatte => {
+                if self.view == ViewMode::Gallery && self.crop_edit.is_none() {
+                    self.gallery_matte = self.gallery_matte.cycle();
+                    // The matte moves the fit basis; a held zoom would rescale
+                    // around it, so snap back to fit.
+                    self.gallery_zoom = crate::gallery::GalleryZoom::default();
+                }
+            }
             E::OpenZonePicker => self.zone_picker.open(),
             E::OpenCameraZonePicker => self.camera_zone_picker.open(),
             E::OpenFilterStatePalette => {

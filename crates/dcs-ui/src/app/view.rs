@@ -285,6 +285,7 @@ impl DcsApp {
                             focus,
                             strip_collapsed: self.strip_collapsed,
                             center_focus: std::mem::take(&mut self.scroll_to_focus),
+                            matte: self.gallery_matte,
                         };
                         let resp = gallery::show(
                             ui,

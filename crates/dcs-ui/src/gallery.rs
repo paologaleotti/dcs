@@ -48,6 +48,48 @@ pub struct GalleryState {
     pub strip_collapsed: bool,
     /// The focus just moved — recenter the filmstrip this frame.
     pub center_focus: bool,
+    /// The frame matte around the fitted photo.
+    pub matte: MatteColor,
+}
+
+/// The gallery frame matte: a print-border preview around the fitted photo,
+/// cycled with `M`. Ephemeral UI state owned by the app, never persisted, and
+/// reset when a folder opens.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MatteColor {
+    #[default]
+    Off,
+    White,
+    Black,
+}
+
+impl MatteColor {
+    /// The next state in the cycle: off → white → black → off.
+    pub fn cycle(self) -> Self {
+        match self {
+            MatteColor::Off => MatteColor::White,
+            MatteColor::White => MatteColor::Black,
+            MatteColor::Black => MatteColor::Off,
+        }
+    }
+
+    /// The state's display name, shared by the menu and the info-bar control.
+    pub fn label(self) -> &'static str {
+        match self {
+            MatteColor::Off => "Off",
+            MatteColor::White => "White",
+            MatteColor::Black => "Black",
+        }
+    }
+
+    /// The band fill, or `None` when the matte is off.
+    fn color(self) -> Option<Color32> {
+        match self {
+            MatteColor::Off => None,
+            MatteColor::White => Some(theme::MATTE_WHITE),
+            MatteColor::Black => Some(theme::MATTE_BLACK),
+        }
+    }
 }
 
 /// The gallery zoom transform: contain-fit at rest, cursor-centered zoom in to
@@ -128,6 +170,7 @@ pub fn show(
         focus,
         strip_collapsed,
         center_focus,
+        matte,
     } = *state;
     frame_textures.begin_frame();
     strip_textures.begin_frame();
@@ -171,10 +214,9 @@ pub fn show(
         image_rect,
         zoom,
         ppp,
+        matte,
     );
-    paint_info_bar(ui, &frame_info(session, focus), bar_rect);
-
-    let mut action = None;
+    let mut action = paint_info_bar(ui, &frame_info(session, focus), bar_rect, matte);
     // Right-click the photo → the same per-photo menu as a grid cell, acting on
     // the displayed photo. Works at any zoom: `paint_frame` owns the pan drag on
     // the same response, so the menu and panning no longer fight.
@@ -186,7 +228,9 @@ pub fn show(
             session.set_focus(focus, false);
         }
         frame_resp.context_menu(|ui| {
-            action = cell_menu(ui, session, focus);
+            // Merge, don't overwrite: a matte-cell click while the menu is open
+            // already produced an action, and `cell_menu` returns `None` then.
+            action = cell_menu(ui, session, focus).or(action);
             ui.separator();
             if ui.button("Copy image").clicked() {
                 copy_to_clipboard(ui, session, id);
@@ -253,6 +297,7 @@ fn paint_frame(
     rect: Rect,
     zoom: &mut GalleryZoom,
     ppp: f32,
+    matte: MatteColor,
 ) -> Option<egui::Response> {
     // Prefer the sharp gallery frame; fall back to the base thumb so something
     // shows immediately. Read the gallery frame's true source dimensions first
@@ -275,12 +320,19 @@ fn paint_frame(
     // Guard degenerate dims so no division below yields NaN/Inf. A valid decode is
     // always ≥1px; this only defends against an upstream bug producing a 0 dim.
     let img_pts = Vec2::new((tex.size.x / ppp).max(1.0), (tex.size.y / ppp).max(1.0));
-    let fit = fit_size(rect, img_pts);
+    // With a matte on, the photo fits inside a frame shrunk by the band width,
+    // so the band gets room on all four sides at rest.
+    let matte_pts = if matte.color().is_some() {
+        matte_width(rect)
+    } else {
+        0.0
+    };
+    let fit = fit_size(rect.shrink(matte_pts), img_pts);
     // The 1:1 ceiling comes from the source pixels, so the zoom range is stable
     // from the first (preview) tier rather than growing as bigger tiers land.
     let zoom_100 = match source_px {
         Some(sp) if sp.x > 0.0 => (sp.x / (fit.x * ppp)).max(1.0),
-        _ => native_zoom(rect, img_pts),
+        _ => native_zoom(rect.shrink(matte_pts), img_pts),
     };
     let center = rect.center();
     let ctx = ui.ctx().clone();
@@ -316,9 +368,13 @@ fn paint_frame(
     // Paint clipped to the frame so zoomed pixels never bleed onto the info bar
     // or filmstrip.
     let placed = Rect::from_center_size(center + zoom.offset, display);
-    ui.painter()
-        .with_clip_rect(rect)
-        .image(tex.id, placed, full_uv(), Color32::WHITE);
+    let painter = ui.painter().with_clip_rect(rect);
+    // The band tracks the placed photo, so zooming past fit pushes it out of the
+    // clip rect and the photo takes the full frame. No extra zoom branches.
+    if let Some(color) = matte.color() {
+        painter.rect_filled(placed.expand(matte_pts), 0.0, color);
+    }
+    painter.image(tex.id, placed, full_uv(), Color32::WHITE);
 
     // Full-res only on zoom-in: quantized higher-tier decode while enlarged; the
     // GPU bilinear-scales between tiers so it stays crisp without re-decoding.
@@ -334,6 +390,15 @@ fn paint_frame(
     }
 
     Some(resp)
+}
+
+/// Matte band width for a frame: proportional to the short edge, clamped so it
+/// still reads on a small window without eating a large one.
+fn matte_width(frame: Rect) -> f32 {
+    let band = (frame.size().min_elem() * 0.05).clamp(16.0, 48.0);
+    // A frame under 2× the band would invert on `shrink`, flipping the photo;
+    // cap the band so the shrunken frame keeps a positive size.
+    band.min((frame.size().min_elem() / 2.0 - 1.0).max(0.0))
 }
 
 /// The contain-fit size (points) of an image of `img_pts` inside `frame`.
@@ -631,8 +696,9 @@ fn frame_info(session: &Session, focus: usize) -> FrameInfo {
 /// The docked info bar under the photo: a charcoal band with the filename + a
 /// type chip and the time on the bright top row, the camera/lens/exposure and
 /// group dim below. Right-aligned fields hug the far edge so the row reads at a
-/// glance.
-fn paint_info_bar(ui: &Ui, info: &FrameInfo, rect: Rect) {
+/// glance. The far right holds the matte control cell; a click on it returns
+/// the cycle action for the caller to dispatch.
+fn paint_info_bar(ui: &Ui, info: &FrameInfo, rect: Rect, matte: MatteColor) -> Option<AppAction> {
     let p = ui.painter();
     p.rect_filled(rect, 0.0, theme::CHROME_BG);
     p.hline(
@@ -643,7 +709,8 @@ fn paint_info_bar(ui: &Ui, info: &FrameInfo, rect: Rect) {
 
     let pad = 12.0;
     let left = rect.left() + pad;
-    let right = rect.right() - pad;
+    let clicked = paint_matte_cell(ui, rect, matte, pad);
+    let right = rect.right() - matte_cell_width(p, pad) - pad;
     let row1 = rect.top() + rect.height() * 0.34;
     let row2 = rect.top() + rect.height() * 0.70;
 
@@ -692,6 +759,59 @@ fn paint_info_bar(ui: &Ui, info: &FrameInfo, rect: Rect) {
             theme::TEXT_DIM,
         );
     }
+    clicked.then_some(AppAction::CycleGalleryMatte)
+}
+
+/// Mono face for the matte control label.
+fn matte_cell_font() -> FontId {
+    FontId::monospace(10.0)
+}
+
+/// The matte cell's fixed width, sized to the widest state label so the cell
+/// never resizes while cycling.
+fn matte_cell_width(p: &egui::Painter, pad: f32) -> f32 {
+    let widest = p.layout_no_wrap(
+        "MATTE WHITE".to_string(),
+        matte_cell_font(),
+        theme::TEXT_DIM,
+    );
+    widest.size().x + pad * 2.0
+}
+
+/// The matte control: a full-height cell at the info bar's right end, divided
+/// by a hairline, showing `MATTE <STATE>`. Returns true on click.
+fn paint_matte_cell(ui: &Ui, rect: Rect, matte: MatteColor, pad: f32) -> bool {
+    let p = ui.painter();
+    let cell = Rect::from_min_max(
+        Pos2::new(rect.right() - matte_cell_width(p, pad), rect.top() + 1.0),
+        rect.max,
+    );
+    let resp = ui
+        .interact(cell, Id::new("dcs_gallery_matte_cell"), Sense::click())
+        .on_hover_text("M");
+    let fg = if resp.hovered() {
+        theme::TEXT_HOVER
+    } else if matte == MatteColor::Off {
+        theme::TEXT_DIM
+    } else {
+        theme::TEXT_REST
+    };
+    if resp.hovered() {
+        p.rect_filled(cell, 0.0, theme::BTN_REST);
+    }
+    p.vline(
+        cell.left() + 0.5,
+        cell.y_range(),
+        Stroke::new(1.0_f32, theme::HAIRLINE),
+    );
+    p.text(
+        cell.center(),
+        Align2::CENTER_CENTER,
+        format!("MATTE {}", matte.label().to_uppercase()),
+        matte_cell_font(),
+        fg,
+    );
+    resp.clicked()
 }
 
 /// `tags: ●name ●name …` next to the type chip — a color dot + name per tag,
@@ -967,6 +1087,51 @@ mod tests {
         let clamped = clamp_offset(frame, display, Vec2::new(9999.0, 50.0));
         assert!(approx(clamped.x, 300.0)); // (1600-1000)/2
         assert!(approx(clamped.y, 0.0)); // height not larger → locked
+    }
+
+    #[test]
+    fn matte_cycles_off_white_black_off() {
+        let mut m = MatteColor::default();
+        assert_eq!(m, MatteColor::Off);
+        assert!(m.color().is_none());
+        m = m.cycle();
+        assert_eq!(m, MatteColor::White);
+        m = m.cycle();
+        assert_eq!(m, MatteColor::Black);
+        m = m.cycle();
+        assert_eq!(m, MatteColor::Off);
+    }
+
+    #[test]
+    fn matte_width_is_proportional_and_clamped() {
+        let frame = |edge: f32| Rect::from_min_size(Pos2::ZERO, Vec2::splat(edge));
+        assert!(approx(matte_width(frame(100.0)), 16.0));
+        assert!(approx(matte_width(frame(800.0)), 40.0));
+        assert!(approx(matte_width(frame(2000.0)), 48.0));
+    }
+
+    #[test]
+    fn matte_width_never_inverts_a_tiny_frame() {
+        // A 20pt frame is under 2× the 16pt minimum band; the cap must keep the
+        // shrunken frame positive so the photo never paints inverted.
+        let frame = Rect::from_min_size(Pos2::ZERO, Vec2::splat(20.0));
+        let m = matte_width(frame);
+        let shrunk = frame.shrink(m);
+        assert!(shrunk.width() > 0.0 && shrunk.height() > 0.0);
+
+        // A zero-size frame degrades to no band, not a negative one.
+        let empty = Rect::from_min_size(Pos2::ZERO, Vec2::ZERO);
+        assert!(matte_width(empty) >= 0.0);
+    }
+
+    #[test]
+    fn matte_shrunk_fit_leaves_room_for_the_band() {
+        // A wide image in the shrunken frame fills its width, so the band gets
+        // exactly `m` on each side of the tight axis.
+        let frame = Rect::from_min_size(Pos2::ZERO, Vec2::splat(1000.0));
+        let m = matte_width(frame);
+        let fit = fit_size(frame.shrink(m), Vec2::new(4000.0, 2000.0));
+        assert!(approx(fit.x, 1000.0 - 2.0 * m));
     }
 
     #[test]

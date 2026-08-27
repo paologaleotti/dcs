@@ -110,6 +110,20 @@ fn request_gallery_zoom_decodes_the_focus_frame() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The matte cycle needs a photo to frame: absent from an empty catalog (pinned
+/// in registry_test), present once the pool holds one.
+#[test]
+fn catalog_offers_matte_cycle_with_photos() {
+    let (session, dir) = opened_with(1, "matte_catalog");
+    let ids: Vec<&str> = dcs_app::catalog(&session)
+        .iter()
+        .map(|e| e.action.id())
+        .collect();
+    assert!(ids.contains(&"cycle-gallery-matte"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn clear_gallery_frees_the_frames() {
     let (mut session, dir) = opened_with(2, "clear");

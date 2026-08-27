@@ -179,6 +179,11 @@ const KEYMAP: &[(AppAction, Chord, &str)] = &[
     (AppAction::ZoomIn, plain(Key::Equals), "Zoom in"),
     (AppAction::ZoomOut, plain(Key::Minus), "Zoom out"),
     (
+        AppAction::CycleGalleryMatte,
+        plain(Key::M),
+        "Gallery: cycle frame matte",
+    ),
+    (
         AppAction::ToggleDiagnostics,
         plain(Key::F12),
         "Toggle diagnostics",
@@ -222,6 +227,10 @@ mod tests {
         // The Space → ToggleGallery binding flows through KEYMAP, not the fixed
         // tail, so it must appear.
         assert!(rows.iter().any(|s| s.description == "Open / close gallery"));
+        assert!(
+            rows.iter()
+                .any(|s| s.description == "Gallery: cycle frame matte")
+        );
 
         // The fixed non-registry keys are appended.
         for desc in [
