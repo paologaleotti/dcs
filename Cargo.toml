@@ -61,15 +61,15 @@ half = "2"
 winresource = "0.1"
 rfd = "0.17"
 # PDF generation for the contact-sheet renderer (dcs-io only).
-printpdf = { version = "0.11", default-features = false, features = [
+printpdf = { version = "0.12", default-features = false, features = [
     "images",
     "jpeg",
 ] }
-egui = "0.35"
+egui = "0.36"
 # wgpu backend → Metal on macOS, Vulkan/DX12 elsewhere. Unlike the glow
 # (OpenGL) backend, Metal drives ProMotion (120 Hz); Apple caps GL surfaces
 # at 60. The grid's scroll smoothness rides on this.
-eframe = { version = "0.35", default-features = false, features = [
+eframe = { version = "0.36", default-features = false, features = [
     "default_fonts",
     "wgpu",
     "wayland",

@@ -304,7 +304,7 @@ impl DcsApp {
     /// Open a folder dropped onto the window. A dropped file opens its
     /// containing folder, so dropping any photo works as well as a folder.
     fn handle_dropped_folder(&mut self, ctx: &egui::Context) {
-        let Some(path) = ctx.input(|i| i.raw.dropped_files.iter().find_map(|f| f.path.clone()))
+        let Some(path) = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()))
         else {
             return;
         };

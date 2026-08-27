@@ -327,6 +327,7 @@ fn place_image(
             scale_y: Some(fit.h / natural_h),
             rotate: None,
             dpi: Some(IMAGE_DPI),
+            no_auto_scale: false,
         },
     });
 }
