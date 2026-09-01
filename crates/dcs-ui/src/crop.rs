@@ -23,9 +23,10 @@ use crate::theme;
 
 /// Tool-bar height in points (aspect presets + straighten + actions).
 const TOOLBAR_H: f32 = 44.0;
-/// Visible span of the straighten slider, in degrees. Narrower than
-/// [`MAX_ANGLE_DEG`] so each pixel maps to a tiny angle for precise horizon
-/// leveling; the `DragValue` still reaches the full ±`MAX_ANGLE_DEG` by typing.
+/// Visible span of the straighten slider, in degrees. With
+/// [`STRAIGHTEN_SLIDER_W`] this sets the drag rate (about 0.12° per point).
+/// The knob display pins at this span; the drag itself, like the `DragValue`,
+/// runs to the full ±[`MAX_ANGLE_DEG`].
 const STRAIGHTEN_SLIDER_DEG: f32 = 15.0;
 /// Width of the straighten slider track, in points.
 const STRAIGHTEN_SLIDER_W: f32 = 260.0;
@@ -95,6 +96,8 @@ pub struct CropEditState {
     pub center_focus: bool,
     /// In-progress handle drag, if any.
     drag: Option<Handle>,
+    /// Sub-step remainder of the straighten-slider drag, in degrees.
+    straighten_acc: f32,
     /// One-shot: snap the rect to the active aspect's max-fit on the next frame
     /// (set when the user picks a preset, or on a fresh crop's first layout).
     refit: bool,
@@ -132,6 +135,7 @@ impl CropEditState {
             portrait: edit.portrait,
             center_focus: true,
             drag: None,
+            straighten_acc: 0.0,
             refit: fresh,
         }
     }
@@ -243,7 +247,8 @@ fn paint_toolbar(ui: &mut Ui, rect: Rect, state: &mut CropEditState, resp: &mut 
             AspectMode::SixteenNine,
         ] {
             let selected = state.aspect == mode;
-            if ui.selectable_label(selected, aspect_label(mode)).clicked() {
+            let label = egui::RichText::new(aspect_label(mode)).monospace();
+            if ui.selectable_label(selected, label).clicked() {
                 state.aspect = mode;
                 // Switching to a locked ratio snaps the box to it once; Free
                 // leaves the current box as-is.
@@ -270,22 +275,26 @@ fn paint_toolbar(ui: &mut Ui, rect: Rect, state: &mut CropEditState, resp: &mut 
                 .monospace()
                 .color(theme::TEXT_DIM),
         );
+        // Monospace + a signed fixed-width readout ("+2.3", "-15.0" both fill
+        // five columns), so the toolbar never shifts when the sign or the digit
+        // count changes mid-drag.
+        ui.style_mut().drag_value_text_style = egui::TextStyle::Monospace;
         ui.add(
             egui::DragValue::new(&mut state.angle_deg)
                 .speed(0.05)
                 .range(-MAX_ANGLE_DEG..=MAX_ANGLE_DEG)
-                .fixed_decimals(1)
+                .max_decimals(1)
+                .custom_formatter(|v, _| {
+                    // Snap to the readout grid before the sign check: a raw
+                    // -0.02 must show as "+0.0", never "-0.0" (-0.0 == 0.0).
+                    let v = (v * 10.0).round() / 10.0;
+                    let v = if v == 0.0 { 0.0 } else { v };
+                    format!("{v:+5.1}")
+                })
+                .custom_parser(|text| text.trim().parse().ok())
                 .suffix("°"),
         );
-        ui.spacing_mut().slider_width = STRAIGHTEN_SLIDER_W;
-        ui.add(
-            egui::Slider::new(
-                &mut state.angle_deg,
-                -STRAIGHTEN_SLIDER_DEG..=STRAIGHTEN_SLIDER_DEG,
-            )
-            .clamping(egui::SliderClamping::Never)
-            .show_value(false),
-        );
+        straighten_slider(ui, state);
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("Apply").clicked() {
@@ -299,6 +308,46 @@ fn paint_toolbar(ui: &mut Ui, rect: Rect, state: &mut CropEditState, resp: &mut 
             }
         });
     });
+}
+
+/// The straighten slider: a relative drag in 0.1° steps. A stock `Slider` maps
+/// pointer position to the value, so a press jumps the angle to the press
+/// point and one point of trackpad travel is more than one readout step. Here
+/// a press changes nothing; travel accumulates and the angle moves only when a
+/// full step builds up (`crops::step_straighten`), so micro-jitter holds still.
+fn straighten_slider(ui: &mut Ui, state: &mut CropEditState) {
+    let size = Vec2::new(STRAIGHTEN_SLIDER_W, ui.spacing().interact_size.y);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::drag());
+    let resp = resp.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+
+    if resp.drag_started() {
+        // Skip the press frame: its drag_delta carries the pointer's approach
+        // travel, which would jump the angle on every press.
+        state.straighten_acc = 0.0;
+    } else if resp.dragged() {
+        let deg_per_point = 2.0 * STRAIGHTEN_SLIDER_DEG / STRAIGHTEN_SLIDER_W;
+        let travel = resp.drag_delta().x * deg_per_point;
+        let (angle, acc) = crops::step_straighten(state.angle_deg, state.straighten_acc, travel);
+        state.angle_deg = angle;
+        state.straighten_acc = acc;
+    }
+
+    let p = ui.painter();
+    let center = rect.center();
+    p.hline(
+        rect.x_range(),
+        center.y,
+        Stroke::new(2.0_f32, theme::BTN_HOVER),
+    );
+    p.vline(
+        center.x,
+        egui::Rangef::new(center.y - 4.0, center.y + 4.0),
+        Stroke::new(1.0_f32, theme::HAIRLINE),
+    );
+    let knob_r = 6.0;
+    let t = (state.angle_deg / STRAIGHTEN_SLIDER_DEG).clamp(-1.0, 1.0);
+    let knob_x = center.x + t * (rect.width() * 0.5 - knob_r);
+    p.circle_filled(Pos2::new(knob_x, center.y), knob_r, theme::SELECT_OUTLINE);
 }
 
 /// Draw the rotated image, the dimmed surround, the crop rectangle with its
@@ -427,10 +476,14 @@ fn paint_rotated_image(ui: &Ui, tex: &TexRef, center: Pos2, scale: f32, angle_de
         Pos2::new(0.0, 1.0),
     ];
     let mut mesh = Mesh::with_texture(tex.id);
+    // Push textured vertices directly: `colored_vertex` is for untextured
+    // meshes and asserts on a mesh that has a texture (epaint 0.36).
     for (pos, uv) in rotated.iter().zip(uv.iter()) {
-        mesh.colored_vertex(*pos, Color32::WHITE);
-        let i = mesh.vertices.len() - 1;
-        mesh.vertices[i].uv = *uv;
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: *pos,
+            uv: *uv,
+            color: Color32::WHITE,
+        });
     }
     mesh.add_triangle(0, 1, 2);
     mesh.add_triangle(0, 2, 3);

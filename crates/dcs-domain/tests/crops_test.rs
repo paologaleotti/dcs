@@ -3,8 +3,9 @@
 //! invariant. Zero mocks — the module is pure math.
 
 use dcs_domain::crops::{
-    AspectMode, CropEdit, MAX_ANGLE_DEG, NormRect, SourceSampler, bounding_box,
-    crop_quad_in_source, fit_aspect, is_within_source, max_inset_rect, plan_crop,
+    AspectMode, CropEdit, MAX_ANGLE_DEG, NormRect, STRAIGHTEN_STEP_DEG, SourceSampler,
+    bounding_box, crop_quad_in_source, fit_aspect, is_within_source, max_inset_rect, plan_crop,
+    step_straighten,
 };
 
 const EPS: f32 = 1e-3;
@@ -702,4 +703,98 @@ fn aspect_lock_is_owned_and_serde_round_trips() {
     };
     assert_eq!(edit.cache_token(), other.cache_token());
     assert_ne!(edit, other);
+}
+
+#[test]
+fn straighten_sub_step_travel_holds_the_angle() {
+    let (angle, acc) = step_straighten(2.0, 0.0, 0.06);
+    assert!(approx(angle, 2.0));
+    assert!(approx(acc, 0.06));
+}
+
+#[test]
+fn straighten_accumulated_travel_steps_once() {
+    let (angle, acc) = step_straighten(2.0, 0.06, 0.06);
+    assert!(approx(angle, 2.1));
+    assert!(approx(acc, 0.02));
+}
+
+#[test]
+fn straighten_jitter_around_a_boundary_cancels() {
+    // Forward then back by the same sub-step travel: no step either way.
+    let (angle, acc) = step_straighten(0.0, 0.0, 0.06);
+    assert!(approx(angle, 0.0));
+    let (angle, acc) = step_straighten(angle, acc, -0.06);
+    assert!(approx(angle, 0.0));
+    assert!(approx(acc, 0.0));
+
+    // After a step lands, reversing needs a full step of travel too.
+    let (angle, acc) = step_straighten(0.0, 0.0, 0.11);
+    assert!(approx(angle, 0.1));
+    let (angle, _) = step_straighten(angle, acc, -0.05);
+    assert!(approx(angle, 0.1));
+}
+
+#[test]
+fn straighten_large_travel_takes_whole_steps_and_carries_the_rest() {
+    let (angle, acc) = step_straighten(0.0, 0.0, 0.37);
+    assert!(approx(angle, 0.3));
+    assert!(approx(acc, 0.07));
+
+    let (angle, acc) = step_straighten(0.0, 0.0, -0.37);
+    assert!(approx(angle, -0.3));
+    assert!(approx(acc, -0.07));
+}
+
+#[test]
+fn straighten_step_snaps_an_off_grid_angle_to_the_grid() {
+    let (angle, _) = step_straighten(1.234, 0.0, STRAIGHTEN_STEP_DEG);
+    assert!(approx(angle, 1.3));
+}
+
+#[test]
+fn straighten_step_clamps_to_the_angle_range() {
+    // The clamp also drops the remainder: travel past the limit never banks.
+    let (angle, acc) = step_straighten(MAX_ANGLE_DEG, 0.0, 5.0);
+    assert!(approx(angle, MAX_ANGLE_DEG));
+    assert!(approx(acc, 0.0));
+
+    let (angle, acc) = step_straighten(-MAX_ANGLE_DEG, 0.0, -5.0);
+    assert!(approx(angle, -MAX_ANGLE_DEG));
+    assert!(approx(acc, 0.0));
+}
+
+#[test]
+fn straighten_reversal_at_the_rail_has_no_windup() {
+    // Travel far past the limit, then one step back: the first reverse step
+    // must land immediately, not fight banked forward travel.
+    let (angle, acc) = step_straighten(44.9, 0.0, 5.0);
+    assert!(approx(angle, MAX_ANGLE_DEG));
+    assert!(approx(acc, 0.0));
+    let (angle, _) = step_straighten(angle, acc, -STRAIGHTEN_STEP_DEG);
+    assert!(approx(angle, 44.9));
+}
+
+#[test]
+fn straighten_step_snaps_a_negative_off_grid_angle_to_the_grid() {
+    let (angle, _) = step_straighten(-1.234, 0.0, -STRAIGHTEN_STEP_DEG);
+    assert!(approx(angle, -1.3));
+}
+
+#[test]
+fn straighten_ignores_non_finite_travel() {
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let (angle, acc) = step_straighten(2.0, 0.05, bad);
+        assert!(approx(angle, 2.0), "angle poisoned by {bad}");
+        assert!(approx(acc, 0.05), "remainder poisoned by {bad}");
+    }
+}
+
+#[test]
+fn straighten_many_small_steps_stay_on_the_grid() {
+    let (mut angle, mut acc) = (0.0, 0.0);
+    for _ in 0..150 {
+        (angle, acc) = step_straighten(angle, acc, 0.1);
+    }
+    assert!(approx(angle, 15.0));
 }

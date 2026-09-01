@@ -500,3 +500,30 @@ pub fn drag_rect(
         h: y1 - y0,
     }
 }
+
+/// Step size of a straighten drag, in degrees. Matches the 0.1° readout.
+pub const STRAIGHTEN_STEP_DEG: f32 = 0.1;
+
+/// Advance a straighten drag by `travel_deg` of pointer travel. The angle
+/// moves only in whole [`STRAIGHTEN_STEP_DEG`] steps; sub-step travel carries
+/// over in the returned remainder (`acc_deg` in, remainder out). This is the
+/// drag deadzone: pointer jitter smaller than one step accumulates and cancels
+/// instead of flickering the angle between adjacent values. A step re-quantizes
+/// the angle onto the step grid and clamps it to ±[`MAX_ANGLE_DEG`]; when the
+/// clamp engages the remainder is dropped, so travel past the limit never banks
+/// and a reversal steps back immediately. Non-finite travel is ignored.
+pub fn step_straighten(angle_deg: f32, acc_deg: f32, travel_deg: f32) -> (f32, f32) {
+    if !travel_deg.is_finite() {
+        return (angle_deg, acc_deg);
+    }
+    let acc = acc_deg + travel_deg;
+    let steps = (acc / STRAIGHTEN_STEP_DEG).trunc();
+    if steps == 0.0 {
+        return (angle_deg, acc);
+    }
+    let acc = acc - steps * STRAIGHTEN_STEP_DEG;
+    let stepped = (angle_deg / STRAIGHTEN_STEP_DEG + steps).round() * STRAIGHTEN_STEP_DEG;
+    let clamped = stepped.clamp(-MAX_ANGLE_DEG, MAX_ANGLE_DEG);
+    let acc = if clamped == stepped { acc } else { 0.0 };
+    (clamped, acc)
+}
